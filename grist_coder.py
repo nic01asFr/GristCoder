@@ -833,14 +833,14 @@ async def call_tool(uid_key, mcp_sid, name, args):
         return await grist_get(ctx, "tables")
 
     if name == "grist_records":
-        path = f"tables/{args['table_id']}/records?limit={args.get('limit', 50)}"
+        lim  = int(args.get("limit", 50))
+        path = f"tables/{args['table_id']}/records?limit={lim}"
         if "filter" in args:
             path += f"&filter={json.dumps(args['filter'])}"
         if "sort" in args:
             path += f"&sort={args['sort']}"
         data    = await grist_get(ctx, path)
         records = data.get("records", [])
-        lim     = args.get("limit", 50)
         return {"records": records[:lim], "total": len(records), "returned": min(len(records), lim)}
 
     if name == "grist_sql":
