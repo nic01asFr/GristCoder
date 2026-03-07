@@ -1,51 +1,13 @@
 """
-GRIST CODER · MCP Server v4.3 · streamable HTTP spec 2025-03-26
-───────────────────────────────────────────────────────────────
-AUTH - IDENTITE PAR GRIST USER ID (uid_key = 'uid:{id}')
+GRIST CODER · MCP Server v5.0 · streamable HTTP spec 2025-03-26
+────────────────────────────────────────────────────────────────
+Le document Grist = la codebase du projet.
+Le widget = split vertical : Ace editor (code) | iframe (rendu live).
+Le LLM via MCP orchestre : schema relationnel Grist + artefacts HTML/JS.
 
-  Widget     -> grist.docApi.getAccessToken() -> token court-terme
-             -> POST /register {accessToken, docId, siteUrl, userId}
-             -> serveur verifie le token -> obtient grist_user_id stable
-             -> retourne arto-xxx
-             -> SSE via GET /mcp?token=arto-xxx
-             -> appels MCP via POST /mcp + Authorization: Bearer arto-xxx
-             -> PAS DE CLE API a saisir dans le widget
-
-  Claude Desktop -> Authorization: Bearer <grist_key>
-                 -> serveur verifie via GET /api/profile/user -> grist_user_id
-                 -> uid_key = 'uid:{grist_user_id}' -> acces aux sessions du user
-
-  Isolation : sessions indexees par uid_key (partagees widget + Claude Desktop).
-  Securite  : ni la cle Grist ni le token temporaire ne transitent en query param.
-
-TOOLS (13)
-  sessions : sessions_list, session_select, session_info
-  canvas   : canvas_read, canvas_write, canvas_patch, canvas_exec
-  grist R  : grist_schema, grist_records, grist_sql
-  grist W  : grist_records_add, grist_records_patch, grist_upsert
-
-FLOW CLAUDE DESKTOP
-  1. initialize()           -> recoit SERVER_INSTRUCTIONS
-  2. sessions_list()        -> docs Grist ouverts avec cette cle
-  3. grist_schema()         -> tables disponibles
-  4. grist_records(table)   -> lire les donnees
-  5. canvas_write/patch()   -> ecrire/modifier le canvas
-  6. canvas_exec()          -> executer
-  7. grist_records_add()    -> ecrire les resultats dans Grist
-
-INSTALL   pip install fastapi uvicorn httpx python-dotenv
-RUN       uvicorn grist_coder:app --port 8742
-
-CLAUDE DESKTOP  %APPDATA%\\Claude\\claude_desktop_config.json
-  {
-    "mcpServers": {
-      "grist-coder": {
-        "type": "http",
-        "url": "https://<ngrok>.ngrok-free.app/mcp",
-        "headers": { "Authorization": "Bearer <votre_cle_grist>" }
-      }
-    }
-  }
+AUTH  : widget -> grist.docApi.getAccessToken() -> POST /register -> gc-xxx
+        Claude Desktop -> Bearer <grist_key> -> uid:user_id stable
+TOOLS : sessions(3) canvas(5) artefact(1) grist-r(3) grist-w(3) = 15
 """
 
 import asyncio, base64, hashlib, json, os, subprocess, sys, time, uuid
@@ -58,65 +20,68 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 load_dotenv()
-
-HOST_URL   = os.getenv("HOST_URL", "http://localhost:8742")
-MCP_VER    = "2025-03-26"
+HOST_URL = os.getenv("HOST_URL", "http://localhost:8742")
+MCP_VER  = "2025-03-26"
 
 # ── SERVER INSTRUCTIONS ───────────────────────────────────────────────────────
 
 SERVER_INSTRUCTIONS = """
-Tu es connecte a Grist Coder - service MCP de canvas de code Grist.
+Tu es connecte a Grist Coder MCP v5 - service de developpement d apps Grist.
 
-AUTH : Ta cle Bearer = cle Grist de l utilisateur.
-Le serveur la verifie aupres de Grist (GET /api/profile/user) et t associe a ton
-grist_user_id stable. Tu n as acces qu aux sessions ouvertes par cet utilisateur.
+CONCEPT FONDAMENTAL
+Le document Grist ouvert dans le widget = ta codebase complete.
+Comme un repo Git dans Claude Code :
+  Tables de donnees (Batiments, Interventions...)  = modele de donnees
+  Table Artefacts (widgets HTML/JS)               = fichiers source
+  Schema relationnel (Ref:, formules, visibleCol) = architecture
+  grist_sql() cross-tables                        = requetes sur le projet
 
-CONCEPT : Le canvas est ton fichier de travail, manipule comme Claude Code :
-  canvas_read()              = read_file()
-  canvas_patch(old, new)     = str_replace(old, new)   PREFERER
-  canvas_write(code)         = write_file()
-  canvas_exec()              = bash("python ...")
-  grist_schema()             = lister les tables
-  grist_records(table)       = lire les donnees
-  grist_sql(query)           = SELECT SQL direct
-  grist_records_add(t, rows) = INSERT dans Grist
-  grist_records_patch(t, rs) = UPDATE dans Grist (par id)
-  grist_upsert(t, rs)        = INSERT OR UPDATE sur cle metier
+OUTILS DISPONIBLES (15)
+Sessions : sessions_list, session_select, session_info
+Canvas   : canvas_read, canvas_write, canvas_patch, canvas_exec, canvas_screenshot
+Artefact : artefact_init
+Grist R  : grist_schema, grist_records, grist_sql
+Grist W  : grist_records_add, grist_records_patch, grist_upsert
 
-WORKFLOW OPTIMAL :
-  1. sessions_list()            -> quels docs sont ouverts ?
-  2. grist_schema()             -> tables disponibles
-  3. grist_records() ou sql()   -> lire les donnees
-  4. canvas_write/patch()       -> coder l analyse
-  5. canvas_exec()              -> valider, corriger si returncode != 0
-  6. grist_records_add()        -> ecrire les resultats si besoin
+WORKFLOW OPTIMAL - CONSTRUIRE UNE APP COMPLETE
+  1. sessions_list()                     -> identifier le document
+  2. artefact_init()                     -> creer table Artefacts (9 colonnes)
+  3. grist_schema()                      -> tables existantes du document
+  4. resources/read widget-patterns      -> patterns de code artefact
+  5. resources/read app-patterns         -> architecture + schema relationnel
+  6. Concevoir le schema metier (tables, types, refs)
+  7. Creer les tables via REST /tables
+     -> Ordre : tables sans refs d abord, puis Ref:TableId, puis visibleCol
+  8. Pour chaque artefact :
+     a. canvas_write(htmlCode)           -> ecrire dans le buffer
+     b. grist_upsert('Artefacts', [...]) -> persister dans Grist
+     c. canvas_screenshot()             -> valider le rendu visuel
+  9. session_info()                      -> verifier l etat du projet
 
-REGLES :
-  - canvas_read() AVANT canvas_patch() : old_str doit correspondre exactement
-  - canvas_patch >> canvas_write : preserves l historique, visible en diff
-  - Le widget voit chaque patch en SSE temps reel
+REGLES CANVAS
+  canvas_read() AVANT canvas_patch() - old_str doit etre exact
+  canvas_patch >> canvas_write - preserve l historique
+  Le widget voit chaque patch via SSE en temps reel
 
-RESOURCES disponibles via resources/list :
-  grist-coder://canvas/{token}         -> code Python actuel (subscribable)
-  grist-coder://schema/{token}         -> tables Grist
-  grist-coder://ui/{token}             -> widget interactif (MCP Apps SEP-1865)
-  grist-coder://docs/guide             -> guide complet
-  grist-coder://docs/grist-api         -> API Grist (widget + REST)
-  grist-coder://docs/canvas-patterns   -> recettes Python
-
-PROMPTS disponibles via prompts/list :
-  explore-doc, write-canvas, patch-canvas, debug-canvas, grist-formula, analyze-table
+RESOURCES DISPONIBLES
+  grist-coder://docs/guide              -> ce guide
+  grist-coder://docs/grist-api          -> API Grist : REST schema + widget API + SQL
+  grist-coder://docs/widget-patterns    -> coder un artefact (appContext, safeLoad, types)
+  grist-coder://docs/app-patterns       -> schema relationnel + architecture app complete
+  grist-coder://canvas/{token}          -> code Python actuel (subscribable)
+  grist-coder://schema/{token}          -> tables du document
+  grist-coder://artefacts/{token}       -> artefacts IsDoc=true du projet (contexte vivant)
 """.strip()
 
-# ── Registre ──────────────────────────────────────────────────────────────────
+# ── SESSION CTX ───────────────────────────────────────────────────────────────
 
 class SessionCtx:
     def __init__(self, doc_id, doc_title, site_url, grist_key="", access_token=""):
         self.doc_id       = doc_id
         self.doc_title    = doc_title or doc_id
         self.site_url     = site_url.rstrip("/")
-        self.grist_key    = grist_key    # clé API permanente (Claude Desktop)
-        self.access_token = access_token  # token court-terme docApi (widget)
+        self.grist_key    = grist_key
+        self.access_token = access_token
         self.canvas       = ""
         self.history      = deque(maxlen=50)
         self.created_at   = time.time()
@@ -140,22 +105,14 @@ class SessionCtx:
 
 
 class UserRegistry:
-    """
-    Identite = uid_key = 'uid:{grist_user_id}' (stable, partage widget + Claude Desktop).
-
-    Widget     : envoie accessToken (temp) -> serveur verifie -> uid_key
-    Claude Dsk : envoie grist_key (perm)   -> serveur verifie -> uid_key
-
-    _grist_key_to_uid : grist_key (Claude Desktop) -> uid_key  (cache, evite verif a chaque appel)
-    """
     def __init__(self):
-        self._users: dict[str, dict] = {}            # uid_key -> {sessions, site, grist_key, access_token}
-        self._grist_key_to_uid: dict[str, str] = {}  # grist_key -> uid_key
+        self._users: dict[str, dict] = {}
+        self._grist_key_to_uid: dict[str, str] = {}
 
-    def get_uid_for_grist_key(self, gk: str) -> str | None:
+    def get_uid_for_grist_key(self, gk):
         return self._grist_key_to_uid.get(gk)
 
-    def provision(self, uid_key: str, *, grist_key: str = "", access_token: str = "", site: str = ""):
+    def provision(self, uid_key, *, grist_key="", access_token="", site=""):
         if uid_key not in self._users:
             self._users[uid_key] = {"sessions": {}, "site": site,
                                     "grist_key": grist_key, "access_token": access_token}
@@ -167,17 +124,12 @@ class UserRegistry:
         if grist_key:
             self._grist_key_to_uid[grist_key] = uid_key
 
-    def get_site(self, uid_key: str) -> str:
-        u = self._users.get(uid_key)
-        return u["site"] if u else ""
-
-    def get_api_token(self, uid_key: str) -> str:
-        """Credential pour les appels Grist API (grist_key perm ou access_token court-terme)."""
+    def get_api_token(self, uid_key):
         u = self._users.get(uid_key, {})
         return u.get("grist_key") or u.get("access_token") or ""
 
-    def register_session(self, uid_key: str, doc_id: str, doc_title: str, site_url: str,
-                         grist_key: str = "", access_token: str = "") -> "SessionCtx":
+    def register_session(self, uid_key, doc_id, doc_title, site_url,
+                         grist_key="", access_token=""):
         user = self._users[uid_key]
         for s in user["sessions"].values():
             if s.doc_id == doc_id:
@@ -189,7 +141,7 @@ class UserRegistry:
         user["sessions"][ctx.token] = ctx
         return ctx
 
-    def resolve(self, uid_key: str, token: str | None) -> "SessionCtx | None":
+    def resolve(self, uid_key, token):
         user = self._users.get(uid_key)
         if not user: return None
         sessions = user["sessions"]
@@ -199,29 +151,14 @@ class UserRegistry:
             ctx = next(iter(sessions.values())); ctx.touch(); return ctx
         return max(sessions.values(), key=lambda s: s.last_seen)
 
-    def list_sessions(self, uid_key: str) -> list:
+    def list_sessions(self, uid_key):
         user = self._users.get(uid_key)
         return [s.meta() for s in user["sessions"].values()] if user else []
 
 
-registry = UserRegistry()
-
-# ── Index SSE : arto-token -> uid_key ─────────────────────────────────────────
-# Peuple lors du POST /register. Vide au redemarrage -> re-registration auto.
+registry  = UserRegistry()
 _token_to_uid: dict[str, str] = {}
-
-async def fetch_grist_user_profile(site_url: str, bearer_token: str) -> dict | None:
-    """GET {site}/api/profile/user avec un token Bearer (grist_key ou accessToken).
-    Retourne {id, email, name} ou None."""
-    try:
-        async with httpx.AsyncClient(timeout=5) as c:
-            r = await c.get(f"{site_url}/api/profile/user",
-                            headers={"Authorization": f"Bearer {bearer_token}"})
-            if r.status_code == 200:
-                return r.json()
-    except Exception:
-        pass
-    return None
+_screenshot_waiters: dict[str, asyncio.Future] = {}
 
 # ── SSE ───────────────────────────────────────────────────────────────────────
 
@@ -238,16 +175,9 @@ def _notify_resource(uid_key, uri):
                     "method": "notifications/resources/updated",
                     "params": {"uri": uri}})
 
-def _log(uid_key, level, logger, message, data=None):
-    _push(uid_key, {"type": "mcp_notification",
-                    "method": "notifications/message",
-                    "params": {"level": level, "logger": logger,
-                               "data": {"message": message, **(data or {})}}})
+# ── GRIST HTTP HELPERS ────────────────────────────────────────────────────────
 
-# ── Grist HTTP helpers ────────────────────────────────────────────────────────
-
-def _jwt_payload(token: str) -> dict:
-    """Decode JWT payload (base64url) sans verifier la signature."""
+def _jwt_payload(token):
     try:
         part = token.split(".")[1]
         part += "=" * (-len(part) % 4)
@@ -256,14 +186,12 @@ def _jwt_payload(token: str) -> dict:
         return {}
 
 def _gh(ctx):
-    """Headers Grist : Authorization Bearer pour cle permanente uniquement."""
     h = {"Content-Type": "application/json"}
     if ctx.grist_key:
         h["Authorization"] = f"Bearer {ctx.grist_key}"
     return h
 
 def _aq(ctx):
-    """Query params Grist : ?auth=token pour access_token court-terme."""
     return {"auth": ctx.access_token} if ctx.access_token else {}
 
 def _base(ctx): return f"{ctx.site_url}/api/docs/{ctx.doc_id}"
@@ -291,210 +219,235 @@ async def grist_put(ctx, path, body):
                         content=json.dumps(body))
         r.raise_for_status(); return r.json()
 
+async def fetch_grist_user_profile(site_url, bearer_token):
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            r = await c.get(f"{site_url}/api/profile/user",
+                            headers={"Authorization": f"Bearer {bearer_token}"})
+            if r.status_code == 200: return r.json()
+    except Exception:
+        pass
+    return None
+
+# ── ARTEFACTS TABLE SCHEMA ────────────────────────────────────────────────────
+
+ARTEFACTS_TABLE_DEF = {
+    "tables": [{
+        "id": "Artefacts",
+        "columns": [
+            {"id": "Nom",          "fields": {"type": "Text",     "label": "Nom"}},
+            {"id": "Type",         "fields": {"type": "Choice",   "label": "Type",
+                                              "widgetOptions": json.dumps({"choices": [
+                                                  "app","grist","html","react","markdown",
+                                                  "svg","mermaid","python","sql","component"]})}},
+            {"id": "Code",         "fields": {"type": "Text",     "label": "Code"}},
+            {"id": "Description",  "fields": {"type": "Text",     "label": "Description"}},
+            {"id": "Dependencies", "fields": {"type": "Text",     "label": "Dependencies"}},
+            {"id": "IsDoc",        "fields": {"type": "Bool",     "label": "IsDoc"}},
+            {"id": "Icon",         "fields": {"type": "Text",     "label": "Icon"}},
+            {"id": "Output",       "fields": {"type": "Text",     "label": "Output"}},
+            {"id": "UpdatedAt",    "fields": {"type": "DateTime", "label": "Mis a jour"}},
+        ]
+    }]
+}
+
 # ── TOOLS ─────────────────────────────────────────────────────────────────────
 
 TOOLS = [
-    # ── Sessions
     {"name": "sessions_list",
-     "title": "Lister les documents Grist ouverts",
-     "description": "Liste tous les widgets actifs de l utilisateur. Appeler EN PREMIER.",
+     "description": "Liste tous les widgets actifs. Appeler EN PREMIER.",
      "inputSchema": {"type": "object", "properties": {}},
-     "annotations": {"readOnlyHint": True, "openWorldHint": False}},
+     "annotations": {"readOnlyHint": True}},
 
     {"name": "session_select",
-     "title": "Selectionner une session",
-     "description": "Selectionne une session par token. Inutile si une seule session active.",
+     "description": "Selectionne une session par token. Inutile si une seule session.",
      "inputSchema": {"type": "object",
                      "properties": {"token": {"type": "string"}},
-                     "required": ["token"]},
-     "annotations": {"readOnlyHint": False, "destructiveHint": False}},
+                     "required": ["token"]}},
 
     {"name": "session_info",
-     "title": "Infos session active",
-     "description": "Doc Grist, tables disponibles, etat du canvas.",
+     "description": "Infos session : tables, artefacts IsDoc, etat canvas. Inclut contexte projet.",
      "inputSchema": {"type": "object", "properties": {}},
-     "annotations": {"readOnlyHint": True, "idempotentHint": True}},
+     "annotations": {"readOnlyHint": True}},
 
-    # ── Canvas
     {"name": "canvas_read",
-     "title": "Lire le canvas",
      "description": "Lit le code complet du canvas. Appeler AVANT tout canvas_patch.",
      "inputSchema": {"type": "object", "properties": {}},
-     "annotations": {"readOnlyHint": True, "idempotentHint": True}},
+     "annotations": {"readOnlyHint": True}},
 
     {"name": "canvas_write",
-     "title": "Reecrire le canvas",
      "description": "Reecrit integralement le canvas. Preferer canvas_patch pour modifications ciblees.",
      "inputSchema": {"type": "object",
                      "properties": {"code": {"type": "string"}},
-                     "required": ["code"]},
-     "annotations": {"readOnlyHint": False, "destructiveHint": True}},
+                     "required": ["code"]}},
 
     {"name": "canvas_patch",
-     "title": "Patcher le canvas (str_replace)",
      "description": "Remplace precisement un fragment unique. Equivalent str_replace Claude Code.",
      "inputSchema": {"type": "object",
                      "properties": {
-                         "old_str": {"type": "string", "description": "Fragment exact a remplacer (unique)"},
+                         "old_str": {"type": "string", "description": "Fragment exact a remplacer"},
                          "new_str": {"type": "string", "description": "Fragment de remplacement"}},
-                     "required": ["old_str", "new_str"]},
-     "annotations": {"readOnlyHint": False, "destructiveHint": False}},
+                     "required": ["old_str", "new_str"]}},
 
     {"name": "canvas_exec",
-     "title": "Executer le canvas Python",
      "description": "Execute le canvas Python (subprocess isole, timeout 10s).",
      "inputSchema": {"type": "object", "properties": {}},
-     "annotations": {"readOnlyHint": False, "openWorldHint": True}},
+     "annotations": {"openWorldHint": True}},
 
-    # ── Grist lecture
-    {"name": "grist_schema",
-     "title": "Schema des tables Grist",
-     "description": "Definitions de toutes les tables du document actif.",
+    {"name": "canvas_screenshot",
+     "description": "Capture le panneau de rendu du widget (html2canvas). Timeout 15s. Retourne image/png base64.",
      "inputSchema": {"type": "object", "properties": {}},
-     "annotations": {"readOnlyHint": True, "idempotentHint": True}},
+     "annotations": {"readOnlyHint": True}},
+
+    {"name": "artefact_init",
+     "description": "Cree la table Artefacts (9 colonnes) si elle n existe pas. Appeler apres sessions_list.",
+     "inputSchema": {"type": "object", "properties": {}},
+     "annotations": {"idempotentHint": True}},
+
+    {"name": "grist_schema",
+     "description": "Schema complet du document : tables, colonnes, types, formules, refs.",
+     "inputSchema": {"type": "object", "properties": {}},
+     "annotations": {"readOnlyHint": True}},
 
     {"name": "grist_records",
-     "title": "Lire des enregistrements Grist",
      "description": "Enregistrements d une table (max 100). Supporte filtre et tri.",
      "inputSchema": {"type": "object",
                      "properties": {
                          "table_id": {"type": "string"},
-                         "limit":    {"type": "integer", "default": 50, "minimum": 1, "maximum": 100},
+                         "limit":    {"type": "integer", "default": 50},
                          "filter":   {"type": "object",  "description": "Ex: {\"Statut\": [\"actif\"]}"},
-                         "sort":     {"type": "string",  "description": "Ex: 'Score' ou '-Score' (desc)"}},
+                         "sort":     {"type": "string",  "description": "Ex: 'Score' ou '-Score'"}},
                      "required": ["table_id"]},
      "annotations": {"readOnlyHint": True}},
 
     {"name": "grist_sql",
-     "title": "Requete SQL sur le document Grist",
-     "description": "Executes une requete SELECT SQLite directement sur le document. Ideal pour agregations complexes.",
+     "description": "Requete SELECT SQLite. Ideal pour agregations et jointures cross-tables.",
      "inputSchema": {"type": "object",
                      "properties": {
-                         "query": {"type": "string", "description": "SELECT SQL (SQLite)"},
-                         "args":  {"type": "array",  "description": "Parametres ? dans la requete", "items": {}}},
+                         "query": {"type": "string"},
+                         "args":  {"type": "array", "items": {}}},
                      "required": ["query"]},
      "annotations": {"readOnlyHint": True}},
 
-    # ── Grist ecriture
     {"name": "grist_records_add",
-     "title": "Ajouter des enregistrements dans Grist",
-     "description": "Cree de nouvelles lignes dans une table Grist. Retourne les ids crees.",
+     "description": "Cree de nouvelles lignes dans une table Grist.",
      "inputSchema": {"type": "object",
                      "properties": {
                          "table_id": {"type": "string"},
-                         "records":  {"type": "array",
-                                      "description": "Liste de {fields: {Col: val}}",
-                                      "items": {"type": "object"}}},
-                     "required": ["table_id", "records"]},
-     "annotations": {"readOnlyHint": False, "destructiveHint": False}},
+                         "records":  {"type": "array", "items": {"type": "object"},
+                                      "description": "Liste de {fields: {Col: val}}"}},
+                     "required": ["table_id", "records"]}},
 
     {"name": "grist_records_patch",
-     "title": "Modifier des enregistrements Grist (par id)",
-     "description": "Met a jour des lignes existantes par leur id. Chaque record doit avoir id + fields.",
+     "description": "Met a jour des lignes existantes par leur id.",
      "inputSchema": {"type": "object",
                      "properties": {
                          "table_id": {"type": "string"},
-                         "records":  {"type": "array",
-                                      "description": "Liste de {id: rowId, fields: {Col: val}}",
-                                      "items": {"type": "object"}}},
-                     "required": ["table_id", "records"]},
-     "annotations": {"readOnlyHint": False, "destructiveHint": False}},
+                         "records":  {"type": "array", "items": {"type": "object"},
+                                      "description": "Liste de {id: rowId, fields: {Col: val}}"}},
+                     "required": ["table_id", "records"]}},
 
     {"name": "grist_upsert",
-     "title": "Upsert dans Grist (add-or-update sur cle metier)",
-     "description": "Cree ou met a jour des lignes selon une cle metier (require). Ideal pour sync.",
+     "description": "Cree ou met a jour des lignes selon une cle metier (require). Ideal pour sync artefacts.",
      "inputSchema": {"type": "object",
                      "properties": {
                          "table_id": {"type": "string"},
-                         "records":  {"type": "array",
-                                      "description": "Liste de {require: {key_col: val}, fields: {Col: val}}",
-                                      "items": {"type": "object"}}},
-                     "required": ["table_id", "records"]},
-     "annotations": {"readOnlyHint": False, "destructiveHint": False}},
+                         "records":  {"type": "array", "items": {"type": "object"},
+                                      "description": "Liste de {require: {key_col: val}, fields: {Col: val}}"}},
+                     "required": ["table_id", "records"]}},
 ]
 
 # ── PROMPTS ───────────────────────────────────────────────────────────────────
 
 PROMPTS = [
     {"name": "explore-doc",
-     "title": "Explorer le document Grist actif",
-     "description": "Schema complet + echantillons de chaque table.",
+     "description": "Explorer le schema et les donnees du document Grist actif.",
      "arguments": []},
-    {"name": "write-canvas",
-     "title": "Ecrire un canvas pour un objectif",
-     "description": "Cree un canvas Python complet base sur le schema reel.",
-     "arguments": [{"name": "objectif", "description": "Ce que le canvas doit accomplir", "required": True}]},
+    {"name": "build-app",
+     "description": "Construire une app complete (schema + artefacts).",
+     "arguments": [{"name": "description", "description": "Description de l app a construire", "required": True}]},
+    {"name": "write-artefact",
+     "description": "Creer un artefact HTML/JS pour une table donnee.",
+     "arguments": [
+         {"name": "nom",      "description": "Nom de l artefact",                     "required": True},
+         {"name": "type",     "description": "Type: grist|html|react|markdown",        "required": True},
+         {"name": "objectif", "description": "Ce que l artefact doit faire",            "required": True}]},
     {"name": "patch-canvas",
-     "title": "Modifier le canvas existant",
-     "description": "Modifications ciblees sans reecriture totale.",
+     "description": "Modifier le canvas existant de facon ciblee.",
      "arguments": [{"name": "modification", "description": "Ce qui doit changer", "required": True}]},
     {"name": "debug-canvas",
-     "title": "Deboguer le canvas",
-     "description": "Execute, analyse erreurs, corrige par patches jusqu a returncode 0.",
+     "description": "Deboguer le canvas (exec -> analyse -> patch jusqu a returncode 0).",
      "arguments": []},
-    {"name": "grist-formula",
-     "title": "Generer une formule Grist",
-     "description": "Formule Python Grist pour une colonne donnee.",
-     "arguments": [
-         {"name": "table",   "description": "Table cible",        "required": True},
-         {"name": "colonne", "description": "Colonne a calculer", "required": True},
-         {"name": "logique", "description": "Logique souhaitee",  "required": True}]},
-    {"name": "analyze-table",
-     "title": "Analyse statistique d une table",
-     "description": "Canvas d analyse (nulls, min/max/mean, doublons, anomalies).",
-     "arguments": [{"name": "table", "description": "Table a analyser", "required": True}]},
+    {"name": "design-schema",
+     "description": "Concevoir le schema relationnel Grist pour un domaine metier.",
+     "arguments": [{"name": "domaine", "description": "Domaine metier (ex: patrimoine, stock, RH)", "required": True}]},
 ]
 
 def _prompt_messages(name, args):
     if name == "explore-doc":
         return [{"role": "user", "content": {"type": "text", "text": (
             "Explore le document Grist actif.\n"
-            "1. sessions_list() -- identifier la session\n"
-            "2. grist_schema() -- toutes les tables et colonnes\n"
-            "3. grist_records(table, limit=5) pour chaque table\n"
-            "4. Resume : tables, colonnes-cles, types, volume, suggestions canvas."
+            "1. sessions_list() -> identifier la session\n"
+            "2. grist_schema() -> toutes les tables, colonnes, types, refs\n"
+            "3. grist_records(table, limit=5) pour chaque table principale\n"
+            "4. grist_sql() pour explorer les relations\n"
+            "5. session_info() -> artefacts existants\n"
+            "Resumer : modele de donnees, relations, artefacts, suggestions."
         )}}]
-    if name == "write-canvas":
-        obj = args.get("objectif", "analyser les donnees")
+    if name == "build-app":
+        desc = args.get("description", "une application")
         return [{"role": "user", "content": {"type": "text", "text": (
-            f"Objectif : {obj}\n\n"
-            "1. grist_schema() -- tables disponibles\n"
-            "2. grist_records() sur les tables pertinentes\n"
-            "3. canvas_write(code) -- script Python complet, commente, print() des resultats\n"
-            "4. canvas_exec() -- valider. Si returncode!=0 : canvas_patch() corriger."
+            f"Construire : {desc}\n\n"
+            "1. artefact_init() -> table Artefacts\n"
+            "2. grist_schema() -> tables existantes\n"
+            "3. resources/read grist-coder://docs/app-patterns -> architecture + schema\n"
+            "4. resources/read grist-coder://docs/widget-patterns -> patterns code\n"
+            "5. Concevoir le schema relationnel (tables, Ref:, Choice, formules)\n"
+            "6. Creer les tables via POST /tables REST :\n"
+            "   -> Tables sans refs d abord, puis Ref:TableId, puis configurer visibleCol\n"
+            "7. Pour chaque artefact :\n"
+            "   a. canvas_write(htmlCode) -> ecrire\n"
+            "   b. grist_upsert('Artefacts', [{require:{Nom:'...'}, fields:{...}}])\n"
+            "   c. canvas_screenshot() -> valider le rendu\n"
+            "8. session_info() -> verifier l etat final"
+        )}}]
+    if name == "write-artefact":
+        nom = args.get("nom", "MonArtefact")
+        typ = args.get("type", "grist")
+        obj = args.get("objectif", "afficher des donnees")
+        return [{"role": "user", "content": {"type": "text", "text": (
+            f"Creer artefact Nom='{nom}' Type='{typ}' : {obj}\n\n"
+            "1. grist_schema() -> tables disponibles\n"
+            "2. resources/read grist-coder://docs/widget-patterns -> pattern pour ce type\n"
+            f"3. canvas_write(code_{typ}) -> coder l artefact complet\n"
+            "   -> Inclure appContext, safeLoad, etats UI (loading/empty/error/success)\n"
+            f"4. grist_upsert('Artefacts', [{{require:{{Nom:'{nom}'}}, fields:{{Type:'{typ}',Code:canvas,...}}}}])\n"
+            "5. canvas_screenshot() -> valider"
         )}}]
     if name == "patch-canvas":
-        mod = args.get("modification", "ameliorer le canvas")
+        mod = args.get("modification", "ameliorer")
         return [{"role": "user", "content": {"type": "text", "text": (
             f"Modification : {mod}\n\n"
-            "1. canvas_read() -- lire le code actuel\n"
+            "1. canvas_read() -> lire le code actuel\n"
             "2. canvas_patch(old_str, new_str) pour chaque modification\n"
-            "3. canvas_exec() -- valider."
+            "3. canvas_screenshot() -> valider le rendu"
         )}}]
     if name == "debug-canvas":
         return [{"role": "user", "content": {"type": "text", "text": (
-            "Debug le canvas actif.\n"
             "1. canvas_read()\n"
-            "2. canvas_exec() -- voir l erreur\n"
-            "3. canvas_patch() -- corriger\n"
-            "4. canvas_exec() -- repeter jusqu a returncode 0."
+            "2. canvas_exec() -> voir l erreur\n"
+            "3. canvas_patch() -> corriger\n"
+            "4. canvas_exec() -> repeter jusqu a returncode 0"
         )}}]
-    if name == "grist-formula":
-        t, c, l = args.get("table","?"), args.get("colonne","?"), args.get("logique","?")
+    if name == "design-schema":
+        dom = args.get("domaine", "metier")
         return [{"role": "user", "content": {"type": "text", "text": (
-            f"Formule Grist pour {t}.{c} -- logique : {l}\n\n"
-            "1. grist_schema() -- verifier les colonnes existantes\n"
-            "2. Ecrire la formule Python Grist ($Col, SUMIF(table.Col, val, table.Val))\n"
-            "3. canvas_write() -- documenter avec exemples\n"
-            "4. Expliquer la formule et ses variantes."
-        )}}]
-    if name == "analyze-table":
-        t = args.get("table", "MaTable")
-        return [{"role": "user", "content": {"type": "text", "text": (
-            f"Analyse statistique de {t}.\n\n"
-            f"1. grist_records('{t}', limit=100)\n"
-            "2. canvas_write() -- stats (count/nulls/min/max/mean), anomalies\n"
-            "3. canvas_exec() -- produire le rapport."
+            f"Concevoir le schema relationnel Grist pour : {dom}\n\n"
+            "1. resources/read grist-coder://docs/grist-api -> types colonnes, Ref:, visibleCol\n"
+            "2. resources/read grist-coder://docs/app-patterns -> patterns schema\n"
+            "3. grist_schema() -> tables existantes\n"
+            "4. Proposer le schema complet (tables, colonnes, types, refs, formules)\n"
+            "5. Creer les tables dans le bon ordre via grist_records_add sur /tables"
         )}}]
     return [{"role": "user", "content": {"type": "text", "text": f"Prompt '{name}' inconnu."}}]
 
@@ -502,228 +455,464 @@ def _prompt_messages(name, args):
 
 STATIC_RESOURCES = [
     {"uri": "grist-coder://docs/guide",
-     "name": "Guide Grist Coder",
-     "description": "Architecture, flow, tools, patterns d usage optimaux.",
+     "name": "Guide Grist Coder v5",
+     "description": "Workflow complet, tools, concept document=codebase.",
      "mimeType": "text/plain"},
     {"uri": "grist-coder://docs/grist-api",
      "name": "Grist API Reference",
-     "description": "API Widget (grist-plugin-api.js) + REST API externe. Lecture, ecriture, SQL.",
+     "description": "REST schema (tables, colonnes, Ref:, visibleCol) + Widget API + SQL cross-tables.",
      "mimeType": "text/plain"},
-    {"uri": "grist-coder://docs/canvas-patterns",
-     "name": "Patterns canvas Python",
-     "description": "Recettes Python : analyse Grist, formules, stats, anomalies.",
+    {"uri": "grist-coder://docs/widget-patterns",
+     "name": "Widget Patterns",
+     "description": "Coder un artefact : appContext, safeLoad, types (grist/html/react/markdown), toast, UI states.",
+     "mimeType": "text/plain"},
+    {"uri": "grist-coder://docs/app-patterns",
+     "name": "App Patterns",
+     "description": "Schema relationnel, manifeste app, routing par Nom, inter-artefacts, recette patrimoine.",
      "mimeType": "text/plain"},
 ]
 
 RESOURCE_TEMPLATES = [
     {"uriTemplate": "grist-coder://canvas/{token}",
-     "name": "Canvas d une session",
-     "description": "Code Python actuel (subscribable).",
+     "name": "Canvas de la session",
+     "description": "Code actuel du canvas (subscribable).",
      "mimeType": "text/x-python"},
     {"uriTemplate": "grist-coder://schema/{token}",
-     "name": "Schema Grist d une session",
+     "name": "Schema Grist de la session",
      "mimeType": "application/json"},
-    {"uriTemplate": "grist-coder://ui/{token}",
-     "name": "Widget Grist Coder (MCP Apps SEP-1865)",
-     "mimeType": "text/html"},
+    {"uriTemplate": "grist-coder://artefacts/{token}",
+     "name": "Artefacts IsDoc du projet",
+     "description": "Artefacts IsDoc=true du document actif avec leur code (contexte vivant).",
+     "mimeType": "text/markdown"},
 ]
 
-GUIDE = """GRIST CODER - Guide complet v4.3
-==================================
-AUTH : Identite = uid_key = 'uid:{grist_user_id}' (partage widget + Claude Desktop).
-  Widget     -> grist.docApi.getAccessToken() -> token court-terme (pas de cle a saisir)
-             -> POST /register {accessToken, docId, siteUrl, userId}
-             -> serveur verifie -> uid_key
-             -> retourne arto-xxx
-             -> SSE via ?token=arto-xxx
-             -> appels MCP : Authorization: Bearer arto-xxx
-  Claude Desktop -> Bearer <grist_key>
-             -> serveur verifie -> uid_key = 'uid:{grist_user_id}'
-             -> meme namespace que le widget : sessions partagees
-  Isolation stricte : sessions indexees par uid_key.
+# ── RESOURCE CONTENT ──────────────────────────────────────────────────────────
 
-ANALOGIE CLAUDE CODE
-  canvas_read()              = read_file()
-  canvas_patch(old, new)     = str_replace()  <- TOUJOURS PREFERER
-  canvas_write(code)         = write_file()
-  canvas_exec()              = bash("python ...")
-  grist_schema()             = ls schema
-  grist_records(table)       = cat data
-  grist_sql(query)           = SELECT direct
-  grist_records_add(t, rows) = INSERT
-  grist_records_patch(t, rs) = UPDATE by id
-  grist_upsert(t, rs)        = INSERT OR UPDATE on key
+GUIDE = """GRIST CODER MCP v5 - Guide
+===========================
+CONCEPT : Le document Grist = ta codebase.
+  Tables donnees (Batiments...)  = modele metier
+  Table Artefacts (HTML/JS)      = fichiers source des widgets
+  Schema relationnel (Ref:, formules) = architecture
 
-WORKFLOW OPTIMAL
-  1. sessions_list()         -> quels docs sont ouverts ?
-  2. grist_schema()          -> tables disponibles
-  3. grist_records()/sql()   -> lire les donnees
-  4. canvas_write/patch()    -> coder l analyse
-  5. canvas_exec()           -> valider, corriger si erreur
-  6. grist_records_add()     -> ecrire les resultats si besoin
+ANALOGIE
+  canvas_read()          = read_file()
+  canvas_patch(old, new) = str_replace()   TOUJOURS PREFERER
+  canvas_write(code)     = write_file()
+  canvas_exec()          = bash("python ...")
+  grist_schema()         = ls schema
+  grist_records(table)   = cat data
+  grist_sql(query)       = SELECT cross-tables
+  grist_upsert(t, rs)    = INSERT OR UPDATE sur cle metier
+  artefact_init()        = initialiser le projet (cree table Artefacts)
+  canvas_screenshot()    = valider le rendu visuellement
+
+WORKFLOW COMPLET
+  1. sessions_list()          -> quels docs sont ouverts ?
+  2. artefact_init()          -> creer/verifier table Artefacts
+  3. grist_schema()           -> tables existantes
+  4. resources/read widget-patterns + app-patterns
+  5. Concevoir schema relationnel -> creer tables dans le bon ordre
+  6. canvas_write/patch() -> coder chaque artefact
+  7. grist_upsert('Artefacts', ...) -> persister
+  8. canvas_screenshot() -> valider visuellement
+  9. session_info() -> etat du projet
 
 REGLES
   - canvas_read() AVANT canvas_patch() : old_str exact
-  - canvas_patch >> canvas_write : historique preserve
+  - Creer tables sans Ref: d abord, puis Ref:TableId, puis visibleCol
   - Chaque patch SSE -> widget mis a jour en temps reel"""
 
-GRIST_API = """GRIST API REFERENCE
-===================
+GRIST_API = """GRIST API REFERENCE v5
+=======================
+
+== CREER DES TABLES (REST) ==
+POST {siteUrl}/api/docs/{docId}/tables
+{
+  "tables": [{
+    "id": "Batiments",
+    "columns": [
+      {"id": "Nom",        "fields": {"type": "Text",    "label": "Nom"}},
+      {"id": "Adresse",    "fields": {"type": "Text",    "label": "Adresse"}},
+      {"id": "Surface_m2", "fields": {"type": "Numeric", "label": "Surface m2"}},
+      {"id": "Statut",     "fields": {"type": "Choice",  "label": "Statut",
+        "widgetOptions": "{\"choices\":[\"Actif\",\"Inactif\",\"En travaux\"],\"choiceOptions\":{\"Actif\":{\"fillColor\":\"#dcfce7\"},\"Inactif\":{\"fillColor\":\"#f1f5f9\"}}}"
+      }},
+      {"id": "NbLocaux",   "fields": {"type": "Int", "label": "Nb Locaux",
+        "formula": "len($locaux_Batiment)", "isFormula": true
+      }}
+    ]
+  }]
+}
+
+TYPES DE COLONNES GRIST
+  Text, Int, Numeric, Bool, Date, DateTime  -> types de base
+  Choice       -> type + widgetOptions.choices (array) + widgetOptions.choiceOptions
+  ChoiceList   -> choix multiples
+  Ref:TableId  -> reference a une ligne d une autre table (stocke un entier = rowId)
+  RefList:TableId -> references multiples
+  Attachments  -> pieces jointes
+
+COLONNES REFERENCE (Ref:) - ORDRE CRITIQUE
+Phase 1 : creer les tables sans Ref: (tables independantes)
+  POST /tables -> {id: "Batiments", columns: [...sans refs...]}
+  POST /tables -> {id: "Prestataires", columns: [...sans refs...]}
+
+Phase 2 : creer les tables avec Ref: (tables dependantes)
+  POST /tables -> {id: "Interventions", columns: [
+    {"id": "Batiment",    "fields": {"type": "Ref:Batiments",    "label": "Batiment"}},
+    {"id": "Prestataire", "fields": {"type": "Ref:Prestataires", "label": "Prestataire"}}
+  ]}
+
+Phase 3 : configurer visibleCol (quelle colonne afficher dans les listes)
+  PATCH /tables/Interventions/columns
+  {"columns": [
+    {"id": "Batiment",    "fields": {"visibleCol": "Nom"}},
+    {"id": "Prestataire", "fields": {"visibleCol": "Nom"}}
+  ]}
+
+COLONNES FORMULE
+  {"id": "NomComplet", "fields": {
+    "type": "Text",
+    "formula": "$Prenom + ' ' + $Nom",
+    "isFormula": true
+  }}
+  Formules Grist = Python avec acces $ aux colonnes
+  References : $Batiment.Nom, $Batiment.Surface_m2
+  Lookups : $locaux_Batiment (auto cree pour Ref:Batiments dans Locaux)
+  Agregations : SUM($locaux_Batiment.Surface), len($locaux_Batiment)
+
+AJOUTER UNE COLONNE APRES CREATION DE TABLE
+  POST /tables/{t}/columns
+  {"columns": [{"id": "Urgence", "fields": {"type": "Choice", "label": "Urgence",
+    "widgetOptions": "{\"choices\":[\"Critique\",\"Haute\",\"Moyenne\",\"Basse\"]}"
+  }}]}
+
+== ACTIONS BATCH (applyUserActions dans widget) ==
+await grist.docApi.applyUserActions([
+  ['AddTable', 'NomTable', [
+    {id: 'Colonne', fields: {type: 'Text', label: 'Label'}}
+  ]],
+  ['AddRecord',    'Table', null, {Col: 'val'}],
+  ['UpdateRecord', 'Table', rowId, {Col: 'new'}],
+  ['RemoveRecord', 'Table', rowId],
+  ['BulkUpdateRecord', 'Table', [id1,id2], {Col: ['v1','v2']}]
+])
 
 == WIDGET API (grist-plugin-api.js) ==
-// Dans l iframe, pas de cle API - communication par postMessage
-
 grist.ready({ requiredAccess: 'full' | 'read table' | 'none' })
+grist.onRecords((records, mappedCols) => {})
+grist.onRecord((record, mappedCols) => {})
+grist.docApi.fetchTable('TableId')  -> {id:[...], Col1:[...], Col2:[...]}
+grist.docApi.applyUserActions([...])
+grist.setCursorPos({rowId, tableId})
+grist.setSelectedRows([1, 2, 3])
 
-// Contexte recu automatiquement
-grist.on('message', msg => {
-  msg.docId       // ID document
-  msg.userId      // ID utilisateur Grist
-  msg.siteUrl     // URL instance (ex: https://grist.cerema.fr)
-  msg.tableId     // table courante
-  msg.rowId       // ligne curseur
-  msg.type        // 'theme' (light/dark)
-})
-
-// Abonnements reactifs
-grist.onRecord(record => {})      // ligne curseur change
-grist.onRecords(records => {})    // table entiere change
-grist.onOptions(opts, info => {}) // config widget change
-grist.onNewRecord(() => {})       // nouvelle ligne vide
-
-// Lecture
-grist.fetchSelectedTable()        // table en cours (columnar)
-grist.fetchSelectedRecord(rowId)
-grist.docApi.listTables()         // toutes les tables (besoin 'read table')
-grist.docApi.fetchTable(tableId)
-
-// Ecriture sur la table selectionnee
-grist.selectedTable.create({fields: {Col: val}})
-grist.selectedTable.update(rowId, {Col: val})
-grist.selectedTable.upsert([{id, fields}])
-grist.selectedTable.destroy(rowId)
-
-// Ecriture sur n importe quelle table
-const tbl = grist.getTable('MaTable')
-tbl.create / tbl.update / tbl.upsert / tbl.destroy
-
-// Profil utilisateur (userId stable, ne change pas si la cle est regeneree)
-const profile = await grist.getUserProfile()
-// profile.userId (entier), profile.name, profile.email, profile.locale
-
-// Token court-terme pour appels REST depuis le widget
 const tok = await grist.docApi.getAccessToken({readOnly: false})
-// tok.token (valide ~1h), tok.baseUrl = "{siteUrl}/api/docs/{docId}"
-fetch(`${tok.baseUrl}/tables/T/records`, {
+fetch(tok.baseUrl + '/tables/T/records', {
   method: 'POST',
-  headers: {Authorization: `Bearer ${tok.token}`},
+  headers: {Authorization: 'Bearer ' + tok.token},
   body: JSON.stringify({records: [{fields: {Col: val}}]})
 })
 
-// Etat widget
-grist.setOption('key', value)
-grist.getOption('key')
-grist.setSelectedRows([1, 2, 3])   // filtrer widgets lies
-grist.setCursorPos({rowId, tableId})
-
 == REST API EXTERNE ==
-// Authorization: Bearer <grist_api_key>
-// Base : {siteUrl}/api/docs/{docId}
+GET  /tables                            -> liste des tables
+GET  /tables/{t}/records?limit=100&filter={"Col":["val"]}&sort=Col
+GET  /tables/{t}/columns                -> colonnes + types + formules
+POST /sql {"sql": "SELECT ...", "args": ["val"]}
+POST  /tables/{t}/records               -> INSERT {"records":[{"fields":{...}}]}
+PATCH /tables/{t}/records               -> UPDATE {"records":[{"id":5,"fields":{...}}]}
+PUT   /tables/{t}/records               -> UPSERT {"records":[{"require":{key:val},"fields":{...}}]}
 
-// Lecture
-GET  /tables                          -> liste des tables
-GET  /tables/{tableId}/records        -> enregistrements
-     ?limit=100&filter={"Col":["val"]}&sort=Col
-GET  /tables/{tableId}/columns        -> colonnes + types
-GET  /sql?q=SELECT+*+FROM+Table1      -> SQL direct (GET)
+== SQL CROSS-TABLES ==
+La colonne Ref: stocke l id entier de la ligne referencee.
+SELECT B.Nom, COUNT(I.id) as nb_interventions
+FROM Interventions I JOIN Batiments B ON I.Batiment = B.id
+GROUP BY B.Nom ORDER BY nb_interventions DESC
 
-// SQL avec parametres
-POST /sql
-     {"sql": "SELECT * FROM T WHERE Col=?", "args": ["val"], "timeout": 5000}
+SELECT B.Nom, B.Surface_m2, SUM(L.Surface) as surface_locaux
+FROM Locaux L JOIN Batiments B ON L.Batiment = B.id
+GROUP BY B.id
 
-// Ecriture
-POST  /tables/{tableId}/records
-      {"records": [{"fields": {"Col": val}}]}
-      -> {"records": [{"id": 5}]}
+SELECT * FROM Interventions
+WHERE Urgence IN ('Critique','Haute') AND Statut != 'Terminee'
+ORDER BY UpdatedAt DESC"""
 
-PATCH /tables/{tableId}/records
-      {"records": [{"id": 5, "fields": {"Col": new_val}}]}
+WIDGET_PATTERNS = """WIDGET PATTERNS - Developpement d artefacts v5
+===============================================
 
-PUT   /tables/{tableId}/records   <- UPSERT
-      {"records": [{"require": {"key_col": val}, "fields": {"Col": val}}]}
+1. TABLE ARTEFACTS (schema 9 colonnes)
+   Nom (Text)          Identifiant unique stable (cle metier pour upsert)
+   Type (Choice)       app | grist | html | react | markdown | svg | mermaid | python | sql | component
+   Code (Text)         Code source complet de l artefact
+   Description (Text)  Description fonctionnelle (pour IsDoc)
+   Dependencies (Text) JSON array des Nom d artefacts requis
+   IsDoc (Bool)        true -> inclus dans session_info + grist-coder://artefacts/{token}
+   Icon (Text)         Emoji affiche dans le widget
+   Output (Text)       Sortie generee (types python/sql)
+   UpdatedAt (DateTime) Timestamp Unix de derniere modification
 
-DELETE /tables/{tableId}/records
-       via POST /tables/{tableId}/data/delete {"id": [1, 2, 3]}
+2. PATTERN DE BASE - Tous les types d artefacts
+const appContext = {
+    isGristCoder: typeof window.app !== 'undefined' && typeof window.app.navigate === 'function',
+    app: window.app || {
+        navigate: (path) => showToast('Ouvrez "' + path + '" dans Grist', 'info'),
+        emit: () => {}, on: () => {}, setState: () => {}, state: {}
+    }
+};
+// window.grist = API native OU proxy GristBridge transparent selon le contexte
 
-// Actions batch (bas niveau)
-POST /apply
-     [["AddRecord", "Table1", null, {"Col": "val"}],
-      ["UpdateRecord", "Table1", 5, {"Col": "new"}]]
+3. safeLoad(tableName) - Lecture resiliente (toujours utiliser ce pattern)
+async function safeLoad(tableName) {
+    try {
+        const data = await grist.docApi.fetchTable(tableName);
+        const n = data.id?.length || 0;
+        const records = [];
+        for (let i = 0; i < n; i++) {
+            const r = { id: data.id[i] };
+            Object.keys(data).forEach(k => { if (k !== 'id') r[k] = data[k][i]; });
+            records.push(r);
+        }
+        return records;
+    } catch (e) { console.warn('Table ' + tableName + ' non trouvee'); return []; }
+}
 
-// Schemas
-POST  /tables               -> creer une table
-PATCH /tables               -> renommer
-POST  /tables/{t}/columns   -> ajouter colonnes
-PATCH /tables/{t}/columns   -> modifier colonnes
+4. PATTERN TYPE: grist - Widget reactif avec donnees Grist
+<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">
+<script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+<script src="https://cdn.tailwindcss.com"></script></head><body>
+<div id="app" class="p-4"></div>
+<script>
+const appContext = {
+    isGristCoder: typeof window.app !== 'undefined' && typeof window.app.navigate === 'function',
+    app: window.app || { navigate: p => showToast('Ouvrir: '+p,'info'), emit:()=>{}, on:()=>{}, setState:()=>{}, state:{} }
+};
+async function safeLoad(t) {
+    try {
+        const d = await grist.docApi.fetchTable(t);
+        const n = d.id?.length||0; const r=[];
+        for(let i=0;i<n;i++){const o={id:d.id[i]};Object.keys(d).forEach(k=>{if(k!=='id')o[k]=d[k][i];});r.push(o);}
+        return r;
+    } catch(e){return[];}
+}
+let state = { loading: true, error: null, data: [] };
+async function loadData() { state.data = await safeLoad('MaTable'); state.loading = false; render(); }
+function render() {
+    const app = document.getElementById('app');
+    if (state.loading) { app.innerHTML = '<div class="text-gray-500">Chargement...</div>'; return; }
+    if (state.error)   { app.innerHTML = '<div class="text-red-500">'+state.error+'</div>'; return; }
+    if (!state.data.length) { app.innerHTML = '<div class="text-gray-400 text-center py-8">Aucune donnee</div>'; return; }
+    app.innerHTML = state.data.map(r => '<div class="p-3 border-b hover:bg-gray-50">'+(r.Nom||r.id)+'</div>').join('');
+}
+function showToast(msg, type='info') {
+    const colors={info:'#3b82f6',success:'#10b981',error:'#ef4444',warning:'#f59e0b'};
+    const t=document.createElement('div');
+    t.style.cssText='position:fixed;bottom:20px;right:20px;padding:12px 20px;background:'+colors[type]+';color:#fff;border-radius:8px;font-size:13px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,.2)';
+    t.textContent=msg; document.body.appendChild(t); setTimeout(()=>t.remove(),3500);
+}
+grist.ready({ requiredAccess: 'read table' });
+loadData();
+</script></body></html>
 
-// Webhooks
-GET  /webhooks
-POST /webhooks {"webhooks": [{"url": "https://...", "eventTypes": ["add","update"]}]}"""
+5. PATTERN TYPE: html - UI independante
+// Tailwind CDN, Chart.js, etc. selon besoin
+// window.app disponible si isGristCoder (navigation, evenements)
+// Pas de grist.ready() requis si aucune donnee Grist
 
-CANVAS_PATTERNS = """CANVAS PATTERNS - Recettes Python
-===================================
-# Records depuis grist_records() : [{id:1, fields:{Col:val}}, ...]
-rows = [r["fields"] for r in records]
+6. PATTERN TYPE: react - React + Babel CDN
+// Dans head :
+// <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+// <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+// <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+// <script type="text/babel">
+// const App = () => { const [data, setData] = React.useState([]); ... };
+// ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+// </script>
 
-# Stats de base
-scores = [r["Score"] for r in rows if r.get("Score") is not None]
-mean   = sum(scores) / len(scores) if scores else 0
-print(f"N={len(rows)}, mean={mean:.3f}, max={max(scores) if scores else 0:.3f}")
+7. NAVIGATION inter-artefacts
+function navigateTo(path) {
+    if (appContext.isGristCoder) appContext.app.navigate(path);
+    else showToast('Ouvrez "' + path + '" dans un panneau Grist', 'info');
+}
+// Emettre un evenement :
+appContext.app.emit('batiment-select', { id: 42, nom: 'Mairie' });
+// Ecouter un evenement :
+appContext.app.on('batiment-select', ({ id, nom }) => { filtrerParBatiment(id); });
+// Etat partage :
+appContext.app.setState({ currentBatiment: 42 });
+const current = appContext.app.state.currentBatiment;
+// Si pas en mode grist-coder : ignorer les filtres inter-widgets
+if (!appContext.isGristCoder) { _filteredId = null; }
 
-# Detection anomalies (2 sigma)
-import statistics
-if len(scores) > 1:
-    stdev = statistics.stdev(scores)
-    anomalies = [r for r in rows if abs(r.get("Score",0) - mean) > 2 * stdev]
-    print(f"Anomalies: {len(anomalies)}")
+8. BUILDCOL - Creer colonnes via applyUserActions
+function buildColDef(col) {
+    const def = { id: col.id, fields: { type: col.type } };
+    if (col.label) def.fields.label = col.label;
+    if (col.formula) { def.fields.formula = col.formula; def.fields.isFormula = true; }
+    if (col.widgetOptions) def.fields.widgetOptions = JSON.stringify(col.widgetOptions);
+    return def;
+}
+buildColDef({ id: 'Urgence', type: 'Choice', label: 'Urgence', widgetOptions: {
+    choices: ['Critique','Haute','Moyenne','Basse'],
+    choiceOptions: { Critique:{fillColor:'#fee2e2'}, Haute:{fillColor:'#fef3c7'} }
+}})
 
-# SUMIF equivalent
-def sumif(records, match_col, match_val, sum_col):
-    return sum(r["fields"].get(sum_col, 0)
-               for r in records if r["fields"].get(match_col) == match_val)
+9. ETATS UI OBLIGATOIRES (loading -> empty -> error -> success)
+function render() {
+    const app = document.getElementById('app');
+    if (state.loading) { app.innerHTML = renderLoading(); return; }
+    if (state.error)   { app.innerHTML = renderError(state.error); return; }
+    if (!state.data.length) { app.innerHTML = renderEmpty(); return; }
+    app.innerHTML = renderData(state.data);
+}"""
 
-# Score composite
-def score_passage(row):
-    conf  = row.get("confidence", 0)
-    width = row.get("largeur_m", 0)
-    return round(conf * 0.6 + min(width / 10, 1) * 0.4, 3)
+APP_PATTERNS = """APP PATTERNS - Architecture d apps completes v5
+================================================
 
-# Preparer des records pour grist_records_add
-results = [{"fields": {"Colonne": val, "Score": score}} for val, score in data]
-# Puis appeler : grist_records_add("ResultTable", results)
+1. LE DOCUMENT GRIST = LA CODEBASE
+Chaque document Grist est un projet complet :
+  Tables de donnees    -> modele metier (Batiments, Interventions, Locaux...)
+  Table Artefacts      -> code source des widgets (HTML/JS)
+  Schema relationnel   -> architecture (Ref:, formules, visibleCol, lookups)
+L IA construit le projet en 3 couches :
+  Couche 1 : Schema (tables, colonnes, types, relations)
+  Couche 2 : Artefacts (widgets HTML/JS qui lisent ce schema)
+  Couche 3 : Manifeste (JSON qui orchestre les artefacts en app)
 
-# Upsert sur cle metier
-upsert_records = [
-    {"require": {"ExternalId": row["id"]},
-     "fields":  {"Valeur": row["val"], "UpdatedAt": int(time.time())}}
-    for row in source_data
-]
-# Puis appeler : grist_upsert("MaTable", upsert_records)"""
+2. SCHEMA RELATIONNEL PATRIMOINE - Ordre de creation critique
+
+Phase 1 - Tables sans refs (independantes) :
+  Batiments     : Nom, Adresse, Surface_m2(Numeric), Statut(Choice), Annee(Int), DPE(Choice)
+  Prestataires  : Nom, Specialite, Contact, Email
+  CTR_Types     : Nom, Periodicite_mois(Int), Reglementaire(Bool)
+
+Phase 2 - Tables avec refs (dependantes) :
+  Locaux        : Nom, Surface(Numeric), Etage(Int), Batiment(Ref:Batiments)
+  Interventions : Titre, Statut(Choice), Urgence(Choice),
+                  Batiment(Ref:Batiments), Prestataire(Ref:Prestataires),
+                  Date_debut(Date), Date_fin(Date), Cout(Numeric)
+  CTR_Controles : Batiment(Ref:Batiments), Type(Ref:CTR_Types),
+                  Date_dernier(Date), Date_prochain(Date), Resultat(Choice)
+
+Phase 3 - Configurer visibleCol :
+  PATCH /tables/Locaux/columns        -> Batiment.visibleCol = "Nom"
+  PATCH /tables/Interventions/columns -> Batiment.visibleCol = "Nom", Prestataire.visibleCol = "Nom"
+  PATCH /tables/CTR_Controles/columns -> Batiment.visibleCol = "Nom", Type.visibleCol = "Nom"
+
+Formules Grist utiles :
+  Batiments.NbLocaux       = "len($locaux_Batiment)"
+  Batiments.Surface_totale = "SUM($locaux_Batiment.Surface)"
+  Interventions.Duree_jours = "($Date_fin - $Date_debut).days if $Date_fin else None"
+
+3. MANIFESTE APP (Type: app, IsDoc: true)
+{
+  "name": "Gestion Patrimoine",
+  "icon": "🏛️",
+  "theme": { "primary": "#10b981", "accent": "#3b82f6" },
+  "layout": "sidebar",
+  "routes": [
+    { "path": "/",             "label": "Accueil",       "icon": "🏠", "artefact": "AccueilPatrimoine" },
+    { "path": "/batiments",    "label": "Batiments",     "icon": "🏢", "artefact": "ListeBatiments" },
+    { "path": "/interventions","label": "Interventions", "icon": "🔧", "artefact": "Interventions" },
+    { "path": "/controles",    "label": "Controles",     "icon": "✅", "artefact": "Controles" }
+  ],
+  "tables": ["Batiments", "Locaux", "Interventions", "CTR_Controles"],
+  "sharedState": { "currentBatiment": null }
+}
+routes[].artefact reference par Nom (string stable, pas id fragile).
+
+4. window.app API (disponible dans tous les artefacts rendus en iframe)
+window.app.navigate('/batiments')             -> Changer de route
+window.app.emit('batiment-select', {id,nom})  -> Evenement inter-artefacts
+window.app.on('batiment-select', callback)    -> Ecouter evenement
+window.app.setState({ currentBatiment: 1 })  -> Etat partage global
+window.app.state.currentBatiment             -> Lire etat
+window.app.notify('Sauvegarde', 'success')   -> Toast dans widget parent
+
+5. window.grist via GristBridge (transparent dans les iframes)
+La balise script grist-plugin-api.js est remplacee automatiquement.
+L API est identique - aucun changement a faire dans le code de l artefact :
+  await grist.docApi.fetchTable('Batiments')
+  await grist.docApi.applyUserActions([['UpdateRecord','Interventions',id,{Statut:'Terminee'}]])
+  grist.onRecords(records => { /* reactif */ })
+
+6. ARTEFACTS PATRIMOINE - 5 artefacts principaux
+
+a) PatrimoineApp (Type: app, IsDoc: true)
+   -> Manifeste JSON de l app (voir section 3)
+
+b) AccueilPatrimoine (Type: grist)
+   -> Dashboard : 4 KPIs (batiments, surface totale, interventions en cours, urgences)
+   -> safeLoad(['Batiments','Interventions','CTR_Controles'])
+   -> Alertes si interventions urgentes ou controles a venir (< 30 jours)
+   -> Modules cards avec navigateTo(path)
+   -> appContext.isGristCoder ? navigateTo('/batiments') : showToast(...)
+
+c) ListeBatiments (Type: grist)
+   -> Tableau filtrabe : Nom, Adresse, Surface_m2, Statut, DPE, NbLocaux
+   -> Recherche texte + filtre Statut
+   -> Clic ligne -> app.emit('batiment-select', {id, nom}) + setCursorPos
+   -> grist.sql() : JOIN Locaux pour compter et sommer surfaces
+
+d) Interventions (Type: grist)
+   -> Kanban : colonnes Demandee | En cours | Terminee | Annulee
+   -> Filtre par urgence (Critique en rouge, Haute en orange)
+   -> app.on('batiment-select', ({id}) => filtrerParBatiment(id))
+   -> Changement statut via applyUserActions UpdateRecord
+   -> Formulaire ajout via modale
+
+e) GUIDE_PATRIMOINE (Type: markdown, IsDoc: true)
+   -> Documentation : tables, schema, workflow, contacts
+
+7. COMMUNICATION INTER-ARTEFACTS - Exemple concret
+// Dans ListeBatiments.html :
+function selectBatiment(id, nom) {
+    appContext.app.emit('batiment-select', { id, nom });
+    appContext.app.setState({ currentBatiment: id });
+    grist.setCursorPos({ rowId: id });  // synchronise aussi les widgets Grist natifs
+}
+
+// Dans Interventions.html :
+let _filteredBatimentId = null;
+appContext.app.on('batiment-select', ({ id }) => {
+    _filteredBatimentId = id;
+    render();
+});
+// Si pas en mode grist-coder : afficher tout
+if (!appContext.isGristCoder) { _filteredBatimentId = null; }
+
+8. WORKFLOW MCP COMPLET
+1.  sessions_list()
+2.  artefact_init()
+3.  grist_schema()
+4.  resources/read grist-coder://docs/grist-api
+5.  Creer tables Phase 1 (sans refs) via grist_records_add sur POST /tables
+6.  Creer tables Phase 2 (avec Ref:) via grist_records_add sur POST /tables
+7.  Configurer visibleCol via grist_records_patch sur PATCH /tables/T/columns
+8.  Pour chaque artefact :
+    canvas_write(html) -> grist_upsert('Artefacts',[{require:{Nom:'...'},fields:{...}}]) -> canvas_screenshot()
+9.  grist_upsert('Artefacts',[{require:{Nom:'PatrimoineApp'},fields:{Type:'app',Code:manifest,IsDoc:true}}])
+10. session_info() + resources/read grist-coder://artefacts/{token}"""
+
+# ── READ RESOURCE ─────────────────────────────────────────────────────────────
 
 async def _read_resource(uid_key, mcp_sid, uri):
     if uri == "grist-coder://docs/guide":
         return {"uri": uri, "mimeType": "text/plain", "text": GUIDE}
     if uri == "grist-coder://docs/grist-api":
         return {"uri": uri, "mimeType": "text/plain", "text": GRIST_API}
-    if uri == "grist-coder://docs/canvas-patterns":
-        return {"uri": uri, "mimeType": "text/plain", "text": CANVAS_PATTERNS}
+    if uri == "grist-coder://docs/widget-patterns":
+        return {"uri": uri, "mimeType": "text/plain", "text": WIDGET_PATTERNS}
+    if uri == "grist-coder://docs/app-patterns":
+        return {"uri": uri, "mimeType": "text/plain", "text": APP_PATTERNS}
+
     if uri.startswith("grist-coder://canvas/"):
         token = uri.split("/")[-1]
         ctx = registry.resolve(uid_key, token)
         if not ctx: raise ValueError(f"Session inconnue : {token}")
         ctx.subscribers.add(mcp_sid)
-        return {"uri": uri, "mimeType": "text/x-python",
-                "text": ctx.canvas or "# canvas vide\n"}
+        return {"uri": uri, "mimeType": "text/x-python", "text": ctx.canvas or "# canvas vide\n"}
+
     if uri.startswith("grist-coder://schema/"):
         token = uri.split("/")[-1]
         ctx = registry.resolve(uid_key, token)
@@ -732,30 +921,47 @@ async def _read_resource(uid_key, mcp_sid, uri):
         except Exception as e: schema = {"error": str(e)}
         return {"uri": uri, "mimeType": "application/json",
                 "text": json.dumps(schema, ensure_ascii=False, indent=2)}
-    if uri.startswith("grist-coder://ui/"):
+
+    if uri.startswith("grist-coder://artefacts/"):
         token = uri.split("/")[-1]
         ctx = registry.resolve(uid_key, token)
         if not ctx: raise ValueError(f"Session inconnue : {token}")
-        html = (f'<!DOCTYPE html><html><head><meta charset="UTF-8">'
-                f'<title>Grist Coder - {ctx.doc_title}</title>'
-                f'<style>body{{margin:0;height:100vh}}</style></head><body>'
-                f'<iframe src="{HOST_URL}/?token={token}" '
-                f'style="width:100%;height:100%;border:none" allow="clipboard-write"></iframe>'
-                f'</body></html>')
-        return {"uri": uri, "mimeType": "text/html", "text": html}
+        try:
+            filt = json.dumps({"IsDoc": [True]})
+            data = await grist_get(ctx, f"tables/Artefacts/records?filter={filt}")
+            records = data.get("records", [])
+            lines = [f"# Artefacts IsDoc — {ctx.doc_title}\n"]
+            for r in records:
+                f = r.get("fields", {})
+                nom  = f.get("Nom", "")
+                typ  = f.get("Type", "")
+                desc = f.get("Description", "")
+                code = f.get("Code", "")
+                lines.append(f"## {nom} ({typ})")
+                if desc: lines.append(f"_{desc}_\n")
+                lines.append(f"```{typ}")
+                lines.append(code)
+                lines.append("```\n")
+            return {"uri": uri, "mimeType": "text/markdown", "text": "\n".join(lines)}
+        except Exception as e:
+            return {"uri": uri, "mimeType": "text/plain",
+                    "text": f"Table Artefacts non trouvee. Appeler artefact_init() d abord.\nErreur: {e}"}
+
     raise ValueError(f"Resource inconnue : {uri}")
+
 
 def _resources_list(uid_key):
     res = list(STATIC_RESOURCES)
     for s in registry.list_sessions(uid_key):
-        t, title, sha = s["token"], s["doc_title"], s.get("canvas_sha") or "vide"
+        t, title = s["token"], s["doc_title"]
+        sha = s.get("canvas_sha") or "vide"
         res += [
-            {"uri": f"grist-coder://canvas/{t}", "name": f"Canvas - {title}",
-             "description": f"Code Python actif ({sha}).", "mimeType": "text/x-python"},
-            {"uri": f"grist-coder://schema/{t}", "name": f"Schema - {title}",
-             "description": f"Tables Grist du document.", "mimeType": "application/json"},
-            {"uri": f"grist-coder://ui/{t}", "name": f"Widget - {title} (MCP Apps)",
-             "description": f"Interface interactive.", "mimeType": "text/html"},
+            {"uri": f"grist-coder://canvas/{t}", "name": f"Canvas — {title}",
+             "description": f"Code actif ({sha}).", "mimeType": "text/x-python"},
+            {"uri": f"grist-coder://schema/{t}", "name": f"Schema — {title}",
+             "mimeType": "application/json"},
+            {"uri": f"grist-coder://artefacts/{t}", "name": f"Artefacts IsDoc — {title}",
+             "description": "Contexte vivant du projet.", "mimeType": "text/markdown"},
         ]
     return res
 
@@ -764,12 +970,11 @@ def _resources_list(uid_key):
 _active_tokens: dict[str, str] = {}
 
 async def call_tool(uid_key, mcp_sid, name, args):
-    # ── Sessions
     if name == "sessions_list":
         s = registry.list_sessions(uid_key)
         return s if s else {
             "info": "Aucun widget connecte.",
-            "hint": "Ouvrez le widget Grist Coder dans Grist. Il se connecte automatiquement (pas de cle a saisir)."
+            "hint": "Ouvrez le widget Grist Coder dans Grist. Connexion automatique (pas de cle a saisir)."
         }
 
     if name == "session_select":
@@ -779,7 +984,6 @@ async def call_tool(uid_key, mcp_sid, name, args):
         ctx.touch()
         return {"ok": True, "selected": ctx.meta()}
 
-    # Resoudre la session active pour tous les autres tools
     token = _active_tokens.get(mcp_sid)
     ctx   = registry.resolve(uid_key, token)
     if not ctx: return {"error": "Aucune session active. Appeler sessions_list() d abord."}
@@ -792,6 +996,21 @@ async def call_tool(uid_key, mcp_sid, name, args):
             info["tables"] = [t["id"] for t in schema.get("tables", [])]
         except Exception as e:
             info["tables"] = []; info["grist_error"] = str(e)
+        if "Artefacts" in info.get("tables", []):
+            try:
+                filt = json.dumps({"IsDoc": [True]})
+                data = await grist_get(ctx, f"tables/Artefacts/records?filter={filt}")
+                recs = data.get("records", [])
+                info["artefacts_count"] = len(recs)
+                info["artefacts_doc"] = [
+                    {"nom":  r["fields"].get("Nom", ""),
+                     "type": r["fields"].get("Type", ""),
+                     "description": r["fields"].get("Description", "")}
+                    for r in recs
+                ]
+                info["hint"] = f"Lire grist-coder://artefacts/{ctx.token} pour le code complet"
+            except Exception:
+                info["artefacts_count"] = 0
         return info
 
     # ── Canvas
@@ -828,6 +1047,40 @@ async def call_tool(uid_key, mcp_sid, name, args):
         except subprocess.TimeoutExpired:
             return {"error": "timeout 10s"}
 
+    if name == "canvas_screenshot":
+        loop = asyncio.get_event_loop()
+        fut  = loop.create_future()
+        _screenshot_waiters[ctx.token] = fut
+        _push(uid_key, {"type": "screenshot_request", "token": ctx.token})
+        try:
+            image_b64 = await asyncio.wait_for(fut, timeout=15.0)
+            raw = image_b64.split(",")[1] if "," in image_b64 else image_b64
+            return {"ok": True, "_image_b64": raw, "mime": "image/png"}
+        except asyncio.TimeoutError:
+            return {"error": "Timeout 15s : widget ferme ou html2canvas non disponible."}
+        finally:
+            _screenshot_waiters.pop(ctx.token, None)
+
+    # ── Artefact
+    if name == "artefact_init":
+        try:
+            tables_data = await grist_get(ctx, "tables")
+            table_ids   = [t["id"] for t in tables_data.get("tables", [])]
+            if "Artefacts" in table_ids:
+                cols = await grist_get(ctx, "tables/Artefacts/columns")
+                col_ids = [c["id"] for c in cols.get("columns", [])]
+                return {"ok": True, "status": "exists", "columns": col_ids,
+                        "hint": "Table Artefacts existante. Utilisez grist_upsert pour ajouter/modifier des artefacts."}
+        except Exception:
+            pass
+        try:
+            await grist_post(ctx, "tables", ARTEFACTS_TABLE_DEF)
+            return {"ok": True, "status": "created",
+                    "columns": ["Nom","Type","Code","Description","Dependencies","IsDoc","Icon","Output","UpdatedAt"],
+                    "hint": "Table Artefacts creee. Lisez widget-patterns et app-patterns avant de coder."}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     # ── Grist lecture
     if name == "grist_schema":
         return await grist_get(ctx, "tables")
@@ -835,10 +1088,8 @@ async def call_tool(uid_key, mcp_sid, name, args):
     if name == "grist_records":
         lim  = int(args.get("limit", 50))
         path = f"tables/{args['table_id']}/records?limit={lim}"
-        if "filter" in args:
-            path += f"&filter={json.dumps(args['filter'])}"
-        if "sort" in args:
-            path += f"&sort={args['sort']}"
+        if "filter" in args: path += f"&filter={json.dumps(args['filter'])}"
+        if "sort"   in args: path += f"&sort={args['sort']}"
         data    = await grist_get(ctx, path)
         records = data.get("records", [])
         return {"records": records[:lim], "total": len(records), "returned": min(len(records), lim)}
@@ -867,13 +1118,13 @@ async def call_tool(uid_key, mcp_sid, name, args):
 
     return {"error": f"outil inconnu : {name}"}
 
-# ── DISPATCH ─────────────────────────────────────────────────────────────────
+# ── DISPATCH ──────────────────────────────────────────────────────────────────
 
 async def dispatch(uid_key, mcp_sid, method, params):
     if method == "initialize":
         return {
             "protocolVersion": MCP_VER,
-            "serverInfo": {"name": "grist-coder", "version": "4.3.0",
+            "serverInfo": {"name": "grist-coder", "version": "5.0.0",
                            "instructions": SERVER_INSTRUCTIONS},
             "capabilities": {
                 "tools":     {"listChanged": False},
@@ -885,16 +1136,22 @@ async def dispatch(uid_key, mcp_sid, method, params):
     if method == "tools/list":
         return {"tools": TOOLS}
     if method == "tools/call":
-        result = await call_tool(uid_key, mcp_sid, params["name"], params.get("arguments", {}))
+        name   = params["name"]
+        result = await call_tool(uid_key, mcp_sid, name, params.get("arguments", {}))
+        if name == "canvas_screenshot" and isinstance(result, dict) and result.get("ok") and "_image_b64" in result:
+            return {"content": [
+                {"type": "image", "data": result["_image_b64"], "mimeType": "image/png"},
+                {"type": "text",  "text": "Capture du panneau de rendu."},
+            ]}
         return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}]}
     if method == "prompts/list":
         return {"prompts": PROMPTS}
     if method == "prompts/get":
-        name = params.get("name", "")
-        p = next((p for p in PROMPTS if p["name"] == name), None)
-        if not p: raise ValueError(f"Prompt inconnu : {name}")
+        pname = params.get("name", "")
+        p = next((p for p in PROMPTS if p["name"] == pname), None)
+        if not p: raise ValueError(f"Prompt inconnu : {pname}")
         return {"description": p["description"],
-                "messages":    _prompt_messages(name, params.get("arguments", {}))}
+                "messages":    _prompt_messages(pname, params.get("arguments", {}))}
     if method == "resources/list":
         return {"resources": _resources_list(uid_key),
                 "resourceTemplates": RESOURCE_TEMPLATES}
@@ -921,10 +1178,9 @@ async def dispatch(uid_key, mcp_sid, method, params):
 
 @asynccontextmanager
 async def lifespan(app):
-    print(f"grist-coder v4.3 · {HOST_URL}")
-    print(f"  auth   : widget=accessToken(docApi) / Claude Desktop=grist_key -> uid:user_id")
-    print(f"  tools  : {len(TOOLS)} ({sum(1 for t in TOOLS if 'grist' in t['name'])} grist)")
-    print(f"  prompts: {len(PROMPTS)}  resources statiques: {len(STATIC_RESOURCES)}")
+    print(f"Grist Coder v5.0 · {HOST_URL}")
+    print(f"  tools: {len(TOOLS)}  prompts: {len(PROMPTS)}")
+    print(f"  resources: {len(STATIC_RESOURCES)} static + {len(RESOURCE_TEMPLATES)} templates")
     yield
 
 app = FastAPI(lifespan=lifespan)
@@ -936,27 +1192,15 @@ def _auth(auth):
     parts = auth.split()
     return parts[1] if len(parts) == 2 and parts[0].lower() == "bearer" else None
 
-async def _resolve_uid_key(raw_bearer: str, x_grist_site: str | None) -> str | None:
-    """
-    Resout le uid_key a partir du Bearer.
-
-    Cas 1 : Bearer = arto-xxx (widget) -> lookup dans _token_to_uid
-    Cas 2 : Bearer = grist_key (Claude Desktop) -> cache _grist_key_to_uid
-            sinon verification via GET /api/profile/user + mise en cache
-    """
-    if not raw_bearer:
-        return None
-    # Cas 1 : token de session widget
+async def _resolve_uid_key(raw_bearer, x_grist_site):
+    if not raw_bearer: return None
     if raw_bearer.startswith("gc-"):
         return _token_to_uid.get(raw_bearer)
-    # Cas 2 : clé Grist permanente (Claude Desktop)
     uid_key = registry.get_uid_for_grist_key(raw_bearer)
     if uid_key:
-        # Mettre a jour les credentials si nouveau X-Grist-Site
         if x_grist_site:
             registry.provision(uid_key, grist_key=raw_bearer, site=x_grist_site.rstrip("/"))
         return uid_key
-    # Pas encore connu : verifier via Grist API
     site = (x_grist_site or "").rstrip("/")
     if site:
         profile = await fetch_grist_user_profile(site, raw_bearer)
@@ -964,7 +1208,6 @@ async def _resolve_uid_key(raw_bearer: str, x_grist_site: str | None) -> str | N
             uid_key = f"uid:{profile['id']}"
             registry.provision(uid_key, grist_key=raw_bearer, site=site)
             return uid_key
-    # Fallback sans site URL (rare) : uid derive du hash de la cle
     uid_key = f"key:{hashlib.sha1(raw_bearer.encode()).hexdigest()[:12]}"
     registry.provision(uid_key, grist_key=raw_bearer)
     return uid_key
@@ -977,10 +1220,10 @@ async def mcp_post(request: Request,
                    x_grist_site: str | None = Header(default=None, alias="X-Grist-Site")):
     raw_bearer = _auth(authorization)
     if not raw_bearer:
-        return JSONResponse({"error": "Authorization: Bearer requis (grist_key ou arto-token)"}, status_code=401)
+        return JSONResponse({"error": "Authorization: Bearer requis"}, status_code=401)
     uid_key = await _resolve_uid_key(raw_bearer, x_grist_site)
     if not uid_key:
-        return JSONResponse({"error": "Token inconnu ou expiré. Rechargez le widget."}, status_code=401)
+        return JSONResponse({"error": "Token inconnu ou expire. Rechargez le widget."}, status_code=401)
     mcp_sid  = mcp_session_id or str(uuid.uuid4())
     body     = await request.json()
     is_batch = isinstance(body, list)
@@ -998,13 +1241,11 @@ async def mcp_post(request: Request,
     payload = responses if is_batch else responses[0]
     return JSONResponse(payload, headers={"Mcp-Session-Id": mcp_sid})
 
+
 @app.get("/mcp")
 async def mcp_sse(request: Request,
                   authorization: str | None = Header(default=None),
                   mcp_session_id: str | None = Header(default=None, alias="Mcp-Session-Id")):
-    # Resolution uid_key (par ordre de securite decroissant) :
-    # 1. Authorization: Bearer arto-xxx  (widget POST /mcp) ou Bearer grist_key (Claude Desktop)
-    # 2. ?token=arto-xxx                 (EventSource widget - pas de header possible)
     raw_bearer = _auth(authorization)
     uid_key = None
     if raw_bearer:
@@ -1014,7 +1255,7 @@ async def mcp_sse(request: Request,
         if arto_token:
             uid_key = _token_to_uid.get(arto_token)
     if not uid_key:
-        return Response("Authorization requis : Bearer arto-token ou ?token=arto-xxx", status_code=401)
+        return Response("Authorization requis", status_code=401)
     sid = mcp_session_id or str(uuid.uuid4())
     _queues[sid] = asyncio.Queue(maxsize=64)
     async def stream():
@@ -1034,38 +1275,24 @@ async def mcp_sse(request: Request,
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Mcp-Session-Id": sid})
 
+
 @app.delete("/mcp")
 async def mcp_delete(mcp_session_id: str | None = Header(default=None, alias="Mcp-Session-Id")):
     _queues.pop(mcp_session_id, None)
     return Response(status_code=204)
 
+
 @app.post("/register")
 async def register(request: Request):
-    """
-    Appele par le widget au demarrage ou lors du refresh du token.
-    Body: { accessToken, docId, docTitle, siteUrl, userId? }
-          (gristKey accepte aussi pour compat Claude Desktop direct)
-
-    1. Verifie accessToken (ou gristKey) via GET /api/profile/user -> grist_user_id stable.
-    2. uid_key = 'uid:{grist_user_id}' -> namespace partage widget + Claude Desktop.
-    3. Enregistre/met a jour la session, peuple _token_to_uid.
-    4. Retourne {token: "gc-xxx"} -> widget ouvre SSE via ?token= et appelle POST /mcp
-       avec Authorization: Bearer arto-xxx. La cle Grist ne transite jamais.
-    """
     data         = await request.json()
     access_token = data.get("accessToken", "").strip()
-    grist_key    = data.get("gristKey", "").strip()    # compat Claude Desktop direct
+    grist_key    = data.get("gristKey", "").strip()
     site_url     = data.get("siteUrl", "").rstrip("/")
     doc_id       = data.get("docId", "")
     doc_title    = data.get("docTitle", "") or doc_id
-
     bearer = access_token or grist_key
     if not bearer:
-        return JSONResponse({"error": "accessToken manquant (fourni par grist.docApi.getAccessToken())"},
-                            status_code=400)
-
-    # Resoudre grist_user_id
-    # Priorite 1 : decoder le JWT de l accessToken (pas d appel API, pas de CORS)
+        return JSONResponse({"error": "accessToken manquant"}, status_code=400)
     grist_user_id = None
     if access_token:
         payload = _jwt_payload(access_token)
@@ -1073,41 +1300,21 @@ async def register(request: Request):
         if raw is not None:
             try: grist_user_id = int(raw)
             except (ValueError, TypeError): pass
-
-    # Priorite 2 : userId envoye explicitement par le widget
     if not grist_user_id:
-        raw2 = data.get("userId") or None
+        raw2 = data.get("userId")
         if raw2 is not None:
             try: grist_user_id = int(raw2)
             except (ValueError, TypeError): pass
-
-    # Priorite 3 : API Grist (uniquement pour cle permanente grist_key - Claude Desktop direct)
     if not grist_user_id and grist_key and site_url:
         profile = await fetch_grist_user_profile(site_url, grist_key)
-        if profile:
-            grist_user_id = profile.get("id")
-
+        if profile: grist_user_id = profile.get("id")
     if not grist_user_id:
-        return JSONResponse({"error": "Impossible de verifier l identite Grist (userId introuvable)."},
-                            status_code=401)
-
+        return JSONResponse({"error": "Impossible de verifier l identite Grist."}, status_code=401)
     uid_key = f"uid:{grist_user_id}"
-    registry.provision(uid_key,
-                       grist_key=grist_key,
-                       access_token=access_token,
-                       site=site_url)
-
-    ctx = registry.register_session(
-        uid_key=uid_key,
-        doc_id=doc_id,
-        doc_title=doc_title,
-        site_url=site_url,
-        grist_key=grist_key,
-        access_token=access_token)
-
-    # Index SSE : arto-token -> uid_key (pas de credential brut dans les logs)
+    registry.provision(uid_key, grist_key=grist_key, access_token=access_token, site=site_url)
+    ctx = registry.register_session(uid_key, doc_id, doc_title, site_url,
+                                    grist_key=grist_key, access_token=access_token)
     _token_to_uid[ctx.token] = uid_key
-
     _push(uid_key, {"type": "widget_connected", "token": ctx.token,
                     "doc_id": ctx.doc_id, "doc_title": ctx.doc_title})
     _push(uid_key, {"type": "mcp_notification",
@@ -1115,202 +1322,702 @@ async def register(request: Request):
     return {"ok": True, "token": ctx.token, "doc_title": ctx.doc_title,
             "gristUserId": grist_user_id}
 
+
+@app.post("/screenshot")
+async def screenshot(request: Request):
+    data  = await request.json()
+    token = data.get("token", "")
+    image = data.get("image", "")
+    fut   = _screenshot_waiters.pop(token, None)
+    if fut and not fut.done():
+        fut.set_result(image)
+        return {"ok": True}
+    return {"ok": False, "error": "Pas de waiter actif pour ce token."}
+
+
 @app.get("/health")
 async def health():
     total = sum(len(u["sessions"]) for u in registry._users.values())
-    return {"ok":True,"version":"4.3.0","mcp_protocol":MCP_VER,
-            "sessions":total,"users":len(registry._users),
-            "sse_tokens":len(_token_to_uid),
-            "tools":len(TOOLS),"prompts":len(PROMPTS),
-            "auth":"uid_key(uid:user_id), widget=accessToken, Claude=grist_key"}
+    return {"ok": True, "version": "5.0.0", "mcp_protocol": MCP_VER,
+            "sessions": total, "users": len(registry._users),
+            "tools": len(TOOLS), "prompts": len(PROMPTS),
+            "resources": {"static": len(STATIC_RESOURCES), "templates": len(RESOURCE_TEMPLATES)}}
+
 
 @app.get("/", response_class=HTMLResponse)
 async def widget_html(): return WIDGET
 
+# ── WIDGET ────────────────────────────────────────────────────────────────────
+
 WIDGET = """<!DOCTYPE html>
-<html lang="fr"><head>
-<meta charset="UTF-8"><title>Grist Coder</title>
-<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+<html lang="fr">
+<head>
+<meta charset="UTF-8"><title>Grist Coder v5</title>
 <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.6/ace.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.6/mode-html.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.6/mode-javascript.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.6/mode-markdown.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.6/mode-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.6/theme-one_dark.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --gc-navy:#42494B;
-  --gc-primary:#3E5DE7;
-  --gc-primary-dk:#2845C1;
-  --gc-bg:#ffffff;
-  --gc-editor:#f8f9fc;
-  --gc-text:#222631;
-  --gc-muted:#626A80;
-  --gc-border:#ddd;
-  --gc-ok:#2B695A;
-  --gc-err:#E32C39;
+  --bg:#fff;--bg2:#f8fafc;--bg3:#f1f5f9;
+  --border:#e2e8f0;--text:#0f172a;--text2:#64748b;
+  --accent:#3b82f6;--success:#10b981;--error:#ef4444;--warn:#f59e0b;
+  --navy:#1e293b;
 }
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
-     background:var(--gc-bg);color:var(--gc-text);
-     height:100vh;display:flex;flex-direction:column;overflow:hidden;font-size:13px}
-#bar{display:flex;align-items:center;gap:8px;padding:6px 10px;
-     background:var(--gc-navy);flex-shrink:0}
-#dot{width:7px;height:7px;border-radius:50%;background:var(--gc-err);
-     flex-shrink:0;transition:background .3s}
-#dot.on{background:#4ade80}
-#bar-title{font-size:12px;font-weight:600;color:#fff;letter-spacing:.02em;flex:1}
-#token-badge{font-size:10px;font-family:'Fira Code',monospace;
-             background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.2);
-             padding:2px 8px;border-radius:3px;color:rgba(255,255,255,.8);
-             cursor:pointer;display:none;transition:background .15s}
-#token-badge:hover{background:rgba(255,255,255,.2)}
-#editor{flex:1;width:100%;background:var(--gc-editor);color:var(--gc-text);
-        border:none;outline:none;resize:none;
-        font-family:'Fira Code',monospace;font-size:12px;
-        line-height:1.75;padding:12px 14px;tab-size:2}
-#foot{display:flex;align-items:center;gap:8px;padding:7px 10px;
-      background:var(--gc-bg);border-top:1px solid var(--gc-border);flex-shrink:0}
-#btn-run{font-size:12px;font-weight:500;padding:4px 14px;border-radius:3px;
-         border:none;cursor:pointer;background:var(--gc-primary);color:#fff;
-         transition:background .15s}
-#btn-run:hover{background:var(--gc-primary-dk)}
-#btn-run:disabled{opacity:.5;cursor:default}
-#out{margin-left:auto;font-size:11px;font-family:'Fira Code',monospace;
-     color:var(--gc-muted);max-width:240px;
-     overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#out.ok{color:var(--gc-ok)}
-#out.err{color:var(--gc-err)}
-</style></head><body>
-<div id="bar">
-  <div id="dot"></div>
-  <span id="bar-title">grist coder</span>
-  <span id="token-badge" onclick="copyToken()" title="Copier le token MCP"></span>
+html,body{height:100%;overflow:hidden;font-family:system-ui,-apple-system,sans-serif;font-size:13px}
+body{display:flex;flex-direction:column}
+
+/* TOP BAR */
+#topBar{height:40px;background:var(--navy);display:flex;align-items:center;gap:8px;padding:0 12px;flex-shrink:0}
+.vdiv{width:1px;height:20px;background:rgba(255,255,255,.12)}
+#artSelect{padding:3px 8px;border-radius:4px;border:1px solid rgba(255,255,255,.2);
+  background:rgba(255,255,255,.06);color:rgba(255,255,255,.85);font-size:11px;min-width:160px;max-width:260px}
+#artSelect option{background:#1e293b}
+.type-badge{padding:2px 7px;border-radius:10px;font-size:10px;font-weight:600;text-transform:uppercase;display:none}
+.tb-grist{background:#dcfce7;color:#166534}.tb-html{background:#fef3c7;color:#92400e}
+.tb-react{background:#dbeafe;color:#1e40af}.tb-app{background:#f3e8ff;color:#6b21a8}
+.tb-markdown{background:#fce7f3;color:#9d174d}.tb-default{background:var(--bg3);color:var(--text2)}
+#dot{width:8px;height:8px;border-radius:50%;background:var(--error);transition:background .3s}
+#dot.on{background:var(--success)}
+#tokenBadge{font-size:10px;font-family:monospace;background:rgba(255,255,255,.08);
+  border:1px solid rgba(255,255,255,.15);padding:2px 8px;border-radius:3px;
+  color:rgba(255,255,255,.7);cursor:pointer;display:none}
+#tokenBadge:hover{background:rgba(255,255,255,.15)}
+
+/* LAYOUT */
+#appBody{flex:1;display:flex;overflow:hidden}
+#editorPane{flex:0 0 50%;display:flex;flex-direction:column;border-right:1px solid var(--border);min-width:180px}
+#splitter{width:5px;background:var(--border);cursor:col-resize;flex-shrink:0;transition:background .15s}
+#splitter:hover,#splitter.active{background:var(--accent)}
+#previewPane{flex:1;display:flex;flex-direction:column;min-width:120px;background:var(--bg2)}
+
+/* EDITOR PANE */
+#editorBar{height:32px;background:var(--bg);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:6px;padding:0 10px;flex-shrink:0}
+#editorBar .btn{padding:3px 9px;border-radius:4px;border:1px solid var(--border);
+  background:var(--bg);font-size:11px;cursor:pointer;white-space:nowrap}
+#editorBar .btn:hover{background:var(--bg2)}
+#editorBar .primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+#editorLabel{font-size:11px;color:var(--text2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#aceEditor{flex:1}
+
+/* PREVIEW PANE */
+#previewBar{height:32px;background:var(--bg);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:6px;padding:0 10px;flex-shrink:0;font-size:11px;color:var(--text2)}
+#pdot{width:7px;height:7px;border-radius:50%;background:var(--success);flex-shrink:0}
+#pdot.loading{background:var(--warn);animation:pulse 1s infinite}
+#pdot.err{background:var(--error)}
+#renderFrame{flex:1;border:none;background:#fff}
+
+/* STATUS BAR */
+#statusBar{height:22px;background:var(--navy);border-top:1px solid rgba(255,255,255,.06);
+  display:flex;align-items:center;gap:16px;padding:0 12px;font-size:10px;
+  color:rgba(255,255,255,.4);flex-shrink:0}
+
+/* VIEW BUTTONS */
+.vbtn{padding:3px 10px;border-radius:4px;border:1px solid rgba(255,255,255,.15);
+  background:transparent;color:rgba(255,255,255,.6);font-size:11px;cursor:pointer;transition:all .15s}
+.vbtn:hover{background:rgba(255,255,255,.08);color:#fff}
+.vbtn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.toast{position:fixed;bottom:20px;right:20px;padding:10px 18px;border-radius:6px;color:#fff;
+  font-size:12px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,.2);
+  animation:ti .2s ease;pointer-events:none}
+@keyframes ti{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+</style>
+</head>
+<body>
+<div id="topBar">
+  <button class="vbtn active" onclick="setView('split',this)">Split</button>
+  <button class="vbtn" onclick="setView('code',this)">Code</button>
+  <button class="vbtn" onclick="setView('preview',this)">Rendu</button>
+  <div class="vdiv"></div>
+  <select id="artSelect" onchange="onArtSelect()"><option value="">— aucun —</option></select>
+  <span id="typeBadge" class="type-badge"></span>
+  <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+    <div id="dot"></div>
+    <span id="tokenBadge" onclick="copyToken()" title="Copier token MCP"></span>
+  </div>
 </div>
-<textarea id="editor" spellcheck="false"
-  placeholder="# Canvas vide&#10;# Connexion automatique en cours...&#10;# Utilisez Claude Desktop pour modifier ce canvas via MCP"></textarea>
-<div id="foot">
-  <button id="btn-run" onclick="execCanvas()">&#9654; Run</button>
-  <span id="out">—</span>
+<div id="appBody">
+  <div id="editorPane">
+    <div id="editorBar">
+      <span id="editorLabel">Canvas</span>
+      <span id="saveStatus" style="font-size:10px;color:var(--text2)"></span>
+    </div>
+    <div id="aceEditor"></div>
+  </div>
+  <div id="splitter"></div>
+  <div id="previewPane">
+    <div id="previewBar">
+      <div id="pdot"></div>
+      <span id="previewLabel" style="flex:1">Rendu</span>
+    </div>
+    <iframe id="renderFrame" sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups"></iframe>
+  </div>
+</div>
+<div id="statusBar">
+  <span id="sbDoc">—</span>
+  <span id="sbArts">0 artefacts</span>
+  <span id="sbTables">0 tables</span>
+  <span id="sbCanvas">vide</span>
 </div>
 <script>
-const BASE=window.location.origin;
-let _registered=false,_token=null,_id=1,_refreshTimer=null,_es=null;
-const $=id=>document.getElementById(id);
-const setOut=(t,cls="")=>{const el=$("out");el.textContent=t;el.className=cls};
+// ═══════════════════════════════════════════════════════
+// GRIST BRIDGE SCRIPT — injecte dans les iframes srcdoc
+// Remplace window.grist par un proxy postMessage transparent
+// ═══════════════════════════════════════════════════════
+const GRIST_BRIDGE_SCRIPT =
+  "(function(){" +
+  "var _id=0,_p=new Map(),_cbs=new Map();" +
+  "window.addEventListener('message',function(e){" +
+    "var m=e.data;if(!m)return;" +
+    "if(m.type==='grist-bridge-response'){" +
+      "var p=_p.get(m.callbackId);" +
+      "if(p){_p.delete(m.callbackId);" +
+      "if(m.error)p.reject(new Error(m.error));else p.resolve(m.result);}}" +
+    "if(m.type==='grist-bridge-callback'){" +
+      "var cb=_cbs.get(m.callbackId);if(cb)cb.apply(null,m.args||[]);}" +
+  "});" +
+  "function call(a,args){return new Promise(function(res,rej){" +
+    "var id=++_id;_p.set(id,{resolve:res,reject:rej});" +
+    "var t=window.parent===window?window:window.parent;" +
+    "t.postMessage({type:'grist-bridge',action:a,args:args,callbackId:id},'*');" +
+    "setTimeout(function(){if(_p.has(id)){_p.delete(id);" +
+    "rej(new Error('Bridge timeout'));}},30000);" +
+  "})}" +
+  "function reg(a,cb){var id=++_id;_cbs.set(id,cb);" +
+    "var t=window.parent===window?window:window.parent;" +
+    "t.postMessage({type:'grist-bridge',action:a,callbackId:id},'*');}" +
+  "window.grist={" +
+    "ready:function(){return Promise.resolve();}," +
+    "docApi:{" +
+      "fetchTable:function(n){return call('fetchTable',[n]);}," +
+      "applyUserActions:function(a){return call('applyUserActions',[a]);}," +
+      "listTables:function(){return call('listTables',[]);}," +
+      "getAccessToken:function(o){return call('getAccessToken',[o||{}]);}" +
+    "}," +
+    "onRecords:function(cb){reg('onRecords',cb);}," +
+    "onRecord:function(cb){reg('onRecord',cb);}," +
+    "setCursorPos:function(p){return call('setCursorPos',[p]);}," +
+    "setSelectedRows:function(ids){return call('setSelectedRows',[ids]);}" +
+  "};" +
+  "var t=window.parent===window?window:window.parent;" +
+  "t.postMessage({type:'grist-bridge-ready'},'*');" +
+  "})();";
 
-grist.ready({requiredAccess:"full"});
-grist.on("message",async(msg)=>{
-  window._gristMsg=msg;
-  if(_registered)return;
-  await doRegister(msg);
+// ═══════════════════════════════════════════════════════
+// APP RUNTIME SCRIPT — injecte dans les iframes
+// Fournit window.app (navigate, emit, on, setState, notify)
+// ═══════════════════════════════════════════════════════
+const APP_RUNTIME_SCRIPT =
+  "(function(){" +
+  "var _s=Object.assign({},window.__APP_STATE__||{});" +
+  "var _ls={};" +
+  "window.app={" +
+    "navigate:function(p){window.parent.postMessage({type:'app-navigate',path:p},'*');}," +
+    "emit:function(ev,d){window.parent.postMessage({type:'app-event',event:ev,data:d},'*');}," +
+    "on:function(ev,cb){if(!_ls[ev])_ls[ev]=[];_ls[ev].push(cb);}," +
+    "setState:function(p){Object.assign(_s,p);" +
+      "window.parent.postMessage({type:'app-setState',state:p},'*');}," +
+    "get state(){return _s;}," +
+    "notify:function(m,t){window.parent.postMessage({type:'app-notification',msg:m,notifType:t||'info'},'*');}" +
+  "};" +
+  "window.addEventListener('message',function(e){" +
+    "var m=e.data;if(!m)return;" +
+    "if(m.type==='app-event-relay'&&_ls[m.event])" +
+      "_ls[m.event].forEach(function(cb){cb(m.data);});" +
+    "if(m.type==='app-state-update')Object.assign(_s,m.state);" +
+  "});" +
+  "if(window.__APP_ROUTE__)" +
+    "window.parent.postMessage({type:'app-init',route:window.__APP_ROUTE__},'*');" +
+  "})();";
+
+// ═══════════════════════════════════════════════════════
+// prepareWidgetHTML — Injecte bridge + runtime dans artefact
+// ═══════════════════════════════════════════════════════
+function prepareWidgetHTML(html, ctx) {
+  ctx = ctx || {};
+  var bridgeTag = '<script>' + GRIST_BRIDGE_SCRIPT + '<' + '/script>';
+  html = html.replace(/<script[^>]*grist-plugin-api\\.js[^>]*><\\/script>/gi, bridgeTag);
+  var init = '<script>window.__APP_STATE__=' + JSON.stringify(ctx.state || {}) +
+    ';window.__APP_ROUTE__="' + (ctx.route || '/') + '";' +
+    APP_RUNTIME_SCRIPT + '<' + '/script>';
+  return html.includes('</head>') ? html.replace('</head>', init + '</head>') : init + html;
+}
+
+// ═══════════════════════════════════════════════════════
+// GristBridgeParent — Relay postMessage -> Grist API
+// ═══════════════════════════════════════════════════════
+window.addEventListener('message', async function(e) {
+  var m = e.data; if (!m) return;
+  // Bridge calls
+  if (m.type === 'grist-bridge') {
+    var action = m.action, args = m.args||[], cid = m.callbackId, src = e.source;
+    try {
+      var result = null;
+      if (action === 'fetchTable')        result = await grist.docApi.fetchTable(args[0]);
+      else if (action === 'applyUserActions') result = await grist.docApi.applyUserActions(args[0]);
+      else if (action === 'listTables')   result = await grist.docApi.listTables();
+      else if (action === 'getAccessToken') result = await grist.docApi.getAccessToken(args[0]||{});
+      else if (action === 'setCursorPos') grist.setCursorPos(args[0]);
+      else if (action === 'setSelectedRows') grist.setSelectedRows(args[0]);
+      else if (action === 'onRecords') {
+        grist.onRecords(function(records, mapped) {
+          src.postMessage({type:'grist-bridge-callback',callbackId:cid,args:[records,mapped]},'*');
+        });
+      } else if (action === 'onRecord') {
+        grist.onRecord(function(record, mapped) {
+          src.postMessage({type:'grist-bridge-callback',callbackId:cid,args:[record,mapped]},'*');
+        });
+      }
+      src.postMessage({type:'grist-bridge-response',callbackId:cid,result:result},'*');
+    } catch(err) {
+      src.postMessage({type:'grist-bridge-response',callbackId:cid,error:err.message},'*');
+    }
+  }
+  // App events
+  if (m.type === 'app-navigate') showToast('Navigate: ' + m.path, 'info');
+  if (m.type === 'app-event') {
+    var frames = [document.getElementById('renderFrame')];
+    frames.forEach(function(f) {
+      if (f && f.contentWindow && f.contentWindow !== e.source)
+        f.contentWindow.postMessage({type:'app-event-relay',event:m.event,data:m.data},'*');
+    });
+  }
+  if (m.type === 'app-setState') Object.assign(_sharedState, m.state);
+  if (m.type === 'app-notification') showToast(m.msg, m.notifType||'info');
 });
 
-let _registering=false;
-async function doRegister(msg){
-  if(_registering)return;
-  _registering=true;
-  try{
-    // 1. Token court-terme docApi
-    const tk=await grist.docApi.getAccessToken({readOnly:false});
-    const parts=(tk.baseUrl||"").split("/api/docs/");
-    if(parts.length!==2){setOut("✗ baseUrl invalide","err");return;}
-    const siteUrl=parts[0];
-    const docId=parts[1].split("/")[0];
-    const docTitle=msg?.docTitle||document.title||docId;
+// ═══════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════
+const BASE = window.location.origin;
+var _registered=false, _registering=false, _token=null, _mcpId=1, _es=null, _refreshTimer=null;
+var _artefacts=[], _artefactsMap={}, _currentArt=null, _sharedState={};
+var _editor;
 
-    // 2. userId : decoder le payload JWT sans verifier la signature
-    let userId=msg?.userId||null;
-    if(!userId){
-      try{
-        const b64=tk.token.split('.')[1];
-        if(b64){
-          const payload=JSON.parse(atob(b64.replace(/-/g,'+').replace(/_/g,'/')));
-          const raw=payload?.userId??payload?.sub??payload?.id??null;
-          userId=raw!==null?Number(raw)||null:null;
+// ═══════════════════════════════════════════════════════
+// ACE EDITOR
+// ═══════════════════════════════════════════════════════
+window.addEventListener('DOMContentLoaded', function() {
+  _editor = ace.edit('aceEditor');
+  _editor.setTheme('ace/theme/one_dark');
+  _editor.setOptions({fontSize:'13px',tabSize:2,useSoftTabs:true,
+    wrap:false,showPrintMargin:false});
+  _editor.on('change', debounce(autoPreview, 1800));
+  _editor.on('change', debounce(autoSave, 3000));
+  initSplitter();
+});
+
+function setEditorMode(type) {
+  var modes = {html:'html',grist:'html',react:'html',component:'html',
+               markdown:'markdown',app:'json',python:'python',sql:'sql'};
+  _editor.session.setMode('ace/mode/' + (modes[type] || 'html'));
+}
+
+// ═══════════════════════════════════════════════════════
+// GRIST INIT + REGISTER
+// ═══════════════════════════════════════════════════════
+grist.ready({ requiredAccess: 'full' });
+grist.on('message', async function(msg) {
+  window._gristMsg = msg;
+  if (!_registered) await doRegister(msg);
+});
+
+async function doRegister(msg) {
+  if (_registering) return; _registering = true;
+  try {
+    var tk = await grist.docApi.getAccessToken({readOnly: false});
+    var parts = (tk.baseUrl||'').split('/api/docs/');
+    if (parts.length !== 2) { showToast('baseUrl invalide','error'); return; }
+    var siteUrl = parts[0], docId = parts[1].split('/')[0];
+    var docTitle = (msg && msg.docTitle) || document.title || docId;
+    var userId = (msg && msg.userId) || null;
+    if (!userId) {
+      try {
+        var b64 = tk.token.split('.')[1];
+        if (b64) {
+          var pl = JSON.parse(atob(b64.replace(/-/g,'+').replace(/_/g,'/')));
+          var raw = pl.userId != null ? pl.userId : (pl.sub != null ? pl.sub : null);
+          userId = raw !== null ? Number(raw)||null : null;
         }
-      }catch(_){}
+      } catch(_) {}
     }
-
-    // 3. Enregistrement
-    const res=await fetch(BASE+"/register",{method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({accessToken:tk.token,docId,docTitle,siteUrl,userId})});
-    const data=await res.json();
-    if(data.error){setOut("✗ "+data.error,"err");return;}
-
-    _registered=true;_token=data.token;
-    $("dot").className="on";
-    const badge=$("token-badge");
-    badge.textContent=_token;badge.style.display="inline-block";
-
+    var res = await fetch(BASE+'/register', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({accessToken:tk.token,docId,docTitle,siteUrl,userId})});
+    var data = await res.json();
+    if (data.error) { showToast('Erreur: '+data.error,'error'); return; }
+    _registered = true; _token = data.token;
+    document.getElementById('dot').className = 'on';
+    var badge = document.getElementById('tokenBadge');
+    badge.textContent = _token; badge.style.display = 'inline-block';
+    document.getElementById('sbDoc').textContent = docTitle;
     listenSSE();
-    await loadCanvas();
-
-    // 4. Refresh automatique avant expiration (80% TTL, min 60s)
-    if(_refreshTimer)clearTimeout(_refreshTimer);
-    const refreshIn=Math.max((tk.ttlMsecs||3600000)*0.8,60000);
-    _refreshTimer=setTimeout(async()=>{
-      _registered=false;
-      if(window._gristMsg)await doRegister(window._gristMsg);
-    },refreshIn);
-
-  }catch(e){setOut("✗ "+e.message,"err");}
-  finally{_registering=false;}
+    await loadArtefacts();
+    if (_refreshTimer) clearTimeout(_refreshTimer);
+    var delay = Math.max((tk.ttlMsecs||3600000)*0.8, 60000);
+    _refreshTimer = setTimeout(async function() {
+      _registered = false;
+      if (window._gristMsg) await doRegister(window._gristMsg);
+    }, delay);
+  } catch(e) { showToast('Connexion: '+e.message,'error'); }
+  finally { _registering = false; }
 }
 
-function copyToken(){
-  if(!_token)return;
-  navigator.clipboard.writeText(_token);
-  setOut("✓ copie","ok");setTimeout(()=>setOut("—"),1500);
-}
-
-function listenSSE(){
-  if(!_token)return;
-  if(_es){_es.close();_es=null;}
-  _es=new EventSource(BASE+"/mcp?token="+encodeURIComponent(_token));
-  _es.onmessage=e=>{
-    try{
-      const ev=JSON.parse(e.data);
-      if(_token&&(ev.token===_token)&&(ev.type==="canvas_patched"||ev.type==="canvas_updated")){
-        loadCanvas();setOut("⬡ "+ev.sha);
+// ═══════════════════════════════════════════════════════
+// SSE
+// ═══════════════════════════════════════════════════════
+function listenSSE() {
+  if (!_token) return;
+  if (_es) { _es.close(); _es = null; }
+  _es = new EventSource(BASE+'/mcp?token='+encodeURIComponent(_token));
+  _es.onmessage = function(e) {
+    try {
+      var ev = JSON.parse(e.data);
+      if (ev.token === _token) {
+        if (ev.type === 'canvas_updated' || ev.type === 'canvas_patched') {
+          loadCanvasIntoEditor().then(renderCurrent);
+          document.getElementById('sbCanvas').textContent = ev.sha || 'updated';
+        }
+        if (ev.type === 'screenshot_request') captureScreenshot();
       }
-    }catch(_){}
+    } catch(_) {}
   };
-  _es.onerror=()=>{
-    if(_es){_es.close();_es=null;}
-    _registered=false;
-    setTimeout(async()=>{
-      if(window._gristMsg)await doRegister(window._gristMsg);
-    },3000);
+  _es.onerror = function() {
+    if (_es) { _es.close(); _es = null; }
+    _registered = false;
+    setTimeout(async function() {
+      if (window._gristMsg) await doRegister(window._gristMsg);
+    }, 3000);
   };
 }
 
-async function tool(name,args={}){
-  if(!_token)throw new Error("Widget non connecte");
-  const r=await fetch(BASE+"/mcp",{method:"POST",
-    headers:{"Content-Type":"application/json","Authorization":"Bearer "+_token},
-    body:JSON.stringify({jsonrpc:"2.0",id:_id++,method:"tools/call",
-                         params:{name,arguments:args}})});
-  const d=await r.json();
-  if(d.error)throw new Error(d.error.message);
+// ═══════════════════════════════════════════════════════
+// MCP TOOL CALL
+// ═══════════════════════════════════════════════════════
+async function tool(name, args) {
+  if (!_token) throw new Error('Widget non connecte');
+  var r = await fetch(BASE+'/mcp', {method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+_token},
+    body: JSON.stringify({jsonrpc:'2.0',id:_mcpId++,method:'tools/call',
+                          params:{name:name,arguments:args||{}}})});
+  var d = await r.json();
+  if (d.error) throw new Error(d.error.message);
   return JSON.parse(d.result.content[0].text);
 }
 
-async function loadCanvas(){
-  try{$("editor").value=await tool("canvas_read");}
-  catch(e){setOut("✗ "+e.message,"err");}
-}
-async function execCanvas(){
-  const btn=$("btn-run");
-  btn.disabled=true;setOut("…","");
-  try{
-    await tool("canvas_write",{code:$("editor").value});
-    const r=await tool("canvas_exec");
-    if(r.returncode===0){
-      setOut("✓ "+(r.stdout.split("\\n")[0]||"ok"),"ok");
-    }else{
-      setOut("✗ "+(r.stderr.split("\\n")[0]||"erreur"),"err");
+async function loadCanvasIntoEditor() {
+  try {
+    var code = await tool('canvas_read');
+    if (_editor && typeof code === 'string' && code !== _editor.getValue()) {
+      var pos = _editor.getCursorPosition();
+      _editor.setValue(code, -1);
+      _editor.moveCursorToPosition(pos);
     }
-  }catch(e){setOut("✗ "+e.message,"err");}
-  finally{btn.disabled=false;}
+  } catch(e) { console.warn('canvas_read:', e.message); }
 }
-</script></body></html>"""
+
+// ═══════════════════════════════════════════════════════
+// ARTEFACTS
+// ═══════════════════════════════════════════════════════
+async function initArtefactsTable() {
+  showToast('Initialisation table Artefacts…', 'info');
+  await grist.docApi.applyUserActions([['AddTable', 'Artefacts', [
+    {id:'Nom',          type:'Text'},
+    {id:'Type',         type:'Choice',   widgetOptions:JSON.stringify({choices:['grist','html','react','app','markdown','python','sql']})},
+    {id:'Code',         type:'Text'},
+    {id:'Description',  type:'Text'},
+    {id:'Dependencies', type:'Text'},
+    {id:'IsDoc',        type:'Bool'},
+    {id:'Icon',         type:'Text'},
+    {id:'Output',       type:'Text'},
+    {id:'UpdatedAt',    type:'DateTime:Europe/Paris'},
+  ]]]);
+  showToast('Table Artefacts créée ✓', 'success');
+}
+
+async function loadArtefacts() {
+  var data;
+  try {
+    data = await grist.docApi.fetchTable('Artefacts');
+  } catch(e) {
+    // Table absente → initialisation automatique
+    try {
+      await initArtefactsTable();
+      data = await grist.docApi.fetchTable('Artefacts');
+    } catch(e2) {
+      document.getElementById('sbArts').textContent = '0 artefacts';
+      return;
+    }
+  }
+  var n = (data.id||[]).length;
+  _artefacts = []; _artefactsMap = {};
+  for (var i=0; i<n; i++) {
+    var art = {
+      id:   data.id[i],
+      Nom:  (data.Nom||[])[i]  || '',
+      Type: (data.Type||[])[i] || 'html',
+      Code: (data.Code||[])[i] || '',
+      Icon: (data.Icon||[])[i] || '📄',
+      Description: (data.Description||[])[i] || '',
+      IsDoc: !!(data.IsDoc||[])[i],
+    };
+    _artefacts.push(art);
+    if (art.Nom) _artefactsMap[art.Nom] = art;
+  }
+  renderArtSelect();
+  document.getElementById('sbArts').textContent = _artefacts.length + ' artefacts';
+  try {
+    var s = await tool('grist_schema');
+    var tables = (s.tables||[]).map(function(t){return t.id;});
+    document.getElementById('sbTables').textContent = tables.length + ' tables';
+  } catch(_) {}
+  // Auto-sélectionner le premier artefact si aucun sélectionné
+  if (_artefacts.length > 0 && !_currentArt) {
+    document.getElementById('artSelect').value = _artefacts[0].Nom;
+    await onArtSelect();
+  }
+}
+
+function renderArtSelect() {
+  var sel = document.getElementById('artSelect');
+  var cur = sel.value;
+  sel.innerHTML = '<option value="">— aucun —</option>' +
+    _artefacts.map(function(a) {
+      return '<option value="'+a.Nom+'">'+(a.Icon||'')+' '+a.Nom+' ('+a.Type+')</option>';
+    }).join('');
+  if (cur) sel.value = cur;
+}
+
+async function onArtSelect() {
+  var nom = document.getElementById('artSelect').value;
+  if (!nom) { _currentArt = null; setEditorHeader(null); return; }
+  var art = _artefactsMap[nom];
+  if (!art) return;
+  _currentArt = art;
+  _editor.setValue(art.Code || '', -1);
+  setEditorMode(art.Type);
+  setEditorHeader(art);
+  try { await tool('canvas_write', {code: art.Code || ''}); } catch(_) {}
+  renderArt(art);
+}
+
+function setEditorHeader(art) {
+  var label = document.getElementById('editorLabel');
+  var badge = document.getElementById('typeBadge');
+  if (!art) { label.textContent = 'Canvas'; badge.style.display = 'none'; return; }
+  label.textContent = art.Nom;
+  badge.textContent = art.Type;
+  badge.className = 'type-badge tb-' + (art.Type || 'default');
+  badge.style.display = 'inline-block';
+}
+
+// ═══════════════════════════════════════════════════════
+// RENDER
+// ═══════════════════════════════════════════════════════
+function renderArt(art) {
+  if (!art) return;
+  var type = art.Type || 'html';
+  var code = art.Code || '';
+  var frame = document.getElementById('renderFrame');
+  var pdot = document.getElementById('pdot');
+  pdot.className = 'loading';
+  document.getElementById('previewLabel').textContent = art.Nom;
+  if (['html','grist','react','component'].includes(type)) {
+    frame.srcdoc = prepareWidgetHTML(code, {state: _sharedState, route: '/'});
+  } else if (type === 'markdown') {
+    frame.srcdoc = '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
+      '<style>body{font-family:system-ui,sans-serif;padding:24px;max-width:800px;margin:0 auto;line-height:1.6;color:#1e293b}h1,h2,h3{margin-top:1.5em}code{background:#f1f5f9;padding:2px 6px;border-radius:3px}pre{background:#282c34;color:#abb2bf;padding:16px;border-radius:6px;overflow-x:auto}</style>' +
+      '</head><body><div id="c"></div>' +
+      '<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"><' + '/script>' +
+      '<script>document.getElementById("c").innerHTML=marked.parse(' + JSON.stringify(code) + ');<' + '/script>' +
+      '</body></html>';
+  } else if (type === 'svg') {
+    frame.srcdoc = '<!DOCTYPE html><html><body style="margin:0;background:#f8fafc;display:flex;align-items:center;justify-content:center;min-height:100vh">' + code + '</body></html>';
+  } else if (type === 'app') {
+    try {
+      var m = JSON.parse(code);
+      var routes = (m.routes||[]).map(function(r) {
+        return '<div style="padding:8px 16px;border-bottom:1px solid #e2e8f0">' +
+          (r.icon||'')+'  <strong>'+r.label+'</strong> <span style="color:#94a3b8;font-size:11px">'+r.path+' → '+r.artefact+'</span></div>';
+      }).join('');
+      frame.srcdoc = '<!DOCTYPE html><html><head><meta charset="UTF-8"><script src="https://cdn.tailwindcss.com"><' + '/script></head>' +
+        '<body class="bg-gray-50 min-h-screen p-8"><div class="max-w-lg mx-auto bg-white rounded-xl shadow p-6">' +
+        '<div class="text-4xl mb-2">'+(m.icon||'🖥️')+'</div>' +
+        '<h1 class="text-xl font-bold mb-1">'+(m.name||'App')+'</h1>' +
+        '<p class="text-sm text-gray-500 mb-4">Manifeste · '+(m.routes||[]).length+' routes</p>' +
+        '<div class="border rounded-lg overflow-hidden mb-4">'+routes+'</div>' +
+        '<p class="text-xs text-gray-400">Tables: '+(m.tables||[]).join(', ')+'</p>' +
+        '</div></body></html>';
+    } catch(e) {
+      frame.srcdoc = '<!DOCTYPE html><html><body style="padding:20px;color:#ef4444;font-family:monospace">JSON invalide: '+e.message+'</body></html>';
+    }
+  } else {
+    var escaped = code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    frame.srcdoc = '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
+      '<style>body{margin:0;background:#282c34;color:#abb2bf;font-family:monospace;font-size:12px}pre{padding:16px;white-space:pre-wrap}</style>' +
+      '</head><body><pre>'+escaped+'</pre></body></html>';
+  }
+  frame.onload = function() { pdot.className = ''; };
+  frame.onerror = function() { pdot.className = 'err'; };
+}
+
+function renderCurrent() {
+  var code = _editor ? _editor.getValue() : '';
+  renderArt(Object.assign({}, _currentArt || {Type:'html',Nom:'Canvas'}, {Code:code}));
+}
+
+function autoPreview() { renderCurrent(); }
+
+// ═══════════════════════════════════════════════════════
+// SAVE
+// ═══════════════════════════════════════════════════════
+async function saveArt() {
+  if (!_currentArt) return;
+  var code = _editor ? _editor.getValue() : '';
+  if (code === _currentArt.Code) return;  // pas de changement
+  var ss = document.getElementById('saveStatus');
+  if (ss) ss.textContent = 'saving…';
+  try {
+    await tool('grist_upsert', {table_id:'Artefacts', records:[{
+      require: {Nom: _currentArt.Nom},
+      fields:  {Code: code, UpdatedAt: Math.floor(Date.now()/1000)}
+    }]});
+    _currentArt.Code = code;
+    _artefactsMap[_currentArt.Nom].Code = code;
+    if (ss) ss.textContent = 'saved ✓';
+    setTimeout(function(){ if (ss) ss.textContent = ''; }, 2000);
+  } catch(e) { if (ss) ss.textContent = 'err'; }
+}
+
+function autoSave() { saveArt(); }
+
+// ═══════════════════════════════════════════════════════
+// SCREENSHOT
+// ═══════════════════════════════════════════════════════
+async function captureScreenshot() {
+  var frame = document.getElementById('renderFrame');
+  try {
+    var fdoc = frame.contentDocument || (frame.contentWindow && frame.contentWindow.document);
+    if (!fdoc || !fdoc.body) return;
+    // Injecter html2canvas dans l'iframe si absent
+    if (!frame.contentWindow.html2canvas) {
+      await new Promise(function(res, rej) {
+        var s = fdoc.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
+        s.onload = res; s.onerror = rej;
+        fdoc.head.appendChild(s);
+      });
+    }
+    // Attendre que les CDN (Tailwind etc.) aient fini d'appliquer les styles
+    await new Promise(function(r){ setTimeout(r, 600); });
+    // Capturer depuis l'interieur de l'iframe via postMessage
+    var msgId = 'sc-' + Date.now();
+    var image = await new Promise(function(res) {
+      var timer = setTimeout(function(){ window.removeEventListener('message',h); res(''); }, 10000);
+      function h(e) {
+        if (e.data && e.data.type === 'screenshot-result' && e.data.id === msgId) {
+          clearTimeout(timer); window.removeEventListener('message', h); res(e.data.image);
+        }
+      }
+      window.addEventListener('message', h);
+      var s = fdoc.createElement('script');
+      s.textContent = '(function(){' +
+        'html2canvas(document.body,{useCORS:true,allowTaint:true,logging:false})' +
+        '.then(function(c){parent.postMessage({type:"screenshot-result",id:"'+msgId+'",image:c.toDataURL("image/png")},"*")})' +
+        '.catch(function(){parent.postMessage({type:"screenshot-result",id:"'+msgId+'",image:""},"*")});' +
+        '})();';
+      fdoc.body.appendChild(s);
+    });
+    if (!image) return;
+    await fetch(BASE+'/screenshot', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({token:_token, image:image})});
+  } catch(e) { console.warn('screenshot:', e.message); }
+}
+
+// ═══════════════════════════════════════════════════════
+// LAYOUT : VIEW SWITCH + SPLITTER
+// ═══════════════════════════════════════════════════════
+function setView(mode, btn) {
+  document.querySelectorAll('.vbtn').forEach(function(b){b.classList.remove('active');});
+  if (btn) btn.classList.add('active');
+  var ep = document.getElementById('editorPane');
+  var sp = document.getElementById('splitter');
+  var pp = document.getElementById('previewPane');
+  if (mode === 'code') {
+    ep.style.cssText='flex:1;display:flex;flex-direction:column;';
+    sp.style.display='none'; pp.style.display='none';
+  } else if (mode === 'preview') {
+    ep.style.display='none'; sp.style.display='none';
+    pp.style.cssText='flex:1;display:flex;flex-direction:column;';
+  } else {
+    ep.style.cssText='flex:0 0 50%;display:flex;flex-direction:column;min-width:180px';
+    sp.style.display='block';
+    pp.style.cssText='flex:1;display:flex;flex-direction:column;min-width:120px';
+  }
+  if (_editor) _editor.resize();
+}
+
+function initSplitter() {
+  var sp = document.getElementById('splitter');
+  var dragging=false, startX=0, startW=0;
+  sp.addEventListener('mousedown', function(e) {
+    dragging=true; startX=e.clientX;
+    startW=document.getElementById('editorPane').offsetWidth;
+    sp.classList.add('active');
+    document.body.style.cursor='col-resize';
+    document.body.style.userSelect='none';
+  });
+  document.addEventListener('mousemove', function(e) {
+    if (!dragging) return;
+    var total = document.getElementById('appBody').offsetWidth;
+    var newW  = Math.max(150, Math.min(startW + e.clientX - startX, total-150));
+    document.getElementById('editorPane').style.flex = '0 0 ' + newW + 'px';
+    if (_editor) _editor.resize();
+  });
+  document.addEventListener('mouseup', function() {
+    if (!dragging) return;
+    dragging=false; sp.classList.remove('active');
+    document.body.style.cursor='';
+    document.body.style.userSelect='';
+  });
+}
+
+// ═══════════════════════════════════════════════════════
+// UTILS
+// ═══════════════════════════════════════════════════════
+function copyToken() {
+  if (!_token) return;
+  navigator.clipboard.writeText(_token);
+  showToast('Token copie','success');
+}
+
+function showToast(msg, type) {
+  var colors={info:'#3b82f6',success:'#10b981',error:'#ef4444',warn:'#f59e0b',warning:'#f59e0b'};
+  var t = document.createElement('div');
+  t.className = 'toast';
+  t.style.background = colors[type] || colors.info;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(function(){t.remove();}, 3000);
+}
+
+function debounce(fn, delay) {
+  var timer;
+  return function() { clearTimeout(timer); timer = setTimeout(fn, delay); };
+}
+</script>
+</body>
+</html>"""
 
 if __name__ == "__main__":
     import uvicorn
