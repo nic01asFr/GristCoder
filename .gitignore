@@ -1,0 +1,21 @@
+# Environnement
+.env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Docker
+.docker/
+
+# Credentials locaux (contiennent des cles API)
+.mcp.json
+.claude/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
