@@ -46,8 +46,10 @@ OUTILS (20)
 
 RESSOURCES
   docs/schema           -> recettes tables/colonnes (lire avant schema)
-  docs/artefacts        -> templates HTML/JS (lire avant coder)
+  docs/artefacts        -> templates HTML/JS + API bridge (lire avant coder)
   docs/playbook         -> sequences pages, layouts, liaisons (lire avant creer pages)
+  docs/app-patterns     -> patterns multi-widgets : nav, sync, auto-provisioning, Artefactory
+  docs/formulas         -> formules colonnes Python natives Grist
   playbook/{scenario}   -> guide cible : dashboard|fiche|table|full-app|master-detail
   context/{token}       -> snapshot live : tables+artefacts+pages (lire en debut session)
   code/{token}          -> source de tous les artefacts (lire avant iterer sur app existante)
@@ -811,6 +813,64 @@ await grist.docApi.applyUserActions([               // actions Grist bas niveau
   ['RemoveRecord', 'MaTable', 42],
 ]);
 
+## ACTIONS GRIST AVANCEES
+// BulkAddRecord : insere N lignes en une seule action (format colonnaire)
+await grist.docApi.applyUserActions([
+  ['BulkAddRecord', 'MaTable', records.map(()=>null), {
+    Nom: records.map(r=>r.nom),
+    CA:  records.map(r=>r.ca),
+  }]
+]);
+// BulkUpdateRecord : met a jour N lignes en une seule action
+await grist.docApi.applyUserActions([
+  ['BulkUpdateRecord', 'MaTable', [1,2,3], {Statut:['ok','ok','ko']}]
+]);
+
+// AddTable : cree une table avec son schema complet
+await grist.docApi.applyUserActions([
+  ['AddTable', 'Config', [
+    {id:'cle',    type:'Text'},
+    {id:'valeur', type:'Text'},
+    {id:'ref',    type:'Ref:Clients'},
+    {id:'tags',   type:'ChoiceList'},
+    {id:'statut', type:'Choice',
+      widgetOptions: JSON.stringify({choices:['actif','inactif']})},
+    {id:'date',   type:'DateTime'},
+  ]]
+]);
+// AddColumn : ajoute une colonne a une table existante
+await grist.docApi.applyUserActions([
+  ['AddColumn', 'MaTable', 'NouvelleCol', {type:'Text'}]
+]);
+
+// ensureTable : cree seulement si la table n existe pas
+async function ensureTable(name, schema) {
+  const tables = await grist.docApi.listTables();
+  if (!tables.includes(name))
+    await grist.docApi.applyUserActions([['AddTable', name, schema]]);
+}
+
+## FORMATS SPECIAUX GRIST
+// ChoiceList et ReferenceList : toujours prefixer de 'L'
+['L', 'urgent', 'important']   // ChoiceList (ecriture)
+['L', 1, 5, 12]                // ReferenceList (ecriture)
+gristList.slice(1)             // -> JS array (lecture)
+['L', ...array]                // -> Grist list (ecriture)
+
+// Dates : Grist stocke en SECONDES Unix (pas ms !)
+Math.floor(Date.now() / 1000)  // JS -> Grist DateTime
+new Date(timestamp * 1000)     // Grist -> JS Date
+
+## TABLES SYSTEME (requiredAccess:'full')
+const tables = await grist.docApi.fetchTable('_grist_Tables');
+// tables.tableId : ['Clients','Contrats', ...] — toutes les tables
+const cols = await grist.docApi.fetchTable('_grist_Tables_column');
+// cols.colId, cols.type, cols.label, cols.parentId (= tables.id)
+// Lister les colonnes d une table:
+const tIdx = tables.tableId.indexOf('MaTable');
+const tId  = tables.id[tIdx];
+const maCols = cols.colId.filter((_,i) => cols.parentId[i] === tId);
+
 ---
 RECORD COURANT - DEUX MODES
 # Mode __APP_STATE__ (statique au chargement)
@@ -1108,6 +1168,175 @@ TROUVER colRef:
 """,
 }
 
+DOCS_APP_PATTERNS = """GRIST CODER - App Patterns multi-widgets
+==========================================
+
+## PATTERN 1 — AUTO-PROVISIONING
+# Un widget qui cree ses propres tables au premier lancement.
+# A appeler dans grist.ready() avant tout autre code.
+
+async function ensureTable(name, schema) {
+  const tables = await grist.docApi.listTables();
+  if (!tables.includes(name))
+    await grist.docApi.applyUserActions([['AddTable', name, schema]]);
+}
+
+async function initApp() {
+  grist.ready({ requiredAccess: 'full' });
+  await ensureTable('Config', [
+    { id: 'cle',    type: 'Text' },
+    { id: 'valeur', type: 'Text' },
+  ]);
+  await ensureTable('Items', [
+    { id: 'Nom',    type: 'Text' },
+    { id: 'Statut', type: 'Choice',
+      widgetOptions: JSON.stringify({ choices: ['actif', 'inactif'] }) },
+  ]);
+  render(await safeLoad('Items'));
+}
+
+---
+## PATTERN 2 — NAVIGATION MULTI-WIDGETS (setCursorPos / onRecord)
+# Widget A (navigation) lie a la table Pages.
+# Widget B (contenu) lie a la table Contenu, "Select By" = Widget A.
+# Grist route automatiquement le curseur de A vers B via onRecord.
+
+// Widget A — Navigation
+async function navigateTo(pageId) {
+  await grist.setCursorPos({ rowId: pageId });
+}
+grist.onRecords(pages => renderNav(pages));
+
+// Widget B — Contenu
+let allItems = [], currentPageId = null;
+grist.onRecord(page => {
+  currentPageId = page?.id || null;
+  renderFiltered();
+});
+grist.onRecords(items => { allItems = items; renderFiltered(); });
+function renderFiltered() {
+  render(allItems.filter(i => i.page === currentPageId));
+}
+
+---
+## PATTERN 3 — SYNC INTER-WIDGETS (setSelectedRows / onRecord)
+# Meme table, plusieurs widgets independants (ex : Kanban + Gantt + Calendar).
+# Chaque widget emet ET recoit la selection — anti-boucle par garde.
+
+let selectedId = null;
+
+function selectItem(id) {
+  if (id === selectedId) return;   // anti-boucle
+  selectedId = id;
+  grist.setSelectedRows([id]);
+  highlight(id);
+}
+
+grist.onRecord(record => {
+  if (record?.id && record.id !== selectedId) {
+    selectedId = record.id;
+    highlight(record.id);
+  }
+});
+
+---
+## PATTERN 4 — COMMUNICATION VIA OPTIONS (setOption / onOptions)
+# Persiste dans widgetOptions du customView. Utile pour filtres, preferences.
+
+// Emetteur
+await grist.setOption('filter', { category: 'urgent', userId: 42 });
+
+// Recepteur
+grist.onOptions(opts => {
+  if (!opts) return;
+  applyFilter(opts.filter);
+});
+
+---
+## PATTERN 5 — CONTEXTE ARTEFACTORY
+# Dans Artefactory, les artefacts tournent dans des sous-iframes.
+# GristBridge est injecte automatiquement -> grist.docApi.* fonctionne.
+# window.app est injecte automatiquement -> navigation et evenements.
+
+const isArtefactory = typeof window.app?.navigate === 'function';
+
+// Navigation entre artefacts
+app.navigate('/clients');
+app.navigate('/fiche?id=42');
+
+// Bus d evenements inter-artefacts
+app.emit('client-selected', { id: 42 });
+app.on('client-selected', ({ id }) => loadDetail(id));
+
+// Etat partage
+app.setState({ currentId: 42 });
+const id = app.state.currentId;
+
+// Record courant (injecte par le widget parent)
+const r = window.__APP_STATE__?.record || {};
+app.on('record', r => { _state.record = r; render(); });
+""".strip()
+
+
+DOCS_FORMULAS = """GRIST CODER - Formules Grist natives (colonnes Python)
+=======================================================
+# Toutes les formules de colonnes Grist sont du Python.
+# $col = valeur de la colonne 'col' du record courant.
+# Les sections marquees [DETAIL] peuvent etre approfondies en session.
+
+## REFERENCES
+$Client                       # ID entier si colonne Reference
+$Client.Nom                   # valeur dans la table liee
+$Tags.label                   # sur ReferenceList: iterable de valeurs
+
+## LOOKUPS [DETAIL]
+Clients.lookupOne(Email=$Email)
+Clients.lookupRecords(Statut='actif')
+Clients.lookupOne(Nom=$Nom, sort_by='-CA')
+
+## AGREGATION SUR REFERENCES INVERSES [DETAIL]
+len(Commandes.lookupRecords(Client=$id))
+sum(Commandes.lookupRecords(Client=$id).Montant)
+sum(r.Montant for r in Commandes.lookupRecords(Client=$id)
+    if r.Statut == 'paye')
+
+## AGREGATION SUR REFERENCELIST
+SUM($Lignes.Montant)
+MAX($Items.Score)
+', '.join($Tags.label)
+
+## DATES [DETAIL]
+TODAY()
+NOW()
+DATEADD($Date, months=1)
+$DateFin - $DateDebut         # duree en jours (entier)
+$Date.year / $Date.month / $Date.day
+
+## LOGIQUE
+IF($CA > 1000, 'Grand', 'Petit')
+IFERROR($Montant / $Qte, 0)
+$Statut if $Actif else 'Inactif'
+
+## TEXTE
+$Nom.upper() / $Nom.lower() / $Nom.strip()
+LEN($Nom)
+LEFT($Texte, 3) / RIGHT($Texte, 3)
+SUBSTITUTE($Texte, 'old', 'new')
+f"{$Prenom} {$Nom}"
+
+## MATH
+ROUND($CA, 2)
+ABS($Delta)
+$CA * $Taux / 100
+
+## COLONNES DECLENCHEES (trigger columns) [DETAIL]
+# isFormula=False + formula non vide -> execute a la creation/modif
+# Timestamp creation : rec.CreatedAt = NOW()
+# Timestamp modif    : rec.UpdatedAt = NOW()  (recalcOnChanges=True)
+# Slug auto          : rec.Slug = $Nom.lower().replace(' ', '-')
+""".strip()
+
+
 # ── STATIC RESOURCES ──────────────────────────────────────────────────────────
 
 STATIC_RESOURCES = [
@@ -1124,6 +1353,16 @@ STATIC_RESOURCES = [
     {"uri":         "grist-coder://docs/playbook",
      "name":        "Page Playbook",
      "description": "Lire avant de creer pages/widgets. Sequences exactes, decision tree, layouts, liaisons.",
+     "mimeType":    "text/plain"},
+
+    {"uri":         "grist-coder://docs/app-patterns",
+     "name":        "App Patterns",
+     "description": "Patterns multi-widgets : auto-provisioning, navigation, sync, setOption, contexte Artefactory.",
+     "mimeType":    "text/plain"},
+
+    {"uri":         "grist-coder://docs/formulas",
+     "name":        "Grist Formulas",
+     "description": "Formules colonnes Python natives Grist : references, lookups, agregation, dates, trigger columns.",
      "mimeType":    "text/plain"},
 ]
 
@@ -1155,6 +1394,12 @@ async def _read_resource(uid_key, mcp_sid, uri):
 
     if uri == "grist-coder://docs/playbook":
         return {"uri": uri, "mimeType": "text/plain", "text": DOCS_PLAYBOOK}
+
+    if uri == "grist-coder://docs/app-patterns":
+        return {"uri": uri, "mimeType": "text/plain", "text": DOCS_APP_PATTERNS}
+
+    if uri == "grist-coder://docs/formulas":
+        return {"uri": uri, "mimeType": "text/plain", "text": DOCS_FORMULAS}
 
     if uri.startswith("grist-coder://playbook/"):
         scenario = uri.split("/")[-1]
