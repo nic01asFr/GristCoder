@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-<meta charset="UTF-8"><title>Grist Coder</title>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Grist Coder</title>
 <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.6/ace.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.6/mode-html.min.js"></script>
@@ -45,7 +45,7 @@ body{display:flex;flex-direction:column}
 #panelToggle.off{background:#fff;color:var(--text2)}
 #panelToggle.off:hover{background:var(--bg2);color:var(--text)}
 #appBody{flex:1;display:flex;overflow:hidden;min-height:0}
-#previewPane{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden}
+#previewPane{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden;position:relative}
 #splitter{width:5px;background:var(--border);cursor:col-resize;flex-shrink:0;
   opacity:0;pointer-events:none;
   transition:opacity .22s cubic-bezier(.4,0,.2,1),background .12s}
@@ -71,6 +71,122 @@ body{display:flex;flex-direction:column}
   font-size:12px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,.2);
   animation:ti .2s ease;pointer-events:none}
 @keyframes ti{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+/* ── WIZARD ─────────────────────────────────────────────────────────── */
+#wizardOverlay{position:absolute;inset:0;z-index:50;background:var(--bg2);
+  flex-direction:column;overflow:hidden;animation:ti .18s ease}
+.wz-header{padding:14px 12px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
+.wz-title{font-size:.92rem;font-weight:700;color:var(--text);line-height:1.3}
+.wz-subtitle{font-size:.76rem;color:var(--text2);margin-top:2px;line-height:1.4}
+.wz-body{flex:1;padding:20px 12px;display:flex;flex-direction:column;overflow-y:auto}
+.wz-inner{width:100%;max-width:520px;margin:auto;display:flex;flex-direction:column;gap:14px}
+/* choice */
+.wz-choices{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px}
+.wz-choice{display:flex;flex-direction:column;gap:4px;padding:11px 13px;border-radius:8px;
+  border:1.5px solid var(--border);background:#fff;cursor:pointer;text-align:left;
+  font-family:inherit;min-height:44px;
+  box-shadow:0 1px 3px rgba(0,0,0,.05);
+  touch-action:manipulation;-webkit-tap-highlight-color:transparent;
+  transition:border-color .12s,box-shadow .12s,background .12s}
+.wz-choice:hover{border-color:#3e5de7;box-shadow:0 0 0 3px rgba(62,93,231,.08)}
+.wz-choice.selected{border-color:#3e5de7;background:#eef2ff}
+.wz-choice-icon{font-size:1.6em;line-height:1;margin-bottom:2px}
+.wz-choice-label{font-size:.8rem;font-weight:600;color:var(--text)}
+.wz-choice-desc{font-size:.71rem;color:var(--text2);line-height:1.35}
+/* form */
+.wz-form{display:flex;flex-direction:column;gap:11px;width:100%}
+.wz-field{display:flex;flex-direction:column;gap:4px}
+.wz-label{font-size:.75rem;font-weight:600;color:var(--text2)}
+.wz-required{color:var(--error)}
+.wz-input{padding:8px 9px;border-radius:6px;border:1px solid var(--border);
+  font-size:.8rem;font-family:inherit;color:var(--text);background:#fff;
+  outline:none;transition:border-color .12s,box-shadow .12s;width:100%;
+  min-height:36px;-webkit-appearance:none;appearance:none}
+.wz-input:focus{border-color:#3e5de7;box-shadow:0 0 0 3px rgba(62,93,231,.08)}
+textarea.wz-input{resize:vertical;min-height:62px;line-height:1.5}
+.wz-hint{font-size:.7rem;color:var(--text2);margin-top:1px}
+/* toggle — label inline seulement, pas de label extérieur */
+.wz-toggle{display:flex;align-items:center;gap:9px;cursor:pointer;user-select:none;padding:2px 0}
+.wz-toggle input{display:none}
+.wz-toggle-track{width:32px;height:17px;border-radius:9px;background:var(--border);
+  position:relative;flex-shrink:0;transition:background .15s}
+.wz-toggle-track::after{content:'';position:absolute;top:2px;left:2px;
+  width:13px;height:13px;border-radius:50%;background:#fff;transition:left .15s;
+  box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.wz-toggle input:checked+.wz-toggle-track{background:#3e5de7}
+.wz-toggle input:checked+.wz-toggle-track::after{left:17px}
+.wz-toggle-label{font-size:.8rem;color:var(--text)}
+/* confirm */
+.wz-confirm-content{background:#fff;border-radius:8px;padding:12px 14px;
+  font-size:.8rem;color:var(--text);line-height:1.65;overflow-y:auto;max-height:240px;
+  border:1px solid var(--border)}
+.wz-confirm-content h1{font-size:1em;font-weight:700;margin:.7em 0 .25em}
+.wz-confirm-content h2{font-size:.9em;font-weight:700;margin:.6em 0 .2em}
+.wz-confirm-content h3{font-size:.82em;font-weight:700;margin:.5em 0 .15em}
+.wz-confirm-content li{margin:.15em 0 .15em 1.1em;list-style:disc}
+.wz-confirm-content p{margin:.3em 0}
+.wz-confirm-content code{background:#e2e8f0;padding:1px 5px;border-radius:4px;font-size:.88em}
+.wz-confirm-content strong{font-weight:700}
+/* progress */
+.wz-progress{display:flex;flex-direction:column;gap:7px;width:100%}
+.wz-progress-step{display:flex;align-items:center;gap:10px;font-size:.8rem;
+  padding:8px 12px;border-radius:7px}
+.wz-progress-step.done{color:#10b981;background:rgba(16,185,129,.07)}
+.wz-progress-step.active{color:#3e5de7;background:#eef2ff;font-weight:600}
+.wz-progress-step.error{color:var(--error);background:rgba(239,68,68,.05)}
+.wz-progress-step.pending{color:var(--text2)}
+.wz-step-icon{width:18px;flex-shrink:0;text-align:center;font-weight:700;font-size:.82rem}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
+.wz-progress-step.active .wz-step-icon{animation:blink 1.2s infinite}
+/* info */
+.wz-info-content{background:#fff;border-radius:8px;padding:12px 14px;
+  font-size:.8rem;color:var(--text);line-height:1.65;white-space:pre-line;
+  border:1px solid var(--border)}
+/* actions */
+.wz-actions{display:flex;gap:8px;flex-wrap:wrap;padding-top:2px;flex-shrink:0}
+.wz-btn{padding:9px 18px;border-radius:6px;border:1px solid var(--border);
+  font-size:.78rem;font-family:inherit;cursor:pointer;font-weight:500;
+  min-height:36px;touch-action:manipulation;-webkit-tap-highlight-color:transparent;
+  transition:all .12s;line-height:1}
+.wz-btn.primary{background:#3e5de7;color:#fff;border-color:#3e5de7}
+.wz-btn.primary:hover{background:#2845c1;border-color:#2845c1}
+.wz-btn.secondary{background:#fff;color:var(--text)}
+.wz-btn.secondary:hover{background:var(--bg3)}
+.wz-btn.danger{background:var(--error);color:#fff;border-color:var(--error)}
+.wz-btn.danger:hover{background:#dc2626;border-color:#dc2626}
+/* ── CONTEXT BAR ─────────────────────────────────────────────────────── */
+#contextBar{position:absolute;left:0;right:0;bottom:0;z-index:20;
+  background:rgba(248,250,252,.96);border-top:1px solid var(--border);
+  backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
+  max-height:200px;overflow-y:auto;padding:10px 14px 10px;
+  animation:ti .2s ease;display:none}
+.ctx-header{display:flex;align-items:center;justify-content:space-between;
+  margin-bottom:7px;flex-shrink:0}
+.ctx-title{font-size:.76rem;font-weight:700;color:var(--text);letter-spacing:.01em}
+.ctx-close{background:none;border:none;cursor:pointer;color:var(--text2);
+  font-size:.9rem;padding:0 2px;line-height:1;opacity:.6}
+.ctx-close:hover{opacity:1}
+.ctx-progress{height:3px;border-radius:2px;background:var(--border);
+  margin-bottom:8px;overflow:hidden}
+.ctx-progress-fill{height:100%;border-radius:2px;background:#3e5de7;
+  transition:width .4s ease}
+.ctx-sections{display:flex;flex-direction:column;gap:5px}
+.ctx-section{display:flex;gap:8px;align-items:baseline;font-size:.74rem;
+  padding:4px 8px;border-radius:5px}
+.ctx-section.default{background:transparent}
+.ctx-section.success{background:rgba(16,185,129,.07);color:#059669}
+.ctx-section.info{background:rgba(59,130,246,.07);color:#2563eb}
+.ctx-section.warn{background:rgba(245,158,11,.08);color:#d97706}
+.ctx-section.code{background:#1e293b;color:#e2e8f0;font-family:monospace;font-size:.7rem}
+.ctx-label{font-weight:600;flex-shrink:0;white-space:nowrap;color:inherit;opacity:.8}
+.ctx-content{color:inherit;line-height:1.45}
+/* ── WIZARD INPUT ─────────────────────────────────────────────────────── */
+.wz-request-ta{min-height:100px;font-size:.85rem;line-height:1.65;resize:vertical}
+.wz-suggestions{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
+.wz-suggestion{padding:5px 12px;border-radius:20px;border:1px solid var(--border);
+  background:#fff;font-size:.74rem;color:var(--text2);cursor:pointer;
+  font-family:inherit;transition:all .12s;touch-action:manipulation;
+  -webkit-tap-highlight-color:transparent}
+.wz-suggestion:hover{border-color:#3e5de7;color:#3e5de7;background:#eef2ff}
 </style>
 </head>
 <body>
@@ -96,6 +212,8 @@ body{display:flex;flex-direction:column}
 <div id="appBody">
   <div id="previewPane">
     <iframe id="renderFrame" sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups"></iframe>
+    <div id="wizardOverlay" style="display:none"></div>
+    <div id="contextBar"></div>
   </div>
   <div id="splitter"></div>
   <div id="editorPane">
@@ -387,6 +505,9 @@ function listenSSE() {
           renderArtSelect();
         }
         if (ev.type === 'screenshot_request') captureScreenshot();
+        if (ev.type === 'wizard_step')    showWizard(ev.step);
+        if (ev.type === 'wizard_close')   closeWizard();
+        if (ev.type === 'context_update') showContext(ev.panel);
       }
     } catch(_) {}
   };
@@ -749,6 +870,252 @@ function showToast(msg, type) {
 function debounce(fn, delay) {
   var timer;
   return function() { clearTimeout(timer); timer = setTimeout(fn, delay); };
+}
+
+// ── CONTEXT BAR ──────────────────────────────────────────────────────────────
+function showContext(panel) {
+  var bar = document.getElementById('contextBar');
+  if (!panel || (!panel.title && !(panel.sections||[]).length)) {
+    bar.style.display = 'none'; bar.innerHTML = ''; return;
+  }
+  var STYLE_ICONS = {success:'✓ ',info:'ℹ ',warn:'⚠ ',code:'',default:''};
+  var html = '<div class="ctx-header">'
+    + '<span class="ctx-title">'+_wzEsc(panel.title||'')+'</span>'
+    + '<button class="ctx-close" onclick="closeContext()" title="Fermer">✕</button>'
+    + '</div>';
+  if (typeof panel.progress === 'number') {
+    html += '<div class="ctx-progress"><div class="ctx-progress-fill" style="width:'
+      + Math.max(0,Math.min(100,panel.progress)) + '%"></div></div>';
+  }
+  html += '<div class="ctx-sections">';
+  (panel.sections||[]).forEach(function(s) {
+    var st = s.style||'default';
+    html += '<div class="ctx-section '+st+'">';
+    if (s.label) html += '<span class="ctx-label">'+_wzEsc(s.label)+'</span>';
+    html += '<span class="ctx-content">'+(STYLE_ICONS[st]||'')+_wzEsc(s.content||'')+'</span>';
+    html += '</div>';
+  });
+  html += '</div>';
+  bar.innerHTML = html;
+  bar.style.display = 'block';
+}
+function closeContext() {
+  var bar = document.getElementById('contextBar');
+  bar.style.display = 'none'; bar.innerHTML = '';
+}
+
+// ── WIZARD ────────────────────────────────────────────────────────────────────
+function _wzEsc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function _wzMd(md) {
+  // Mini-markdown pour confirm content : headings, listes, gras, code
+  var lines = _wzEsc(md).split('\n'), html = [];
+  lines.forEach(function(l) {
+    if      (l.startsWith('### ')) html.push('<h3>'+l.slice(4)+'</h3>');
+    else if (l.startsWith('## '))  html.push('<h2>'+l.slice(3)+'</h2>');
+    else if (l.startsWith('# '))   html.push('<h1>'+l.slice(2)+'</h1>');
+    else if (l.startsWith('- '))   html.push('<li>'+l.slice(2)+'</li>');
+    else if (l.trim()==='')        html.push('');
+    else                           html.push('<p>'+l+'</p>');
+  });
+  return html.join('\n')
+    .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+    .replace(/`(.+?)`/g,'<code>$1</code>');
+}
+
+function showWizard(step) {
+  if (!step) return;
+  var ov = document.getElementById('wizardOverlay');
+  var header = '<div class="wz-header">'
+    + '<div class="wz-title">'+ _wzEsc(step.title||'') +'</div>'
+    + (step.subtitle ? '<div class="wz-subtitle">'+_wzEsc(step.subtitle)+'</div>' : '')
+    + '</div>';
+  var body = '<div class="wz-body"><div class="wz-inner">' + _wzRenderBody(step) + '</div></div>';
+  ov.innerHTML = header + body;
+  ov.style.display = 'flex';
+}
+
+function closeWizard() {
+  var ov = document.getElementById('wizardOverlay');
+  ov.style.display = 'none';
+  ov.innerHTML = '';
+}
+
+function _wzRenderBody(step) {
+  var sid = _wzEsc(step.id||'');
+  switch (step.type) {
+    case 'choice':  return _wzChoice(step, sid);
+    case 'form':    return _wzForm(step, sid);
+    case 'confirm': return _wzConfirm(step, sid);
+    case 'progress':return _wzProgress(step);
+    case 'info':    return _wzInfo(step, sid);
+    case 'input':   return _wzInput(step, sid);
+    default:        return '<pre style="font-size:.72rem;color:var(--text2)">'+_wzEsc(JSON.stringify(step,null,2))+'</pre>';
+  }
+}
+
+function _wzChoice(step, sid) {
+  var multi = !!step.multi;
+  var html = '<div class="wz-choices">';
+  (step.choices||[]).forEach(function(c) {
+    var cid = _wzEsc(c.id||'');
+    html += '<button class="wz-choice" data-cid="'+cid+'" onclick="wzChoiceClick(this,\''+sid+'\','+multi+')">';
+    if (c.icon) html += '<span class="wz-choice-icon">'+c.icon+'</span>';
+    html += '<span class="wz-choice-label">'+_wzEsc(c.label||c.id)+'</span>';
+    if (c.desc) html += '<span class="wz-choice-desc">'+_wzEsc(c.desc)+'</span>';
+    html += '</button>';
+  });
+  html += '</div>';
+  if (multi) html += '<div class="wz-actions"><button class="wz-btn primary" onclick="wzSubmitChoice(\''+sid+'\',true)">Valider</button></div>';
+  return html;
+}
+
+function wzChoiceClick(el, sid, multi) {
+  if (multi) {
+    el.classList.toggle('selected');
+  } else {
+    wzSubmitChoice(sid, false, el.dataset.cid);
+  }
+}
+
+function wzSubmitChoice(sid, multi, singleId) {
+  var selected = multi
+    ? Array.from(document.querySelectorAll('.wz-choice.selected')).map(function(e){return e.dataset.cid;})
+    : singleId;
+  wzPost(sid, 'choice', {selected: selected});
+}
+
+function _wzForm(step, sid) {
+  var html = '<form class="wz-form" onsubmit="wzSubmitForm(event,\''+sid+'\');return false;">';
+  (step.fields||[]).forEach(function(f) {
+    var fid = _wzEsc(f.id||'');
+    html += '<div class="wz-field">';
+    if (f.type !== 'toggle') {
+      html += '<label class="wz-label" for="wzf-'+fid+'">'+_wzEsc(f.label||f.id)+(f.required?'<span class="wz-required"> *</span>':'')+'</label>';
+    }
+    var ph = _wzEsc(f.placeholder||'');
+    var req = f.required?' required':'';
+    switch (f.type) {
+      case 'textarea':
+        html += '<textarea class="wz-input" id="wzf-'+fid+'" name="'+fid+'" placeholder="'+ph+'" rows="4"'+req+'></textarea>';
+        break;
+      case 'number':
+        html += '<input type="number" class="wz-input" id="wzf-'+fid+'" name="'+fid+'" placeholder="'+ph+'"'+req+'>';
+        break;
+      case 'select':
+        html += '<select class="wz-input" id="wzf-'+fid+'" name="'+fid+'"'+req+'>';
+        (f.options||[]).forEach(function(o) {
+          var ov = (typeof o==='object')?_wzEsc(o.id||o.label||o):_wzEsc(o);
+          var ol = (typeof o==='object')?_wzEsc(o.label||o.id||o):_wzEsc(o);
+          html += '<option value="'+ov+'">'+ol+'</option>';
+        });
+        html += '</select>';
+        break;
+      case 'toggle':
+        html += '<label class="wz-toggle"><input type="checkbox" id="wzf-'+fid+'" name="'+fid+'">'
+          + '<span class="wz-toggle-track"></span>'
+          + '<span class="wz-toggle-label">'+_wzEsc(f.label||f.id)+'</span></label>';
+        break;
+      default: // text
+        html += '<input type="text" class="wz-input" id="wzf-'+fid+'" name="'+fid+'" placeholder="'+ph+'"'+req+'>';
+    }
+    if (f.hint) html += '<div class="wz-hint">'+_wzEsc(f.hint)+'</div>';
+    html += '</div>';
+  });
+  html += '<div class="wz-actions"><button type="submit" class="wz-btn primary">Valider</button></div></form>';
+  return html;
+}
+
+function wzSubmitForm(event, sid) {
+  var vals = {};
+  var els = event.target.querySelectorAll('[name]');
+  els.forEach(function(el) {
+    vals[el.name] = (el.type==='checkbox') ? el.checked : el.value;
+  });
+  wzPost(sid, 'form', vals);
+}
+
+function _wzConfirm(step, sid) {
+  var html = '';
+  if (step.content) html += '<div class="wz-confirm-content">'+_wzMd(step.content)+'</div>';
+  var actions = step.actions||[{id:'ok',label:'Valider',style:'primary'}];
+  html += '<div class="wz-actions">';
+  actions.forEach(function(a) {
+    html += '<button class="wz-btn '+(a.style||'secondary')+'" onclick="wzPost(\''+sid+'\',\'confirm\',{action:\''+_wzEsc(a.id)+'\'})">'+_wzEsc(a.label)+'</button>';
+  });
+  html += '</div>';
+  return html;
+}
+
+function _wzProgress(step) {
+  var icons = {done:'✓', active:'→', pending:'·', error:'✗'};
+  var html = '<div class="wz-progress">';
+  (step.steps||[]).forEach(function(s) {
+    var st = s.status||'pending';
+    html += '<div class="wz-progress-step '+st+'">'
+      + '<span class="wz-step-icon">'+(icons[st]||'·')+'</span>'
+      + '<span>'+_wzEsc(s.label)+'</span></div>';
+  });
+  html += '</div>';
+  return html;
+}
+
+function _wzInfo(step, sid) {
+  var html = '';
+  if (step.content) html += '<div class="wz-info-content">'+_wzEsc(step.content)+'</div>';
+  var actions = step.actions||[];
+  if (actions.length) {
+    html += '<div class="wz-actions">';
+    actions.forEach(function(a) {
+      html += '<button class="wz-btn '+(a.style||'primary')+'" onclick="wzPost(\''+sid+'\',\'confirm\',{action:\''+_wzEsc(a.id)+'\'})">'+_wzEsc(a.label)+'</button>';
+    });
+    html += '</div>';
+  }
+  return html;
+}
+
+function _wzInput(step, sid) {
+  var html = '';
+  if (step.context) {
+    html += '<div class="wz-info-content" style="margin-bottom:4px">'+_wzEsc(step.context)+'</div>';
+  }
+  var ph = _wzEsc(step.placeholder||'Décrivez votre demande…');
+  var lbl = _wzEsc(step.submit_label||'Envoyer');
+  html += '<form onsubmit="wzSubmitInput(event,\''+sid+'\');return false;">';
+  html += '<textarea class="wz-input wz-request-ta" id="wz-req-ta" placeholder="'+ph+'" rows="4" required autofocus></textarea>';
+  if (step.suggestions && step.suggestions.length) {
+    html += '<div class="wz-suggestions">';
+    step.suggestions.forEach(function(s) {
+      html += '<button type="button" class="wz-suggestion" onclick="wzSuggestion(\''+_wzEsc(s)+'\')">'+_wzEsc(s)+'</button>';
+    });
+    html += '</div>';
+  }
+  html += '<div class="wz-actions"><button type="submit" class="wz-btn primary">'+lbl+'</button></div>';
+  html += '</form>';
+  return html;
+}
+
+function wzSubmitInput(event, sid) {
+  var text = document.getElementById('wz-req-ta').value.trim();
+  if (!text) return;
+  wzPost(sid, 'input', {text: text});
+}
+
+function wzSuggestion(text) {
+  var ta = document.getElementById('wz-req-ta');
+  if (ta) { ta.value = text; ta.focus(); }
+}
+
+async function wzPost(stepId, type, values) {
+  try {
+    closeWizard();
+    await fetch(BASE+'/wizard/'+_token, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({step_id: stepId, type: type, values: values})
+    });
+  } catch(e) { showToast('Erreur wizard: '+e.message, 'error'); }
 }
 </script>
 </body>

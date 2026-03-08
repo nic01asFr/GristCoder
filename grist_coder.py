@@ -1,5 +1,5 @@
 """
-GRIST CODER · MCP Server v5.1 · streamable HTTP spec 2025-03-26
+GRIST CODER · MCP Server v5.4 · streamable HTTP spec 2025-03-26
 ────────────────────────────────────────────────────────────────
 Document Grist = codebase du projet.
 Widget = split vertical Ace editor | iframe preview.
@@ -7,7 +7,9 @@ LLM via MCP : schema relationnel + artefacts + pages structurées.
 
 AUTH  : widget -> grist.docApi.getAccessToken() -> POST /register -> gc-xxx
         Claude Desktop -> Bearer <grist_key> -> uid:user_id stable
-TOOLS : sessions(3) canvas(6) artefact(1) grist-r(3) grist-w(3) doc(5) webhooks(1) = 22
+TOOLS : sessions(3) canvas(6) wizard(2) context(1) chat(2) subagent(1)
+        artefact(1) grist-r(3) grist-w(3) doc(5) webhooks(1) = 28
+MCP   : sampling/createMessage (client capability) -> subagent_call + chat auto-reply
 """
 
 import asyncio, base64, hashlib, json, os, re, subprocess, sys, time, uuid
@@ -47,9 +49,13 @@ COUCHES D UNE APP COMPLETE
                (ce que le doc declenche dans le monde exterieur — transparent pour l utilisateur)
                Receiver : HOST_URL/webhook-receive/{docId} si HOST_URL est public
 
-OUTILS (21)
+OUTILS (28)
   Sessions : sessions_list, session_select, session_info
   Canvas   : canvas_read, canvas_write, canvas_patch, canvas_exec, canvas_screenshot, canvas_type
+  Wizard   : canvas_wizard, canvas_wizard_close
+  Context  : canvas_context_update  <- panneau memoire visible par l utilisateur (non bloquant)
+  Chat     : chat_reply             <- repondre dans l interface chat du widget
+  Subagent : subagent_call          <- deleguer a un agent specialise via sampling MCP
   Artefact : artefact_init
   Grist R  : grist_schema, grist_records, grist_sql
   Grist W  : grist_records_add, grist_records_patch, grist_upsert
@@ -63,17 +69,41 @@ RESSOURCES
   docs/playbook         -> sequences pages, layouts, liaisons (lire avant creer pages)
   docs/app-patterns     -> patterns multi-widgets : nav, sync, auto-provisioning, Artefactory
   docs/formulas         -> formules colonnes Python natives Grist
+  docs/wizard           -> schema des etapes wizard + workflows types (lire avant canvas_wizard)
   playbook/{scenario}   -> guide cible : dashboard|fiche|table|full-app|master-detail
   context/{token}       -> snapshot live : tables+artefacts+pages (lire en debut session)
   code/{token}          -> source de tous les artefacts (lire avant iterer sur app existante)
+  chat/{token}          -> messages entrants utilisateur (lire si notifications/resources/updated)
 
 WORKFLOW
   1. sessions_list() -> token
-  2. context/{token} -> etat doc
-  3. docs/playbook (ou playbook/{scenario}) -> sequence exacte
+  2. context/{token} -> etat doc (tables, artefacts, pages)
+  3a. Si doc vide / besoin flou -> canvas_wizard(choice/form/confirm) pour qualifier avec l utilisateur
+  3b. Si doc existant -> docs/playbook ou playbook/{scenario} -> sequence
   4. Construire : tables -> artefacts (canvas_write+screenshot+upsert) -> pages
+     Pendant la construction : canvas_wizard(progress) + canvas_context_update(etat courant)
   5. (optionnel) grist_webhooks(create) -> integration externe ou async processing
-  6. context/{token} -> verifier
+  6. canvas_wizard_close() si wizard ouvert -> retour artefact
+  7. context/{token} -> verifier
+
+WIDGET VIVANT
+  canvas_context_update(title, sections, progress?) : panneau memoire en bas du widget
+    -> affiche l etat courant, les decisions prises, le contexte pour l utilisateur
+    -> sections : [{label, content, style: default|success|info|warn|code}]
+    -> progress : 0-100 (barre de progression optionnelle)
+    -> appeler en debut de session pour contextualiser, et apres chaque etape cle
+    -> appeler avec {} ou sections vides pour fermer le panneau
+
+  CHAT (si l utilisateur envoie un message via le widget) :
+    -> resource chat/{token} reçoit une notification notifications/resources/updated
+    -> lire chat/{token} -> pending_messages -> traiter -> chat_reply(message)
+    -> ou: si client supporte sampling, la reponse est automatique (pas besoin de chat_reply)
+
+  SUBAGENTS (subagent_call) :
+    -> deleger une analyse ou generation a un agent specialise
+    -> roles: data-architect | ui-designer | data-analyst | integrator | assistant
+    -> necessite que le client MCP supporte sampling (Claude Desktop le supporte)
+    -> retourne le texte de la reponse de l agent specialise pour informer les decisions
 
 REGLES CRITIQUES
   JAMAIS REST PATCH sur _grist_Views / _grist_Views_section -> crash frontend
@@ -101,6 +131,8 @@ class SessionCtx:
         self.current_art_id  = None   # id Grist de l'artefact courant
         self.current_art_nom = None
         self.current_art_type= None
+        self.wizard_responses: deque = deque(maxlen=20)
+        self._wizard_event: asyncio.Event | None = None
 
     def touch(self): self.last_seen = time.time()
 
@@ -170,6 +202,9 @@ class UserRegistry:
 registry  = UserRegistry()
 _token_to_uid: dict[str, str] = {}
 _screenshot_waiters: dict[str, asyncio.Future] = {}
+_client_capabilities: dict[str, dict] = {}   # uid_key -> capabilities déclarées par le client MCP
+_mcp_client_sids: dict[str, str] = {}        # uid_key -> sid SSE du client MCP (Claude Desktop)
+_sampling_waiters: dict[str, asyncio.Future] = {}  # smp_id -> Future pour sampling/createMessage
 
 # ── SSE ───────────────────────────────────────────────────────────────────────
 
@@ -274,6 +309,67 @@ ARTEFACTS_TABLE_DEF = {
     }]
 }
 
+# ── SAMPLING HELPERS ──────────────────────────────────────────────────────────
+
+async def _do_sample(uid_key: str, messages: list, system_prompt: str = "",
+                     max_tokens: int = 2048) -> str:
+    """Envoie une sampling/createMessage au client MCP et attend la réponse."""
+    smp_id = "smp-" + uuid.uuid4().hex[:8]
+    loop   = asyncio.get_event_loop()
+    fut    = loop.create_future()
+    _sampling_waiters[smp_id] = fut
+    sid = _mcp_client_sids.get(uid_key)
+    if not sid or sid not in _queues:
+        _sampling_waiters.pop(smp_id, None)
+        raise ValueError("Pas de client MCP connecte (sampling indisponible)")
+    req = {
+        "jsonrpc": "2.0", "id": smp_id,
+        "method": "sampling/createMessage",
+        "params": {
+            "messages":      messages,
+            "systemPrompt":  system_prompt,
+            "includeContext": "thisServer",
+            "maxTokens":     max_tokens,
+        }
+    }
+    try:
+        _queues[sid].put_nowait({"_raw_rpc": req, "_user": uid_key})
+    except asyncio.QueueFull:
+        _sampling_waiters.pop(smp_id, None)
+        raise ValueError("Queue MCP client saturee")
+    try:
+        result = await asyncio.wait_for(fut, timeout=120)
+        content = result.get("content", {})
+        if isinstance(content, dict):
+            return content.get("text", "")
+        if isinstance(content, list):
+            return "".join(c.get("text", "") for c in content if c.get("type") == "text")
+        return str(content)
+    except asyncio.TimeoutError:
+        raise ValueError("Sampling timeout (120s)")
+    finally:
+        _sampling_waiters.pop(smp_id, None)
+
+
+async def _handle_chat_sample(uid_key: str, ctx, message: str):
+    """Lance un sampling pour répondre automatiquement à un message chat."""
+    system = (
+        f'Tu es l\'assistant du document Grist "{ctx.doc_title}". '
+        "Tu reponds en francais, de maniere concise et claire. "
+        "Si la demande necessite des actions sur le document, decris brievement ce que tu vas faire."
+    )
+    try:
+        text = await _do_sample(uid_key,
+                                [{"role": "user", "content": {"type": "text", "text": message}}],
+                                system, 1024)
+    except Exception as e:
+        text = f"Erreur: {e}"
+    ts = time.time()
+    ctx.chat_history.appendleft({"role": "assistant", "content": text, "ts": ts})
+    _push(uid_key, {"type": "chat_message", "token": ctx.token,
+                    "role": "assistant", "content": text, "ts": ts})
+
+
 # ── TOOLS ─────────────────────────────────────────────────────────────────────
 
 TOOLS = [
@@ -337,6 +433,86 @@ TOOLS = [
                                              "enum": ["html","react","grist","markdown","mermaid","python","sql","svg","app"],
                                              "description": "Nouveau type de l artefact"}},
                      "required": ["type"]}},
+
+    # Wizard
+    {"name": "canvas_wizard",
+     "description": (
+         "Affiche une etape interactive dans le render pane du widget. "
+         "Types interactifs (choice | form | confirm) : bloque jusqu a la reponse user (defaut 120s). "
+         "Types non-interactifs (progress | info sans actions) : retourne immediatement apres affichage. "
+         "Lire docs/wizard pour le schema complet et les workflows types."
+     ),
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "step": {
+                             "type": "object",
+                             "description": (
+                                 "Definition de l etape. Champs communs : id (str, unique), "
+                                 "type (choice|form|confirm|progress|info|input), title (str), subtitle (str, opt). "
+                                 "choice: choices=[{id,icon?,label,desc?}], multi=false. "
+                                 "form: fields=[{id,type,label,placeholder?,required?,hint?,options?}]. "
+                                 "confirm: content (markdown), actions=[{id,label,style?}]. "
+                                 "progress: steps=[{id,label,status (done|active|pending|error)}]. "
+                                 "info: content (texte), actions=[{id,label,style?}] optionnel. "
+                                 "input: textarea libre. placeholder?, submit_label?, context (texte contextuel)?, "
+                                 "suggestions=[str] (chips de suggestions rapides). Retourne {values:{text}}. "
+                                 "timeout: int (defaut 300s, types interactifs seulement)."
+                             ),
+                             "required": ["id", "type", "title"]
+                         }
+                     },
+                     "required": ["step"]}},
+
+    {"name": "canvas_wizard_close",
+     "description": "Ferme le wizard overlay dans le widget et retourne au render pane normal.",
+     "inputSchema": {"type": "object", "properties": {}}},
+
+    # Context panel
+    {"name": "canvas_context_update",
+     "description": (
+         "Pousse un panneau contexte/memoire dans le widget. Non bloquant. "
+         "Visible en permanence en bas du preview pour informer l utilisateur. "
+         "Appeler en debut de session pour contextualiser, apres chaque etape cle, "
+         "et avec sections=[] pour fermer. "
+         "sections[].style : default|success|info|warn|code"
+     ),
+     "inputSchema": {"type": "object", "properties": {
+         "title":    {"type": "string", "description": "Titre du panneau"},
+         "sections": {"type": "array", "items": {"type": "object", "properties": {
+             "label":   {"type": "string"},
+             "content": {"type": "string"},
+             "style":   {"type": "string", "enum": ["default","success","info","warn","code"]}
+         }}, "description": "Sections de contenu. Vide = fermer le panneau."},
+         "progress": {"type": "number", "description": "0-100, barre de progression optionnelle"},
+     }, "required": ["title"]}},
+
+    # Chat
+    {"name": "chat_reply",
+     "description": (
+         "Envoie une reponse dans l interface chat du widget. "
+         "Appeler apres avoir lu chat/{token} et traite la demande utilisateur. "
+         "Inutile si le client supporte sampling (reponse automatique)."
+     ),
+     "inputSchema": {"type": "object",
+                     "properties": {"message": {"type": "string"}},
+                     "required": ["message"]}},
+
+    # Subagent
+    {"name": "subagent_call",
+     "description": (
+         "Delegue une tache analytique ou generative a un agent specialise via sampling MCP. "
+         "Le client MCP (Claude Desktop) doit supporter sampling. "
+         "Roles disponibles: data-architect | ui-designer | data-analyst | integrator | assistant. "
+         "Retourne la reponse textuelle de l agent pour informer les decisions du LLM principal."
+     ),
+     "inputSchema": {"type": "object", "properties": {
+         "role":       {"type": "string",
+                        "enum": ["data-architect","ui-designer","data-analyst","integrator","assistant"],
+                        "description": "Profil specialise de l agent"},
+         "task":       {"type": "string", "description": "Instruction precise pour l agent"},
+         "context":    {"type": "string", "description": "Contexte supplementaire (schema, code, etc.)"},
+         "max_tokens": {"type": "integer", "default": 2048},
+     }, "required": ["role", "task"]}},
 
     # Artefact
     {"name": "artefact_init",
@@ -1471,6 +1647,117 @@ $CA * $Taux / 100
 """.strip()
 
 
+DOCS_WIZARD = """GRIST CODER - Wizard : dialogue interactif avec l utilisateur
+==============================================================
+Le wizard permet d afficher des etapes contextuelles dans le render pane du widget.
+Le LLM pousse une etape -> le widget la rend -> l utilisateur repond -> le LLM continue.
+Utiliser pour qualifier le besoin, confirmer l architecture, afficher la progression.
+
+TYPES D ETAPES
+--------------
+
+1. choice — selection parmi des options (cartes cliquables)
+canvas_wizard({"id":"s1","type":"choice","title":"Type d app","subtitle":"Choisis le modele",
+  "choices":[
+    {"id":"crm",      "icon":"👥","label":"CRM",      "desc":"Clients, contacts, contrats"},
+    {"id":"stock",    "icon":"📦","label":"Stock",    "desc":"Inventaire et mouvements"},
+    {"id":"projet",   "icon":"📋","label":"Projet",   "desc":"Tasks, milestones, equipe"},
+    {"id":"custom",   "icon":"⚙️","label":"Sur mesure","desc":"Architecture libre"}
+  ]
+})
+# multi=false (defaut) : clic = reponse immediate
+# multi=true : selection multiple + bouton Valider
+Reponse: {"step_id":"s1","type":"choice","values":{"selected":"crm"}}
+         {"step_id":"s1","type":"choice","values":{"selected":["crm","stock"]}}  # multi
+
+2. form — formulaire avec champs structures
+canvas_wizard({"id":"s2","type":"form","title":"Entites du modele","subtitle":"Decris tes donnees",
+  "fields":[
+    {"id":"entities","type":"text",     "label":"Entites principales","placeholder":"Clients, Contrats, Prestataires","required":true},
+    {"id":"desc",    "type":"textarea", "label":"Description du besoin","placeholder":"Ce que l app doit permettre de faire..."},
+    {"id":"import",  "type":"toggle",   "label":"Importer des donnees existantes"},
+    {"id":"nb",      "type":"number",   "label":"Volume estime (lignes)","placeholder":"500"},
+    {"id":"format",  "type":"select",   "label":"Format prefere","options":["CSV","Excel","Manuel"]}
+  ]
+})
+Types de champs : text | textarea | number | select | toggle
+select: "options" = ["val1","val2"] ou [{"id":"v","label":"L"}]
+Reponse: {"step_id":"s2","type":"form","values":{"entities":"Clients","desc":"...","import":false,"nb":"500","format":"CSV"}}
+
+3. confirm — afficher une proposition et demander validation
+canvas_wizard({"id":"s3","type":"confirm","title":"Architecture proposee",
+  "content":"## Tables\\n- Clients\\n- Contrats (Ref:Clients)\\n\\n## Pages\\n- Dashboard (IsDoc)\\n- Liste Clients + Fiche\\n- Master-detail Clients -> Contrats",
+  "actions":[
+    {"id":"ok",     "label":"Valider ✓",  "style":"primary"},
+    {"id":"modify", "label":"Modifier",   "style":"secondary"},
+    {"id":"cancel", "label":"Annuler",    "style":"danger"}
+  ]
+})
+Reponse: {"step_id":"s3","type":"confirm","values":{"action":"ok"}}
+
+4. progress — afficher la progression de build (non-interactif, retourne immediatement)
+canvas_wizard({"id":"build","type":"progress","title":"Construction en cours",
+  "steps":[
+    {"id":"schema",  "label":"Schema relationnel","status":"done"},
+    {"id":"data",    "label":"Donnees initiales", "status":"done"},
+    {"id":"arts",    "label":"Artefacts HTML/JS", "status":"active"},
+    {"id":"pages",   "label":"Pages Grist",       "status":"pending"},
+    {"id":"webhooks","label":"Intégrations",      "status":"pending"}
+  ]
+})
+# Mettre a jour : repousser meme id avec nouveaux statuts
+# Statuts : done (vert) | active (bleu, anime) | pending (gris) | error (rouge)
+# Fermer quand termine : canvas_wizard_close()
+
+5. info — message informatif avec action optionnelle
+canvas_wizard({"id":"s5","type":"info","title":"Donnees requises",
+  "content":"Colle le contenu de ton fichier CSV dans le champ ci-dessous, puis clique Importer.",
+  "actions":[{"id":"done","label":"Continu","style":"primary"}]
+})
+# Sans actions -> retourne immediatement (pas de blocage)
+# Avec actions -> bloque comme confirm
+
+FERMER LE WIZARD
+canvas_wizard_close()  # cache l overlay, retourne au render pane normal
+
+WORKFLOWS TYPES
+---------------
+
+A. QUALIFICATION D UN NOUVEAU BESOIN (doc vide)
+   1. canvas_wizard(choice)   -> type d app (crm | stock | projet | custom)
+   2. canvas_wizard(form)     -> entites + description + volume + import
+   3. Elaborer l architecture (tables, artefacts, pages)
+   4. canvas_wizard(confirm)  -> montrer l architecture, demander validation
+   5. if "modify" -> canvas_wizard(form) pour ajustements -> retour etape 4
+   6. if "ok" -> construire
+   7. canvas_wizard(progress) -> suivre la construction etape par etape
+   8. canvas_wizard_close()   -> revenir a l artefact final
+
+B. IMPORT DE DONNEES
+   1. canvas_wizard(choice)   -> format (CSV | JSON | coller | existant Grist)
+   2. canvas_wizard(form)     -> textarea pour coller les donnees brutes
+   3. Traiter (canvas_exec ou grist_apply)
+   4. canvas_wizard(info)     -> confirmer le resultat, proposer la suite
+
+C. ITERATION SUR APP EXISTANTE (doc non vide)
+   1. context/{token}         -> lire l etat actuel
+   2. canvas_wizard(confirm)  -> montrer le diagnostic, proposer les ameliorations
+   3. if "ok" -> canvas_wizard(progress) pendant la construction
+   4. canvas_wizard_close()
+
+D. DEMANDE AMBIGUE (besoin flou)
+   1. canvas_wizard(form)  -> poser les 2-3 questions cles
+   2. Construire la reponse sur la base de la saisie
+   # Toujours privilegier 1-2 questions ciblées plutot qu un long formulaire
+
+BONNES PRATIQUES
+- Garder les etapes courtes (1-2 questions max par form)
+- Utiliser subtitle pour donner du contexte sans alourdir le titre
+- Pour confirm : markdown simple (## h2, - liste, **gras**, `code`)
+- progress : toujours fermer avec canvas_wizard_close() une fois termine
+- Ne pas laisser le wizard ouvert en fin de session
+""".strip()
+
 # ── STATIC RESOURCES ──────────────────────────────────────────────────────────
 
 STATIC_RESOURCES = [
@@ -1497,6 +1784,11 @@ STATIC_RESOURCES = [
     {"uri":         "grist-coder://docs/formulas",
      "name":        "Grist Formulas",
      "description": "Formules colonnes Python natives Grist : references, lookups, agregation, dates, trigger columns.",
+     "mimeType":    "text/plain"},
+
+    {"uri":         "grist-coder://docs/wizard",
+     "name":        "Wizard Guide",
+     "description": "Lire avant canvas_wizard. Schema des 5 types d etapes + workflows de qualification besoin, import, iteration.",
      "mimeType":    "text/plain"},
 ]
 
@@ -1534,6 +1826,9 @@ async def _read_resource(uid_key, mcp_sid, uri):
 
     if uri == "grist-coder://docs/formulas":
         return {"uri": uri, "mimeType": "text/plain", "text": DOCS_FORMULAS}
+
+    if uri == "grist-coder://docs/wizard":
+        return {"uri": uri, "mimeType": "text/plain", "text": DOCS_WIZARD}
 
     if uri.startswith("grist-coder://playbook/"):
         scenario = uri.split("/")[-1]
@@ -1663,6 +1958,19 @@ async def _read_resource(uid_key, mcp_sid, uri):
             return {"uri": uri, "mimeType": "text/plain",
                     "text": f"Table Artefacts non trouvee. Appeler artefact_init() d abord.\nErreur: {e}"}
 
+    if uri.startswith("grist-coder://chat/"):
+        token = uri.split("/")[-1]
+        ctx = registry.resolve(uid_key, token)
+        if not ctx: raise ValueError(f"Session inconnue : {token}")
+        history = list(ctx.chat_history)
+        pending = [m for m in history if m.get("pending")]
+        # Effacer le flag pending après lecture
+        for m in ctx.chat_history:
+            m.pop("pending", None)
+        return {"uri": uri, "mimeType": "application/json",
+                "text": json.dumps({"pending_messages": pending, "history": history},
+                                   ensure_ascii=False)}
+
     raise ValueError(f"Resource inconnue : {uri}")
 
 
@@ -1679,6 +1987,11 @@ def _resources_list(uid_key):
              "name": f"Code — {title}",
              "description": "Code source de tous les artefacts.",
              "mimeType": "text/plain"},
+            {"uri": f"grist-coder://chat/{t}",
+             "name": f"Chat — {title}",
+             "description": "Messages entrants utilisateur (pending + historique). "
+                            "Se met à jour via notifications/resources/updated.",
+             "mimeType": "application/json"},
         ]
     return res
 
@@ -1797,6 +2110,97 @@ async def call_tool(uid_key, mcp_sid, name, args):
                           {"records": [{"id": art_id, "fields": {"Type": art_type}}]})
         _push(uid_key, {"type": "type_changed", "token": ctx.token, "artType": art_type})
         return {"ok": True, "type": art_type, "art_id": art_id}
+
+    # ── Wizard
+    if name == "canvas_wizard":
+        step = args.get("step", {})
+        step_type = step.get("type", "info")
+        interactive = step_type in ("choice", "form", "confirm", "input") or (
+            step_type == "info" and step.get("actions")
+        )
+        timeout = step.get("timeout", 300)
+        _push(uid_key, {"type": "wizard_step", "token": ctx.token, "step": step})
+        if not interactive:
+            return {"ok": True, "status": "displayed", "step_id": step.get("id")}
+        # Initialise event si besoin et attend la reponse user
+        if ctx._wizard_event is None:
+            ctx._wizard_event = asyncio.Event()
+        ctx._wizard_event.clear()
+        try:
+            await asyncio.wait_for(ctx._wizard_event.wait(), timeout=float(timeout))
+            resp = ctx.wizard_responses[0] if ctx.wizard_responses else None
+            return resp or {"status": "no_response", "step_id": step.get("id")}
+        except asyncio.TimeoutError:
+            return {"status": "timeout", "step_id": step.get("id"),
+                    "hint": "L utilisateur n a pas repondu dans le delai imparti."}
+
+    if name == "canvas_wizard_close":
+        _push(uid_key, {"type": "wizard_close", "token": ctx.token})
+        return {"ok": True}
+
+    # ── Context panel
+    if name == "canvas_context_update":
+        panel = {k: args[k] for k in ("title", "sections", "progress") if k in args}
+        _push(uid_key, {"type": "context_update", "token": ctx.token, "panel": panel})
+        return {"ok": True}
+
+    # ── Chat reply
+    if name == "chat_reply":
+        message = args.get("message", "").strip()
+        if not message:
+            return {"error": "message vide"}
+        ts = time.time()
+        ctx.chat_history.appendleft({"role": "assistant", "content": message, "ts": ts})
+        for m in ctx.chat_history:
+            m.pop("pending", None)
+        _push(uid_key, {"type": "chat_message", "token": ctx.token,
+                        "role": "assistant", "content": message, "ts": ts})
+        return {"ok": True}
+
+    # ── Subagent call via sampling
+    if name == "subagent_call":
+        role      = args.get("role", "assistant")
+        task      = args.get("task", "")
+        context   = args.get("context", "")
+        max_tok   = int(args.get("max_tokens", 2048))
+        ROLE_PROMPTS = {
+            "data-architect": (
+                "Tu es un architecte de donnees expert Grist. "
+                "Tu analyses les structures, proposes des schemas relationnels optimaux, "
+                "des types de colonnes et des formules Grist natives."
+            ),
+            "ui-designer": (
+                "Tu es un designer UI expert en artefacts Grist (HTML/CSS/JS). "
+                "Tu generes des interfaces utilisateur elegantes, responsives et fonctionnelles. "
+                "Tu respectes la charte visuelle du widget (Inter, palette #3e5de7/#10b981/#f8fafc)."
+            ),
+            "data-analyst": (
+                "Tu es un analyste de donnees. "
+                "Tu interpretes les donnees Grist, generes des requetes SQL, "
+                "des formules d agregation et des insights metier."
+            ),
+            "integrator": (
+                "Tu es un expert en integration. "
+                "Tu concois des webhooks, des flux de donnees, des connexions entre services "
+                "et des automatisations. Tu proposes des architectures simples et robustes."
+            ),
+            "assistant": (
+                "Tu es un assistant IA expert en developpement d applications Grist. "
+                "Tu reponds de maniere concise et actionnable."
+            ),
+        }
+        system = ROLE_PROMPTS.get(role, ROLE_PROMPTS["assistant"])
+        if ctx.doc_title:
+            system += f"\n\nDocument courant : {ctx.doc_title}"
+        if context:
+            system += f"\n\nContexte fourni :\n{context}"
+        msgs = [{"role": "user", "content": {"type": "text", "text": task}}]
+        try:
+            text = await _do_sample(uid_key, msgs, system, max_tok)
+            return {"role": role, "response": text}
+        except Exception as e:
+            return {"error": str(e),
+                    "hint": "Verifier que le client MCP supporte sampling (Claude Desktop OK)"}
 
     # ── Artefact
     if name == "artefact_init":
@@ -2098,9 +2502,11 @@ async def call_tool(uid_key, mcp_sid, name, args):
 
 async def dispatch(uid_key, mcp_sid, method, params):
     if method == "initialize":
+        # Stocker les capabilities du client pour activer sampling si supporté
+        _client_capabilities[uid_key] = params.get("capabilities", {})
         return {
             "protocolVersion": MCP_VER,
-            "serverInfo": {"name": "grist-coder", "version": "5.2.0",
+            "serverInfo": {"name": "grist-coder", "version": "5.4.0",
                            "instructions": SERVER_INSTRUCTIONS},
             "capabilities": {
                 "tools":     {"listChanged": False},
@@ -2154,7 +2560,7 @@ async def dispatch(uid_key, mcp_sid, method, params):
 
 @asynccontextmanager
 async def lifespan(app):
-    print(f"Grist Coder v5.1 · {HOST_URL}")
+    print(f"Grist Coder v5.4 · {HOST_URL}")
     print(f"  tools: {len(TOOLS)}  prompts: {len(PROMPTS)}")
     print(f"  resources: {len(STATIC_RESOURCES)} static + {len(RESOURCE_TEMPLATES)} templates")
     print(f"  widget: {'widget.html' if WIDGET_PATH.exists() else 'MANQUANT'}")
@@ -2214,6 +2620,14 @@ async def mcp_post(request: Request,
     responses = []
     for req in reqs:
         req_id = req.get("id")
+        # JSON-RPC response (no "method") = réponse du client à une sampling request
+        if "method" not in req:
+            if req_id and req_id in _sampling_waiters:
+                fut = _sampling_waiters.pop(req_id, None)
+                if fut and not fut.done():
+                    if "result" in req: fut.set_result(req["result"])
+                    else: fut.set_exception(Exception(str(req.get("error", "sampling error"))))
+            continue
         if req_id is None: continue
         try:
             result = await dispatch(uid_key, mcp_sid, req.get("method",""), req.get("params",{}))
@@ -2231,8 +2645,11 @@ async def mcp_sse(request: Request,
                   mcp_session_id: str | None = Header(default=None, alias="Mcp-Session-Id")):
     raw_bearer = _auth(authorization)
     uid_key = None
+    is_mcp_client = False
     if raw_bearer:
         uid_key = await _resolve_uid_key(raw_bearer, None)
+        # Connexion Claude Desktop (pas un widget token gc-)
+        is_mcp_client = bool(uid_key and not raw_bearer.startswith("gc-"))
     if not uid_key:
         arto_token = request.query_params.get("token")
         if arto_token:
@@ -2241,13 +2658,18 @@ async def mcp_sse(request: Request,
         return Response("Authorization requis", status_code=401)
     sid = mcp_session_id or str(uuid.uuid4())
     _queues[sid] = asyncio.Queue(maxsize=64)
+    if is_mcp_client:
+        _mcp_client_sids[uid_key] = sid  # Track pour sampling
     async def stream():
         try:
             while True:
                 try:
                     ev = await asyncio.wait_for(_queues[sid].get(), timeout=20)
                     if ev.get("_user") != uid_key: continue
-                    if ev.get("type") == "mcp_notification":
+                    if "_raw_rpc" in ev:
+                        # sampling/createMessage request → envoyé tel quel au client MCP
+                        yield f"data: {json.dumps(ev['_raw_rpc'])}\n\n"
+                    elif ev.get("type") == "mcp_notification":
                         yield f"data: {json.dumps({'jsonrpc':'2.0','method':ev['method'],'params':ev['params']})}\n\n"
                     else:
                         yield f"data: {json.dumps(ev)}\n\n"
@@ -2255,6 +2677,9 @@ async def mcp_sse(request: Request,
                     yield ": ping\n\n"
         finally:
             _queues.pop(sid, None)
+            # Nettoyer le sid MCP client si c'était lui
+            if is_mcp_client and _mcp_client_sids.get(uid_key) == sid:
+                _mcp_client_sids.pop(uid_key, None)
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Mcp-Session-Id": sid})
 
@@ -2318,6 +2743,50 @@ async def screenshot(request: Request):
     return {"ok": False, "error": "Pas de waiter actif pour ce token."}
 
 
+@app.post("/wizard/{token}")
+async def wizard_response(token: str, request: Request):
+    """Reçoit la réponse utilisateur depuis le widget wizard et débloque le tool call en attente."""
+    uid_key = _token_to_uid.get(token)
+    if not uid_key:
+        return JSONResponse({"error": "token inconnu"}, status_code=404)
+    ctx = registry.resolve(uid_key, token)
+    if not ctx:
+        return JSONResponse({"error": "session introuvable"}, status_code=404)
+    body = await request.json()
+    ctx.wizard_responses.appendleft({**body, "ts": time.time()})
+    if ctx._wizard_event:
+        ctx._wizard_event.set()
+    return {"ok": True}
+
+
+@app.post("/chat/{token}")
+async def chat_message(token: str, request: Request):
+    """Reçoit un message utilisateur depuis l'interface chat du widget."""
+    uid_key = _token_to_uid.get(token)
+    if not uid_key:
+        return JSONResponse({"error": "token inconnu"}, status_code=404)
+    ctx = registry.resolve(uid_key, token)
+    if not ctx:
+        return JSONResponse({"error": "session introuvable"}, status_code=404)
+    body    = await request.json()
+    message = body.get("message", "").strip()
+    if not message:
+        return JSONResponse({"error": "message vide"}, status_code=400)
+    ts = time.time()
+    ctx.chat_history.appendleft({"role": "user", "content": message, "ts": ts, "pending": True})
+    # Echo immédiat au widget (bulle user)
+    _push(uid_key, {"type": "chat_message", "token": token,
+                    "role": "user", "content": message, "ts": ts})
+    # Si le client supporte sampling → réponse automatique
+    caps = _client_capabilities.get(uid_key, {})
+    if "sampling" in caps:
+        asyncio.create_task(_handle_chat_sample(uid_key, ctx, message))
+    else:
+        # Fallback : notifier Claude via resource pour qu'il lise chat/{token} et appelle chat_reply
+        _notify_resource(uid_key, f"grist-coder://chat/{token}")
+    return {"ok": True}
+
+
 @app.post("/webhook-receive/{doc_id}")
 async def webhook_receive(doc_id: str, request: Request):
     """Reçoit les événements webhook Grist et les fan-out via SSE aux widgets connectés.
@@ -2340,7 +2809,7 @@ async def webhook_receive(doc_id: str, request: Request):
 @app.get("/health")
 async def health():
     total = sum(len(u["sessions"]) for u in registry._users.values())
-    return {"ok": True, "version": "5.2.0", "mcp_protocol": MCP_VER,
+    return {"ok": True, "version": "5.4.0", "mcp_protocol": MCP_VER,
             "sessions": total, "users": len(registry._users),
             "tools": len(TOOLS), "prompts": len(PROMPTS),
             "resources": {"static": len(STATIC_RESOURCES), "templates": len(RESOURCE_TEMPLATES)},
