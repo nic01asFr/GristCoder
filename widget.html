@@ -200,12 +200,25 @@ window.addEventListener('message', async function(e) {
 
 // ── STATE ───────────────────────────────────────────────────────────────────
 const BASE = window.location.origin;
+const _DISPLAY_ART = new URLSearchParams(window.location.search).get('a') || '';
+const _DISPLAY_MODE = !!_DISPLAY_ART;
 var _registered=false, _registering=false, _token=null, _mcpId=1, _es=null, _refreshTimer=null;
 var _artefacts=[], _artefactsMap={}, _currentArt=null, _sharedState={};
 var _editor;
 
 // ── ACE EDITOR ──────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', function() {
+  if (_DISPLAY_MODE) {
+    // Display mode: hide editor UI, show only the render frame full-screen
+    document.getElementById('topBar').style.display = 'none';
+    document.getElementById('statusBar').style.display = 'none';
+    document.getElementById('editorPane').style.display = 'none';
+    document.getElementById('splitter').style.display = 'none';
+    document.getElementById('previewBar').style.display = 'none';
+    var pp = document.getElementById('previewPane');
+    pp.style.cssText = 'flex:1;display:flex;flex-direction:column;min-width:0';
+    return; // no ace editor in display mode
+  }
   _editor = ace.edit('aceEditor');
   _editor.setTheme('ace/theme/one_dark');
   _editor.setOptions({fontSize:'13px',tabSize:2,useSoftTabs:true,wrap:false,showPrintMargin:false});
@@ -225,6 +238,33 @@ grist.ready({ requiredAccess: 'full' });
 grist.on('message', async function(msg) {
   window._gristMsg = msg;
   if (!_registered) await doRegister(msg);
+});
+// Display mode: react to row selection from linked grid
+if (_DISPLAY_MODE) {
+  grist.onRecord(function(record) {
+    if (!record) return;
+    Object.assign(_sharedState, {record: record});
+    if (!_currentArt) return;
+    // Re-render with updated record in __APP_STATE__
+    // Also send postMessage for artefacts that listen to 'app-event-relay'
+    renderArt(_currentArt);
+  });
+}
+
+// onOptions: support artefact name via Grist widgetOptions (set in customView JSON)
+grist.onOptions(function(options) {
+  if (!options) return;
+  if (options.artefact && !_DISPLAY_MODE && !_currentArt) {
+    // Triggered by widgetOptions.artefact — switch to display mode dynamically
+    var nom = options.artefact;
+    if (_artefactsMap[nom]) {
+      _currentArt = _artefactsMap[nom];
+      renderArt(_currentArt);
+    } else if (_artefacts.length === 0) {
+      // Artefacts not loaded yet — will be handled in loadArtefacts() via artSelect
+      document.getElementById('artSelect').value = nom;
+    }
+  }
 });
 
 async function doRegister(msg) {
@@ -305,6 +345,7 @@ async function tool(name, args) {
 }
 
 async function loadCanvasIntoEditor() {
+  if (!_editor) return;
   try {
     var code = await tool('canvas_read');
     if (_editor && typeof code === 'string' && code !== _editor.getValue()) {
@@ -362,8 +403,9 @@ async function loadArtefacts() {
     var s = await tool('grist_schema');
     document.getElementById('sbTables').textContent = (s.tables||[]).length + ' tables';
   } catch(_) {}
-  if (_artefacts.length > 0 && !_currentArt) {
-    document.getElementById('artSelect').value = _artefacts[0].Nom;
+  var autoNom = _DISPLAY_MODE ? _DISPLAY_ART : (_artefacts.length > 0 ? _artefacts[0].Nom : '');
+  if (autoNom && !_currentArt) {
+    document.getElementById('artSelect').value = autoNom;
     await onArtSelect();
   }
 }
@@ -384,10 +426,12 @@ async function onArtSelect() {
   var art = _artefactsMap[nom];
   if (!art) return;
   _currentArt = art;
-  _editor.setValue(art.Code || '', -1);
-  setEditorMode(art.Type);
-  setEditorHeader(art);
-  try { await tool('canvas_write', {code: art.Code || ''}); } catch(_) {}
+  if (_editor) {
+    _editor.setValue(art.Code || '', -1);
+    setEditorMode(art.Type);
+    setEditorHeader(art);
+    try { await tool('canvas_write', {code: art.Code || ''}); } catch(_) {}
+  }
   renderArt(art);
 }
 

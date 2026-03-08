@@ -28,46 +28,41 @@ WIDGET_PATH = Path(__file__).parent / "widget.html"
 # ── SERVER INSTRUCTIONS ───────────────────────────────────────────────────────
 
 SERVER_INSTRUCTIONS = """
-Tu es connecte a Grist Coder MCP v5.1 - service de developpement d apps Grist.
+Tu es connecte a Grist Coder MCP v5.2 — service de dev d apps Grist.
 
-CONCEPT FONDAMENTAL
-Le document Grist ouvert dans le widget = ta codebase complete.
-  Tables de donnees (Batiments, Interventions...)  = modele de donnees
-  Table Artefacts (widgets HTML/JS)               = fichiers source
-  Pages Grist (grille + widget par page)          = ecrans de l app
-  Schema relationnel (Ref:, formules, visibleCol) = architecture
+CONCEPT
+  Tables de donnees (Clients, Commandes...)  = modele de donnees
+  Table Artefacts (widgets HTML/JS)          = fichiers source
+  Pages Grist (grille + widget custom)       = ecrans de l app
 
-OUTILS (17)
-Sessions  : sessions_list, session_select, session_info
-Canvas    : canvas_read, canvas_write, canvas_patch, canvas_exec, canvas_screenshot
-Artefact  : artefact_init
-Grist R   : grist_schema, grist_records, grist_sql
-Grist W   : grist_records_add, grist_records_patch, grist_upsert
-Document  : grist_views_list, grist_view_create
+OUTILS (20)
+  Sessions : sessions_list, session_select, session_info
+  Canvas   : canvas_read, canvas_write, canvas_patch, canvas_exec, canvas_screenshot
+  Artefact : artefact_init
+  Grist R  : grist_schema, grist_records, grist_sql
+  Grist W  : grist_records_add, grist_records_patch, grist_upsert
+  Document : grist_apply, grist_views_list, grist_view_create,
+             grist_section_configure, grist_view_add_widget
 
-RESSOURCES - lire au debut de chaque session
-  grist-coder://docs/schema        -> recettes REST exactes : Phase 1/2/3 + formules + pages
-  grist-coder://docs/artefacts     -> templates HTML/JS prets a l emploi + navigation inter-artefacts
-  grist-coder://context/{token}    -> snapshot complet : tables+colonnes+artefacts+pages (1 lecture)
-  grist-coder://code/{token}       -> code source de tous les artefacts existants
+RESSOURCES
+  docs/schema           -> recettes tables/colonnes (lire avant schema)
+  docs/artefacts        -> templates HTML/JS (lire avant coder)
+  docs/playbook         -> sequences pages, layouts, liaisons (lire avant creer pages)
+  playbook/{scenario}   -> guide cible : dashboard|fiche|table|full-app|master-detail
+  context/{token}       -> snapshot live : tables+artefacts+pages (lire en debut session)
+  code/{token}          -> source de tous les artefacts (lire avant iterer sur app existante)
 
-WORKFLOW OPTIMAL - APP COMPLETE ET STRUCTUREE
-  1. sessions_list()
-  2. resources/read grist-coder://context/{token}   -> etat complet en 1 lecture
-  3. resources/read grist-coder://docs/schema       -> recettes schema
-  4. resources/read grist-coder://docs/artefacts    -> patterns code
-  5. Creer tables : Phase 1 (sans refs) -> Phase 2 (Ref:TableId) -> Phase 3 (visibleCol)
-  6. Pour chaque ecran de l app :
-     a. canvas_write(code_html)          -> live dans le widget
-     b. canvas_screenshot()             -> valider le rendu
-     c. canvas_patch() si ajustements
-     d. grist_upsert('Artefacts', ...)  -> persister dans Grist
-     e. grist_view_create(table, page)  -> page Grist avec grille + widget lies
-  7. resources/read grist-coder://context/{token}   -> verifier l etat final
+WORKFLOW
+  1. sessions_list() -> token
+  2. context/{token} -> etat doc
+  3. docs/playbook (ou playbook/{scenario}) -> sequence exacte
+  4. Construire : tables -> artefacts (canvas_write+screenshot+upsert) -> pages
+  5. context/{token} -> verifier
 
-REGLES CANVAS
-  canvas_read() AVANT canvas_patch() - old_str doit etre exact et unique
-  canvas_patch >> canvas_write - preserve l historique, evite regressions
+REGLES CRITIQUES
+  JAMAIS REST PATCH sur _grist_Views / _grist_Views_section -> crash frontend
+  TOUJOURS grist_apply(["UpdateRecord", ...]) pour toutes les tables meta
+  canvas_read() AVANT canvas_patch() — old_str doit etre exact et unique
 """.strip()
 
 # ── SESSION CTX ───────────────────────────────────────────────────────────────
@@ -364,10 +359,39 @@ TOOLS = [
                      "required": ["table_id", "records"]}},
 
     # Document structure
+    {"name": "grist_apply",
+     "description": "Execute des User Actions Grist (AddTable, AddColumn, BulkAddOrReplaceRecord, UpdateRecord...). Permet de creer tables, colonnes, et modifier les metadonnees du document.",
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "actions": {"type": "array",
+                                     "description": "Liste d actions ex: [[\"AddTable\",\"MaTable\",[{\"id\":\"Nom\",\"type\":\"Text\"}]]]",
+                                     "items": {}}},
+                     "required": ["actions"]}},
+
     {"name": "grist_views_list",
      "description": "Liste les pages (vues) du document avec leurs sections.",
      "inputSchema": {"type": "object", "properties": {}},
      "annotations": {"readOnlyHint": True}},
+
+    {"name": "grist_section_configure",
+     "description": "Configure un widget custom existant : URL + artefact display mode + lien optionnel vers une section source. Evite de generer manuellement le JSON options/customView.",
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "section_ref":      {"type": "integer", "description": "ID de la section custom a configurer (depuis grist_views_list)"},
+                         "artefact":         {"type": "string",  "description": "Nom de l artefact display mode (ex: 'FicheClient'). Laisse vide pour widget coding."},
+                         "widget_url":       {"type": "string",  "description": "URL custom (defaut: HOST_URL/). Ignore si artefact est fourni."},
+                         "link_section_ref": {"type": "integer", "description": "Section source pour lier les selections de ligne (linkSrcSectionRef). 0 = pas de lien."}},
+                     "required": ["section_ref"]}},
+
+    {"name": "grist_view_add_widget",
+     "description": "Ajoute un widget custom a une page existante (qui n a qu une grille). Cree la section, la configure et met a jour le layout.",
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "view_ref":         {"type": "integer", "description": "ID de la vue (depuis grist_views_list)"},
+                         "table_id":         {"type": "string",  "description": "Table source du widget (meme que la grille en general)"},
+                         "artefact":         {"type": "string",  "description": "Nom de l artefact a afficher (mode display)"},
+                         "grid_section_ref": {"type": "integer", "description": "ID de la section grille a lier (pour onRecord). 0 = pas de lien."}},
+                     "required": ["view_ref", "table_id"]}},
 
     {"name": "grist_view_create",
      "description": "Cree une page Grist avec grille de donnees + widget custom lies. Structure un ecran de l app.",
@@ -375,7 +399,8 @@ TOOLS = [
                      "properties": {
                          "table_id":   {"type": "string", "description": "Table source (ex: 'Batiments')"},
                          "page_name":  {"type": "string", "description": "Nom de la page dans Grist"},
-                         "widget_url": {"type": "string", "description": "URL du widget custom (defaut: HOST_URL/)"}},
+                         "widget_url": {"type": "string", "description": "URL du widget custom (defaut: HOST_URL/)"},
+                         "artefact":   {"type": "string", "description": "Nom d un artefact a afficher automatiquement dans le widget (mode display). Ex: 'FicheClient'. Ajoute ?a=NomArtefact a l URL."}},
                      "required": ["table_id"]}},
 ]
 
@@ -388,6 +413,12 @@ PROMPTS = [
     {"name": "build-app",
      "description": "Construire une app complete (schema + artefacts + pages structurees).",
      "arguments": [{"name": "description", "description": "Description de l app", "required": True}]},
+
+    {"name": "create-page",
+     "description": "Creer une page Grist avec widget(s) en 2-3 rounds. Choisit automatiquement le bon outil.",
+     "arguments": [
+         {"name": "description", "description": "Ce que la page doit afficher", "required": True},
+         {"name": "scenario",    "description": "dashboard | fiche | table | master-detail", "required": False}]},
     {"name": "write-artefact",
      "description": "Creer un artefact HTML/JS pour une table donnee.",
      "arguments": [
@@ -421,15 +452,28 @@ def _prompt_messages(name, args):
             f"Construire : {desc}\n\n"
             "1. sessions_list() -> token\n"
             "2. resources/read grist-coder://context/{token} -> etat actuel\n"
-            "3. resources/read grist-coder://docs/schema -> recettes schema\n"
-            "4. resources/read grist-coder://docs/artefacts -> patterns code\n"
-            "5. Creer les tables (Phase 1 sans refs, Phase 2 Ref:, Phase 3 visibleCol)\n"
-            "6. Pour chaque ecran :\n"
-            "   a. canvas_write(code) -> live preview\n"
-            "   b. canvas_screenshot() -> valider\n"
-            "   c. grist_upsert('Artefacts', ...) -> persister\n"
-            "   d. grist_view_create(table, page) -> structurer le document\n"
-            "7. resources/read grist-coder://context/{token} -> verifier"
+            "3. resources/read grist-coder://docs/schema -> recettes tables\n"
+            "4. resources/read grist-coder://docs/artefacts -> templates code\n"
+            "5. resources/read grist-coder://playbook/full-app -> sequence complete\n"
+            "6. Construire : schema -> donnees -> artefacts (canvas+screenshot+upsert) -> pages\n"
+            "7. resources/read grist-coder://context/{token} -> verifier etat final"
+        )}}]
+
+    if name == "create-page":
+        desc     = args.get("description", "une page")
+        scenario = args.get("scenario", "")
+        pb_uri   = f"grist-coder://playbook/{scenario}" if scenario else "grist-coder://docs/playbook"
+        return [{"role": "user", "content": {"type": "text", "text": (
+            f"Creer une page Grist : {desc}\n\n"
+            "1. sessions_list() -> token\n"
+            "2. resources/read grist-coder://context/{token} -> tables et pages existantes\n"
+            f"3. resources/read {pb_uri} -> sequence et outil adapte\n"
+            "4. Si artefact necessaire : canvas_write -> canvas_screenshot -> grist_upsert\n"
+            "5. Creer la page :\n"
+            "   - Nouvelle page        -> grist_view_create(table_id, page_name[, artefact])\n"
+            "   - Widget sur existante -> grist_view_add_widget(view_ref, table_id, artefact, grid_section_ref)\n"
+            "   - Reconfigurer section -> grist_section_configure(section_ref, artefact)\n"
+            "6. resources/read grist-coder://context/{token} -> verifier"
         )}}]
     if name == "write-artefact":
         nom = args.get("nom", "MonArtefact")
@@ -537,20 +581,119 @@ FROM Interventions I JOIN Batiments B ON I.Batiment = B.id
 GROUP BY B.Nom ORDER BY total DESC
 
 PAGES - Structurer le document (ecrans de l app)
-grist_view_create(
-  table_id="Batiments",
-  page_name="Batiments",
-  widget_url="http://localhost:8742/"  <- HOST_URL
-)
--> Cree page Grist : grille Batiments (gauche) + widget custom (droite) lies
--> Repeter pour chaque table/ecran de l app
+================================================
 
-ORDRE DE CREATION RECOMMANDE
-1. Tables sans Ref: (Batiments, Prestataires, Categories...)
-2. Tables avec Ref: (Locaux->Batiments, Interventions->Batiments+Prestataires...)
-3. Configurer visibleCol sur toutes les colonnes Ref:
-4. Ajouter formules de comptage/somme
-5. Pour chaque table : grist_view_create() -> page complete dans le document
+== OUTIL PRINCIPAL ==
+grist_view_create(table_id, page_name, widget_url?, artefact?)
+  -> Cree: grille (gauche) + widget custom lie (droite)
+  -> Interne: CreateViewSection x2 + UpdateRecord via grist_apply
+  -> Retourne: view_ref, grid_section, widget_section
+
+  DISPLAY MODE (artefact=NomArtefact):
+    Le widget affiche directement l artefact nomme (editeur masque).
+    grist_view_create("Clients", "Fiche Client", artefact="FicheClient")
+      -> URL widget = HOST_URL/?a=FicheClient
+      -> Widget masque l editeur, affiche FicheClient plein ecran
+      -> grist.onRecord() => _sharedState.record = ligne selectionnee
+      -> Dans l artefact HTML : window.__APP_STATE__.record = donnees Grist
+    Usage: pages de consultation/rendu lies a une grille sur la meme page
+
+== CONFIGURATIONS AVANCEES (via grist_apply) ==
+
+1. PAGE WIDGET SEUL (full-screen, ex: Dashboard IsDoc)
+   grist_apply([["CreateViewSection", tableRef, 0, "custom", null, null]])
+   -> view_ref = retValues[0]["viewRef"], section_ref = retValues[0]["sectionRef"]
+   Puis configurer:
+   grist_apply([
+     ["UpdateRecord", "_grist_Views_section", section_ref, {"options": OPTIONS_JSON}],
+     ["UpdateRecord", "_grist_Views", view_ref, {"name": "Dashboard",
+       "layoutSpec": '{"children":[{"leaf":SECTION}],"collapsed":[]}'}]
+   ])
+
+2. GRILLE SEULE (sans widget)
+   grist_apply([["CreateViewSection", tableRef, 0, "record", null, null]])
+
+3. MASTER-DETAIL (deux tables liees par Ref:)
+   a) Creer page avec grille master:
+      grist_apply([["CreateViewSection", masterTableRef, 0, "record", null, null]])
+      -> view_ref=V, grid_master=S1
+   b) Ajouter grille detail dans la meme vue:
+      grist_apply([["CreateViewSection", detailTableRef, V, "record", null, null]])
+      -> grid_detail=S2
+   c) Trouver colRef de la colonne Ref: dans la table detail:
+      grist_sql("SELECT id FROM _grist_Tables_column WHERE parentId=DETAIL_TABLE_REF AND colId='NomColRef'")
+   d) Lier + layout:
+      grist_apply([
+        ["UpdateRecord", "_grist_Views_section", S2, {
+          "linkSrcSectionRef": S1, "linkSrcColRef": 0, "linkTargetColRef": COL_REF_ID
+        }],
+        ["UpdateRecord", "_grist_Views", V, {"name": "Master->Detail",
+          "layoutSpec": '{"children":[{"children":[{"leaf":S1},{"leaf":S2}]}],"collapsed":[]}'}]
+      ])
+
+4. GRILLE + CARTE + WIDGET (3 sections, layout vertical+horizontal)
+   a) grist_apply([["CreateViewSection", tableRef, 0, "record", null, null]]) -> V, S_grid
+   b) grist_apply([["CreateViewSection", tableRef, V, "single", null, null]]) -> S_card
+   c) grist_apply([["CreateViewSection", tableRef, V, "custom", null, null]]) -> S_widget
+   d) grist_apply([
+        ["UpdateRecord","_grist_Views_section", S_card, {"linkSrcSectionRef": S_grid}],
+        ["UpdateRecord","_grist_Views_section", S_widget, {"linkSrcSectionRef": S_grid, "options": OPTIONS_JSON}],
+        ["UpdateRecord","_grist_Views", V, {
+          "layoutSpec": '{"children":[{"leaf":S_grid},{"children":[{"leaf":S_card},{"leaf":S_widget}]}],"collapsed":[]}'
+        }]
+      ])
+
+== LAYOUTSPEC - FORMAT EXACT ==
+Root = colonne (vertical stack). Nested children = ligne (horizontal split).
+  Un seul plein ecran   : {"children":[{"leaf":N}],"collapsed":[]}
+  Cote a cote           : {"children":[{"children":[{"leaf":A},{"leaf":B}]}],"collapsed":[]}
+  Haut + [bas gauche + bas droite]:
+    {"children":[{"leaf":A},{"children":[{"leaf":B},{"leaf":C}]}],"collapsed":[]}
+  Avec tailles:
+    {"children":[{"leaf":A,"size":40},{"leaf":B,"size":60}],"collapsed":[]}
+
+== OPTIONS WIDGET CUSTOM - FORMAT EXACT ==
+CRITIQUE: customView doit etre une JSON STRING dans l outer JSON (pas un objet nested!)
+OPTIONS_JSON = json.dumps({
+  "verticalGridlines": True, "horizontalGridlines": True,
+  "zebraStripes": False, "numFrozen": 0,
+  "customView": json.dumps({
+    "mode": "url", "url": HOST_URL+"/", "access": "full",
+    "widgetDef": None, "pluginId": "", "sectionId": "",
+    "renderAfterReady": False, "widgetId": None,
+    "widgetOptions": None, "columnsMapping": None
+  })
+})
+!! JAMAIS utiliser grist_patch/REST sur _grist_Views ou _grist_Views_section !!
+   -> Le REST PATCH stocke les JSON strings comme objets JS -> crash frontend
+   -> TOUJOURS utiliser grist_apply(["UpdateRecord", ...]) pour les tables meta
+
+== LIENS ENTRE SECTIONS ==
+linkSrcSectionRef=N  -> reagit a la selection de ligne de la section N
+linkSrcColRef=0      -> cle = rowId (liens directs Ref:)
+linkTargetColRef=M   -> colonne Ref: dans la table cible (id depuis _grist_Tables_column)
+  Ex: section Commandes liee a Clients via colonne "Client" (Ref:Clients, id=21)
+  -> linkSrcSectionRef=clients_section, linkSrcColRef=0, linkTargetColRef=21
+
+== TYPES DE SECTIONS ==
+"record" = grille (tableau)
+"single" = fiche/carte (un enregistrement)
+"custom" = widget custom (iframe URL)
+"chart"  = graphique (non teste)
+
+== OBTENIR LES REFS NECESSAIRES ==
+tableRef   : grist_sql("SELECT id FROM _grist_Tables WHERE tableId='NomTable'")
+colRef     : grist_sql("SELECT id FROM _grist_Tables_column WHERE parentId=TABLE_REF AND colId='NomCol'")
+viewRef    : grist_sql("SELECT id FROM _grist_Views WHERE name='NomPage'")
+sectionRef : grist_sql("SELECT id FROM _grist_Views_section WHERE parentId=VIEW_REF AND parentKey='custom'")
+
+== ORDRE DE CREATION RECOMMANDE ==
+1. Tables sans Ref: (Entites principales...)
+2. Tables avec Ref: (Tables de jonction, details...)
+3. visibleCol sur toutes les colonnes Ref:
+4. Formules de comptage/somme
+5. grist_view_create() pour chaque table principale -> page grille+widget
+6. grist_apply() pour pages avancees (master-detail, dashboard, multi-sections)
 """.strip()
 
 DOCS_ARTEFACTS = """GRIST CODER - Recettes artefacts HTML/JS
@@ -660,29 +803,238 @@ Artefacts      : Dashboard(html), ListeBatiments(grist), KanbanInterventions(gri
 Pages          : grist_view_create x4 -> document structure complet
 """.strip()
 
+DOCS_PLAYBOOK = """GRIST CODER - Playbook pages & widgets
+=======================================
+
+DECISION TREE - Quel outil ?
+  1. Nouvelle page (table connue)             -> grist_view_create(table_id, page_name[, artefact])
+  2. Ajouter widget a page existante          -> grist_view_add_widget(view_ref, table_id, artefact, grid_section_ref)
+  3. Reconfigurer section custom existante    -> grist_section_configure(section_ref, artefact)
+  4. Config avancee (multi-sections, liaison) -> grist_apply(["CreateViewSection",...]) direct
+
+SEQUENCES MINIMALES
+-------------------
+A. Dashboard (IsDoc=true, pas de liaison)
+   Round 1 (parallele):
+     grist_records_add("Artefacts",[{Nom,Type:"html",IsDoc:true,Code:"..."}])
+   Round 2:
+     grist_view_create("Clients","Dashboard",artefact="Dashboard")
+   -> 2 appels, page operationnelle
+
+B. Page grille + fiche liee (display mode)
+   Round 1 (parallele si table nouvelle):
+     grist_apply([["AddTable","MaTable",[...]]]])        -> tableRef
+     grist_apply([["BulkAddRecord","MaTable",[...]]])    -> donnees
+     grist_records_add("Artefacts",[{Nom:"Fiche...",IsDoc:false,Code:"..."}])
+   Round 2:
+     grist_view_create("MaTable","NomPage")              -> {view_ref, section_ref}
+   Round 3:
+     grist_view_add_widget(view_ref,"MaTable",artefact="FicheMaTable",grid_section_ref=<section_ref>)
+   -> 3 rounds, grille + widget lies en display mode
+
+C. Reconfigurer section existante
+   Round unique:
+     grist_section_configure(section_ref, artefact="NomArtefact"[, link_section_ref=N])
+
+DISPLAY MODE
+  URL widget : HOST_URL/?a=NomArtefact  (pose par grist_view_create/grist_view_add_widget)
+  Record actif : const r = window.__APP_STATE__?.record || {}; r.NomColonne
+  IsDoc=true  -> pas de liaison (dashboard global, fetchTable via grist.docApi)
+  IsDoc=false -> liaison via grid_section_ref, record change sur selection de ligne
+
+LAYOUTS (layoutSpec = JSON STRING dans _grist_Views.layoutSpec)
+  Cote a cote    : {"children":[{"children":[{"leaf":A},{"leaf":B}]}],"collapsed":[]}
+  Vertical       : {"children":[{"leaf":A},{"leaf":B}],"collapsed":[]}
+  Grille+[B+C]   : {"children":[{"leaf":A},{"children":[{"leaf":B},{"leaf":C}]}],"collapsed":[]}
+  Widget seul    : {"children":[{"leaf":A}],"collapsed":[]}
+
+LIAISONS (_grist_Views_section via grist_apply UpdateRecord)
+  Selection ligne   : linkSrcSectionRef = sectionRef_source
+  Filtre Ref:col    : linkSrcSectionRef = N, linkTargetColRef = colRef (_grist_Tables_column.id)
+
+DEPENDANCES - ordre d execution obligatoire
+  AddTable            -> BulkAddRecord (parallele OK)
+  grist_view_create   -> retourne view_ref + section_ref (necessaires pour Round suivant)
+  grist_view_add_widget <- depend de view_ref + section_ref retournes au Round precedent
+""".strip()
+
+# Playbooks par scenario (ressource template grist-coder://playbook/{scenario})
+PLAYBOOKS = {
+    "dashboard": """PLAYBOOK : Dashboard (artefact IsDoc, donnees globales)
+=======================================================
+Quand : page de synthese/KPIs sans liaison de ligne
+Rounds: 2
+
+Round 1 (parallele):
+  grist_records_add("Artefacts",[{
+    Nom: "Dashboard", Type: "html", IsDoc: true, Icon: "📊",
+    Description: "Vue d ensemble",
+    Code: "<html>...fetchTable via grist.docApi.fetchTable(table)..."
+  }])
+
+Round 2:
+  grist_view_create("Clients","Dashboard",artefact="Dashboard")
+  # table_id = n importe quelle table (non liee car IsDoc)
+
+Pattern code artefact IsDoc:
+  async function loadAll() {
+    const d = await grist.docApi.fetchTable('MaTable');
+    // d.id, d.Nom, d.CA sont des arrays
+    const rows = d.id.map((id,i)=>({id, Nom:d.Nom[i], CA:d.CA[i]}));
+    render(rows);
+  }
+  grist.ready(); loadAll();
+""",
+
+    "fiche": """PLAYBOOK : Fiche liee (grille + detail en display mode)
+=======================================================
+Quand : vue detail d un enregistrement selectionne dans une grille
+Rounds: 2 (si table existe) ou 3 (si table a creer)
+
+Round 1 — si table existante (parallele):
+  grist_records_add("Artefacts",[{
+    Nom: "FicheClient", Type: "html", IsDoc: false, Icon: "👤",
+    Code: "...window.__APP_STATE__?.record || {}..."
+  }])
+
+Round 2:
+  grist_view_create("Clients","Clients",artefact="FicheClient")
+  # retourne: {view_ref: N, section_ref: M}
+
+Round 3 (optionnel si widget seul ne suffit pas):
+  grist_view_add_widget(view_ref=N, table_id="Clients",
+    artefact="FicheClient", grid_section_ref=M)
+
+Pattern code artefact fiche:
+  function render() {
+    const r = window.__APP_STATE__?.record || {};
+    if (!r.id) { el.innerHTML = '<p>Selectionnez un enregistrement</p>'; return; }
+    el.innerHTML = '<h2>'+r.Nom+'</h2><p>'+r.Email+'</p>';
+  }
+  // Reagit automatiquement aux changements de selection (grist.onRecord injecte dans __APP_STATE__)
+""",
+
+    "table": """PLAYBOOK : Nouvelle table avec donnees et page
+===============================================
+Quand : creer une table de zéro avec schema + donnees + page
+
+Round 1 (tout en parallele):
+  grist_apply([["AddTable","MaTable",[
+    {"id":"Nom","type":"Text"},
+    {"id":"CA","type":"Numeric"},
+    {"id":"Statut","type":"Choice","widgetOptions":"{\\"choices\\":[\\"Actif\\",\\"Inactif\\"]}"}
+  ]]])
+  # Note: Ref: en Phase 2 apres que les tables cibles existent
+
+Round 2:
+  grist_apply([["BulkAddRecord","MaTable",[null,null,null],{
+    "Nom":["A","B","C"],"CA":[1000,2000,3000],"Statut":["Actif","Actif","Inactif"]
+  }]])
+
+Round 3:
+  grist_view_create("MaTable","Nom Page")   # grille simple
+  # OU grist_view_create("MaTable","Nom Page",artefact="MonArtefact")  # avec display mode
+
+PHASES SCHEMA (si relations):
+  Phase 1 : tables sans Ref: (AddTable en parallele)
+  Phase 2 : colonnes Ref:AutreTable (grist_records_add sur _grist_Tables_column)
+  Phase 3 : visibleCol (grist_records_patch pour chaque Ref:)
+""",
+
+    "full-app": """PLAYBOOK : Application complete (schema + artefacts + pages)
+=============================================================
+Quand : construire une app de zero
+
+Etape 0 — Lire le contexte:
+  context/{token}      -> etat actuel du doc
+  docs/schema          -> recettes tables
+  docs/artefacts       -> templates code
+
+Etape 1 — Schema (phases):
+  Phase 1 : grist_apply([["AddTable",...]]) pour toutes les tables sans Ref: (parallele)
+  Phase 2 : grist_records_add sur _grist_Tables_column pour les Ref:
+  Phase 3 : grist_records_patch pour visibleCol sur chaque Ref:
+
+Etape 2 — Donnees initiales (parallele par table):
+  grist_apply([["BulkAddRecord",...]]) pour chaque table
+
+Etape 3 — Artefacts (parallele si independants):
+  Pour chaque ecran :
+    a. canvas_write(code_html_complet)    -> live dans le widget
+    b. canvas_screenshot()               -> valider le rendu
+    c. canvas_patch() si besoin
+    d. grist_upsert("Artefacts",[...])   -> persister
+
+Etape 4 — Pages (sequentiel car depend des view_ref):
+  Pour chaque page :
+    grist_view_create(table_id, page_name, artefact="NomArt")
+    # si grille + widget: Round N+1 -> grist_view_add_widget(view_ref, ...)
+
+Etape 5 — Verifier:
+  context/{token}  -> snapshot final
+""",
+
+    "master-detail": """PLAYBOOK : Master-detail (deux tables liees, filtre Ref:)
+=========================================================
+Quand : selectionner un client -> voir ses commandes filtrees
+
+Round 1:
+  grist_view_create("Clients","Clients -> Commandes")
+  # retourne: {view_ref: V, section_ref: S_clients}
+
+Round 2:
+  grist_apply([
+    ["CreateViewSection", tableRef_Commandes, V, "record", null, null]
+  ])
+  # retourne sectionRef detail: S_commandes
+
+Round 3:
+  grist_apply([
+    ["UpdateRecord","_grist_Views_section", S_commandes, {
+      "linkSrcSectionRef": S_clients,
+      "linkTargetColRef": colRef_Client_in_Commandes
+    }]
+  ])
+  # colRef = id dans _grist_Tables_column pour la colonne Ref:Clients de Commandes
+
+TROUVER colRef:
+  grist_sql("SELECT id FROM _grist_Tables_column WHERE tableRef=<tableRef_Commandes> AND colId='Client'")
+""",
+}
+
 # ── STATIC RESOURCES ──────────────────────────────────────────────────────────
 
 STATIC_RESOURCES = [
     {"uri":         "grist-coder://docs/schema",
      "name":        "Schema Recipes",
-     "description": "Recettes REST exactes : Phase 1/2/3, types de colonnes, formules, pages.",
+     "description": "Lire avant de creer tables/colonnes. Types, Ref:, formules, phases d import.",
      "mimeType":    "text/plain"},
 
     {"uri":         "grist-coder://docs/artefacts",
      "name":        "Artefact Recipes",
-     "description": "Templates HTML/JS prets a l emploi : grist, html, react, app + navigation inter-artefacts.",
+     "description": "Lire avant de coder un artefact. Templates HTML/JS : grist, html, app + navigation.",
+     "mimeType":    "text/plain"},
+
+    {"uri":         "grist-coder://docs/playbook",
+     "name":        "Page Playbook",
+     "description": "Lire avant de creer pages/widgets. Sequences exactes, decision tree, layouts, liaisons.",
      "mimeType":    "text/plain"},
 ]
 
 RESOURCE_TEMPLATES = [
     {"uriTemplate":  "grist-coder://context/{token}",
      "name":         "Project Context",
-     "description":  "Snapshot complet du projet : tables+colonnes+artefacts+pages. Lire une fois au demarrage.",
+     "description":  "Snapshot live : tables+colonnes+artefacts+pages. Lire en debut de session.",
      "mimeType":     "application/json"},
 
     {"uriTemplate":  "grist-coder://code/{token}",
      "name":         "Artefacts Code",
-     "description":  "Code source complet de tous les artefacts. Pour iterer sur une app existante.",
+     "description":  "Source de tous les artefacts. Lire avant d iterer sur une app existante.",
+     "mimeType":     "text/plain"},
+
+    {"uriTemplate":  "grist-coder://playbook/{scenario}",
+     "name":         "Scenario Playbook",
+     "description":  "Guide cible par scenario. Valeurs: dashboard | fiche | table | full-app | master-detail",
      "mimeType":     "text/plain"},
 ]
 
@@ -694,6 +1046,17 @@ async def _read_resource(uid_key, mcp_sid, uri):
 
     if uri == "grist-coder://docs/artefacts":
         return {"uri": uri, "mimeType": "text/plain", "text": DOCS_ARTEFACTS}
+
+    if uri == "grist-coder://docs/playbook":
+        return {"uri": uri, "mimeType": "text/plain", "text": DOCS_PLAYBOOK}
+
+    if uri.startswith("grist-coder://playbook/"):
+        scenario = uri.split("/")[-1]
+        content = PLAYBOOKS.get(scenario)
+        if not content:
+            available = " | ".join(PLAYBOOKS.keys())
+            content = f"Scenario inconnu : '{scenario}'\nDisponibles : {available}"
+        return {"uri": uri, "mimeType": "text/plain", "text": content}
 
     if uri.startswith("grist-coder://context/"):
         token = uri.split("/")[-1]
@@ -960,6 +1323,13 @@ async def call_tool(uid_key, mcp_sid, name, args):
         return {"ok": True, "upserted": len(args["records"])}
 
     # ── Document structure
+    if name == "grist_apply":
+        try:
+            result = await grist_apply(ctx, args["actions"])
+            return {"ok": True, "result": result}
+        except Exception as e:
+            return {"error": str(e)}
+
     if name == "grist_views_list":
         try:
             pages_resp   = await grist_get(ctx, "tables/_grist_Pages/records")
@@ -986,10 +1356,97 @@ async def call_tool(uid_key, mcp_sid, name, args):
         except Exception as e:
             return {"error": str(e)}
 
+    if name in ("grist_section_configure", "grist_view_add_widget"):
+        def _make_widget_options(artefact, widget_url):
+            """Genere le JSON options/customView correctement echappe."""
+            url = widget_url or (HOST_URL + "/")
+            if artefact:
+                sep = "&" if "?" in url else "?"
+                url = url + sep + "a=" + artefact
+            widget_options_val = json.dumps({"artefact": artefact}) if artefact else None
+            custom_view_str = json.dumps({
+                "mode": "url", "url": url, "access": "full",
+                "widgetDef": None, "pluginId": "", "sectionId": "",
+                "renderAfterReady": False, "widgetId": None,
+                "widgetOptions": widget_options_val, "columnsMapping": None,
+            })
+            return json.dumps({
+                "verticalGridlines": True, "horizontalGridlines": True,
+                "zebraStripes": False, "numFrozen": 0,
+                "customView": custom_view_str,
+            })
+
+        if name == "grist_section_configure":
+            section_ref      = int(args["section_ref"])
+            artefact         = args.get("artefact", "")
+            widget_url       = args.get("widget_url", "")
+            link_section_ref = int(args.get("link_section_ref") or 0)
+            try:
+                fields: dict = {"options": _make_widget_options(artefact, widget_url)}
+                if link_section_ref:
+                    fields["linkSrcSectionRef"] = link_section_ref
+                    fields["linkSrcColRef"]     = 0
+                    fields["linkTargetColRef"]  = 0
+                await grist_apply(ctx, [["UpdateRecord", "_grist_Views_section", section_ref, fields]])
+                return {"ok": True, "section_ref": section_ref,
+                        "artefact": artefact or "(coding mode)",
+                        "hint": f"Section {section_ref} configuree."}
+            except Exception as e:
+                return {"error": str(e)}
+
+        if name == "grist_view_add_widget":
+            view_ref         = int(args["view_ref"])
+            table_id         = args["table_id"]
+            artefact         = args.get("artefact", "")
+            grid_section_ref = int(args.get("grid_section_ref") or 0)
+            try:
+                # Trouver tableRef
+                tables_resp = await grist_get(ctx, "tables/_grist_Tables/records")
+                table_ref = next((r["id"] for r in tables_resp.get("records", [])
+                                  if r["fields"].get("tableId") == table_id), None)
+                if not table_ref:
+                    return {"error": f"Table '{table_id}' introuvable"}
+                # Creer la section custom
+                r = await grist_apply(ctx, [["CreateViewSection", table_ref, view_ref, "custom", None, None]])
+                section_ref = r["result"]["retValues"][0]["sectionRef"]
+                # Recup sections existantes pour le layout
+                sects_resp = await grist_get(ctx, "tables/_grist_Views_section/records")
+                view_sects = [r["id"] for r in sects_resp.get("records", [])
+                              if r["fields"].get("parentId") == view_ref
+                              and r["id"] != section_ref]
+                # Configurer widget + lien + layout
+                section_fields: dict = {"options": _make_widget_options(artefact, "")}
+                if grid_section_ref:
+                    section_fields["linkSrcSectionRef"] = grid_section_ref
+                    section_fields["linkSrcColRef"]     = 0
+                    section_fields["linkTargetColRef"]  = 0
+                # Layout : sections existantes a gauche + nouveau widget a droite
+                if view_sects:
+                    left_children = [{"leaf": s} for s in view_sects]
+                    if len(left_children) == 1:
+                        layout = {"children": [{"children": [left_children[0], {"leaf": section_ref}]}], "collapsed": []}
+                    else:
+                        layout = {"children": left_children + [{"leaf": section_ref}], "collapsed": []}
+                else:
+                    layout = {"children": [{"leaf": section_ref}], "collapsed": []}
+                await grist_apply(ctx, [
+                    ["UpdateRecord", "_grist_Views_section", section_ref, section_fields],
+                    ["UpdateRecord", "_grist_Views", view_ref, {"layoutSpec": json.dumps(layout)}],
+                ])
+                return {"ok": True, "section_ref": section_ref, "view_ref": view_ref,
+                        "artefact": artefact or "(coding mode)",
+                        "hint": f"Widget ajoute a la vue {view_ref}."}
+            except Exception as e:
+                return {"error": str(e)}
+
     if name == "grist_view_create":
         table_id   = args.get("table_id")
         page_name  = args.get("page_name") or table_id
         widget_url = args.get("widget_url", HOST_URL + "/")
+        artefact   = args.get("artefact")
+        if artefact:
+            sep = "&" if "?" in widget_url else "?"
+            widget_url = widget_url + sep + "a=" + artefact
         try:
             # Trouver le tableRef entier depuis _grist_Tables
             tables_meta = await grist_get(ctx, "tables/_grist_Tables/records")
@@ -1033,11 +1490,13 @@ async def call_tool(uid_key, mcp_sid, name, args):
             # UpdateRecord via /apply respecte le type Text et stocke bien une string.
             # Format exact copie depuis section Grist UI existante :
             # customView est une JSON string encodee dans options (pas un objet nested)
+            # widgetOptions: JSON string passee au widget via grist.onOptions()
+            widget_options_val = json.dumps({"artefact": artefact}) if artefact else None
             custom_view_str = json.dumps({
                 "mode": "url", "url": widget_url, "access": "full",
                 "widgetDef": None, "pluginId": "", "sectionId": "",
                 "renderAfterReady": False, "widgetId": None,
-                "widgetOptions": None, "columnsMapping": None,
+                "widgetOptions": widget_options_val, "columnsMapping": None,
             })
             section_fields: dict = {
                 "options": json.dumps({
@@ -1079,7 +1538,7 @@ async def dispatch(uid_key, mcp_sid, method, params):
     if method == "initialize":
         return {
             "protocolVersion": MCP_VER,
-            "serverInfo": {"name": "grist-coder", "version": "5.1.0",
+            "serverInfo": {"name": "grist-coder", "version": "5.2.0",
                            "instructions": SERVER_INSTRUCTIONS},
             "capabilities": {
                 "tools":     {"listChanged": False},
@@ -1300,7 +1759,7 @@ async def screenshot(request: Request):
 @app.get("/health")
 async def health():
     total = sum(len(u["sessions"]) for u in registry._users.values())
-    return {"ok": True, "version": "5.1.0", "mcp_protocol": MCP_VER,
+    return {"ok": True, "version": "5.2.0", "mcp_protocol": MCP_VER,
             "sessions": total, "users": len(registry._users),
             "tools": len(TOOLS), "prompts": len(PROMPTS),
             "resources": {"static": len(STATIC_RESOURCES), "templates": len(RESOURCE_TEMPLATES)},
