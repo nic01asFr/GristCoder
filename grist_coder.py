@@ -1,5 +1,5 @@
 """
-GRIST CODER · MCP Server v5.4 · streamable HTTP spec 2025-03-26
+GRIST CODER · MCP Server v5.9 · streamable HTTP spec 2025-03-26
 ────────────────────────────────────────────────────────────────
 Document Grist = codebase du projet.
 Widget = split vertical Ace editor | iframe preview.
@@ -30,87 +30,120 @@ WIDGET_PATH = Path(__file__).parent / "widget.html"
 # ── SERVER INSTRUCTIONS ───────────────────────────────────────────────────────
 
 SERVER_INSTRUCTIONS = """
-Tu es connecte a Grist Coder MCP v5.2 — service de dev d apps Grist.
+Tu es Grist Coder MCP v5.9 — service de construction d apps Grist completes et guidees.
 
-VISION
-  Un document Grist devient une app metier complete, deployee dans le navigateur,
-  sans infrastructure supplementaire. L utilisateur final interagit avec des artefacts
-  (widgets HTML/React) lies a ses donnees. Ses actions peuvent declencher des effets
-  externes (webhooks). Tout est construit et maintenu depuis ce MCP.
+MISSION
+  Transformer le besoin utilisateur en une application Grist complete (donnees + UI + logique +
+  integrations) en 4 phases guidees. plan/{token} est la source de verite du projet en cours.
+  Le widget est ton interface directe avec l utilisateur — utilise-le activement.
 
-  Philosophie : n implémenter que ce qui est optimal, peu complexe, facile au regard
-  de l existant. Pas de surarchitecture.
+SURFACE UTILISATEUR — WIZARD MULTI-CARD
+  L overlay wizard est une surface unifiee : plusieurs cards coexistent, chacune independante.
+  - plan_update() -> card ctx-plan (plan courant, progres, actions)
+  - canvas_wizard(id=...) -> card nommee (interaction, info, progres)
+  - canvas_context_update(card_id=...) -> card nommee libre (feedback, resume subagent, etat)
+  - canvas_wizard_close(card_id=...) -> ferme une card specifique ; sans arg = ferme tout
+  Principe : ne jamais fermer tout l overlay sauf livraison finale. Chaque card a sa duree de vie.
 
-COUCHES D UNE APP COMPLETE
-  1. Donnees  : tables Grist + formules colonnes (ce que l utilisateur possede)
-  2. UI       : artefacts HTML/React + pages Grist (ce que l utilisateur voit)
-  3. Logique  : grist_apply, grist_sql, grist_upsert (ce que le systeme fait)
-  4. Integr.  : grist_webhooks -> services externes CRM/email/ERP/IA async
-               (ce que le doc declenche dans le monde exterieur — transparent pour l utilisateur)
-               Receiver : HOST_URL/webhook-receive/{docId} si HOST_URL est public
+COUCHES APP (toutes les 4 doivent etre traitees selon le besoin)
+  1. Donnees  : tables Grist + formules (ce que possede le doc)
+  2. UI       : artefacts HTML/React + pages Grist (ce que voit l utilisateur)
+  3. Logique  : grist_apply, grist_sql, grist_upsert (ce que fait le systeme)
+  4. Integr.  : grist_webhooks -> CRM/email/ERP/IA (effets exterieurs invisibles)
+
+CYCLE GUIDE — 4 PHASES
+
+  PHASE 1 — QUALIFIER (doc vide ou besoin flou)
+    1. sessions_list() -> token + _next hint
+    2. plan/{token} -> lire si plan existant (reprise) ; _next_step indique l action recommandee
+    3. canvas_wizard(type="input", id="collect-need") -> collecter le besoin brut
+    4. docs/qualification -> identifier categorie + architecture type adaptee
+    5. Si doc existant a explorer : plan_update(status="assessing") -> outils grist_schema/records disponibles
+    6. Si besoin complexe : subagent_call(role="data-architect") -> canvas_context_update(card_id="arch-analysis")
+    7. canvas_wizard(type="choice", id="confirm-category") -> confirmer categorie si plusieurs options
+    8. canvas_wizard(type="form", id="project-details") -> details : utilisateurs, donnees, integrations
+    9. plan_update(need, tables, artefacts, pages, status="designing")
+       -> _next_resources indique les ressources a lire avant conception
+
+  NOTE CONTEXTES : les outils disponibles evoluent avec le status du plan (tools/list_changed).
+    qualifying -> assessing -> designing -> building -> verifying -> done
+    Chaque transition debloque les outils necessaires a la phase suivante.
+
+  PHASE 2 — CONCEVOIR (valider le plan avec l utilisateur)
+    1. canvas_wizard(type="confirm", id="validate-plan", content=plan_markdown) -> valider ou amender
+    2. plan_update(status="building") si valide ; sinon retour phase 1 avec corrections
+    3. artefact_init() si table Artefacts absente
+
+  PHASE 3 — CONSTRUIRE (sequentiel, progression visible)
+    canvas_wizard(type="progress", id="build-progress", steps=[tables, artefacts, pages, verification])
+    Pour chaque table :
+      grist_apply([AddTable, ...]) + grist_apply([BulkAddRecord, ...]) (donnees exemple min 3-5)
+      -> update progress card (step "done")
+    Pour chaque artefact (dashboard -> fiches -> composants) :
+      canvas_write(code) -> canvas_screenshot -> grist_upsert (ou Save widget si WAF)
+      -> update progress card
+    Pour chaque page Grist :
+      grist_view_create / grist_view_add_widget + grist_section_configure
+
+  PHASE 4 — VERIFIER ET LIVRER
+    1. context/{token} -> snapshot final (verifier tables + artefacts + pages)
+    2. canvas_wizard(type="confirm", id="delivery") -> resume construit + actions utilisateur
+    3. plan_update(status="done")
+    4. canvas_wizard_close() -> ferme tout l overlay
+
+  REPRISE DE SESSION (plan existant)
+    1. plan/{token} -> lire plan + status + _next_step
+    2. context/{token} -> etat reel actuel du doc
+    3. plan_update() non-bloquant -> restaure la card ctx-plan
+    4. canvas_wizard(type="confirm", id="resume") -> "Reprendre ?" ou "Modifier le plan ?"
+    5. Continuer depuis le status precedent
+
+PRINCIPES D ORCHESTRATION
+  - Chaque outil a un moment optimal : lire _next des reponses pour savoir quoi appeler apres
+  - Plusieurs cards simultanees = richesse : progress (build) + ctx-plan + feedback subagent
+  - Ne jamais bloquer sans feedback : toujours une card progress visible pendant les ops longues
+  - subagent_call retourne du texte -> canvas_context_update(card_id="X") pour l afficher
+  - plan_update() en debut + fin de chaque phase : maintient la coherence de la source de verite
 
 OUTILS (28)
-  Sessions : sessions_list, session_select, session_info
+  Plan     : plan_update              <- META-CONTROLE : persiste + _next_resources par phase
+  Sessions : sessions_list            <- _next hint integre (plan? ou docs/qualification)
+             session_select, session_info
   Canvas   : canvas_read, canvas_write, canvas_patch, canvas_exec, canvas_screenshot, canvas_type
-  Wizard   : canvas_wizard, canvas_wizard_close
-  Context  : canvas_context_update  <- panneau memoire visible par l utilisateur (non bloquant)
-  Chat     : chat_reply             <- repondre dans l interface chat du widget
-  Subagent : subagent_call          <- deleguer a un agent specialise via sampling MCP
+  Wizard   : canvas_wizard (id requis, choice|form|confirm|progress|info|input)
+             canvas_wizard_close (card_id? -> ferme une card ; absent -> ferme tout)
+  Context  : canvas_context_update (card_id? -> card nommee libre dans l overlay)
+  Subagent : subagent_call            <- analyse specialisee ; afficher via canvas_context_update
   Artefact : artefact_init
   Grist R  : grist_schema, grist_records, grist_sql
   Grist W  : grist_records_add, grist_records_patch, grist_upsert
   Document : grist_apply, grist_views_list, grist_view_create,
              grist_section_configure, grist_view_add_widget
-  Webhooks : grist_webhooks (list OK accessToken | create/update/delete = cle API owner)
+  Webhooks : grist_webhooks (list OK accessToken | CRUD = cle API owner)
 
-RESSOURCES
-  docs/schema           -> recettes tables/colonnes (lire avant schema)
-  docs/artefacts        -> templates HTML/JS + API bridge (lire avant coder)
-  docs/playbook         -> sequences pages, layouts, liaisons (lire avant creer pages)
-  docs/app-patterns     -> patterns multi-widgets : nav, sync, auto-provisioning, Artefactory
-  docs/formulas         -> formules colonnes Python natives Grist
-  docs/wizard           -> schema des etapes wizard + workflows types (lire avant canvas_wizard)
-  playbook/{scenario}   -> guide cible : dashboard|fiche|table|full-app|master-detail
-  context/{token}       -> snapshot live : tables+artefacts+pages (lire en debut session)
-  code/{token}          -> source de tous les artefacts (lire avant iterer sur app existante)
-  chat/{token}          -> messages entrants utilisateur (lire si notifications/resources/updated)
+RESSOURCES (ordre de lecture recommande)
+  plan/{token}       -> PREMIER : plan persistant + _next_step (reprise ou debut)
+  context/{token}    -> etat reel du doc (tables, artefacts, pages actuels)
+  docs/qualification -> LIRE avant phase 1 : categories, architectures, criteres completude
+  docs/schema        -> types colonnes avant grist_apply
+  docs/artefacts     -> templates avant canvas_write
+  docs/playbook      -> pages avant grist_view_create
+  docs/wizard        -> schema wizard avant canvas_wizard
+  code/{token}       -> source artefacts avant iteration sur app existante
+  docs/app-patterns  -> patterns avances (nav, sync, Artefactory)
+  docs/formulas      -> formules colonnes Python Grist
 
-WORKFLOW
-  1. sessions_list() -> token
-  2. context/{token} -> etat doc (tables, artefacts, pages)
-  3a. Si doc vide / besoin flou -> canvas_wizard(choice/form/confirm) pour qualifier avec l utilisateur
-  3b. Si doc existant -> docs/playbook ou playbook/{scenario} -> sequence
-  4. Construire : tables -> artefacts (canvas_write+screenshot+upsert) -> pages
-     Pendant la construction : canvas_wizard(progress) + canvas_context_update(etat courant)
-  5. (optionnel) grist_webhooks(create) -> integration externe ou async processing
-  6. canvas_wizard_close() si wizard ouvert -> retour artefact
-  7. context/{token} -> verifier
-
-WIDGET VIVANT
-  canvas_context_update(title, sections, progress?) : panneau memoire en bas du widget
-    -> affiche l etat courant, les decisions prises, le contexte pour l utilisateur
-    -> sections : [{label, content, style: default|success|info|warn|code}]
-    -> progress : 0-100 (barre de progression optionnelle)
-    -> appeler en debut de session pour contextualiser, et apres chaque etape cle
-    -> appeler avec {} ou sections vides pour fermer le panneau
-
-  CHAT (si l utilisateur envoie un message via le widget) :
-    -> resource chat/{token} reçoit une notification notifications/resources/updated
-    -> lire chat/{token} -> pending_messages -> traiter -> chat_reply(message)
-    -> ou: si client supporte sampling, la reponse est automatique (pas besoin de chat_reply)
-
-  SUBAGENTS (subagent_call) :
-    -> deleger une analyse ou generation a un agent specialise
-    -> roles: data-architect | ui-designer | data-analyst | integrator | assistant
-    -> necessite que le client MCP supporte sampling (Claude Desktop le supporte)
-    -> retourne le texte de la reponse de l agent specialise pour informer les decisions
+STANDARDS QUALITE (non-negotiables)
+  Donnees  : types corrects (Text/Numeric/Date/Bool/Choice/Ref:Table), FK via Ref:, formules
+  UI       : design responsive (Inter, CSS var, mobile-first), palette widget (#3e5de7/#10b981)
+  UX       : donnees exemple (BulkAddRecord min 3-5 lignes), pages nommees, widgets lies
+  Completude : dashboard (vue globale) + fiche detail (vue unitaire) + navigation si >2 pages
 
 REGLES CRITIQUES
   JAMAIS REST PATCH sur _grist_Views / _grist_Views_section -> crash frontend
-  TOUJOURS grist_apply(["UpdateRecord", ...]) pour toutes les tables meta
+  TOUJOURS grist_apply(["UpdateRecord",...]) pour toutes les tables meta
   canvas_read() AVANT canvas_patch() — old_str doit etre exact et unique
-  ARTEFACTS LOURDS (HTML avec script) : grist_records_patch et grist_apply bloques (403 WAF)
-    sur grist.numerique.gouv.fr. WORKFLOW : canvas_write/patch -> screenshot -> Save widget
+  WAF grist.numerique.gouv.fr : artefacts lourds -> canvas_write/patch -> Save widget
 """.strip()
 
 # ── SESSION CTX ───────────────────────────────────────────────────────────────
@@ -132,7 +165,10 @@ class SessionCtx:
         self.current_art_nom = None
         self.current_art_type= None
         self.wizard_responses: deque = deque(maxlen=20)
-        self._wizard_event: asyncio.Event | None = None
+        self._wizard_events: dict[str, asyncio.Event] = {}  # keyed by step/card id
+        self.project_plan: dict = {}   # plan de projet persistant : need, tables, artefacts, pages, status
+        self.current_context: str = "qualifying"   # qualifying|assessing|designing|building|verifying|done
+        self._active_wizard_cards: dict[str, dict] = {}  # card_id -> step dict (persist on SSE reconnect)
 
     def touch(self): self.last_seen = time.time()
 
@@ -364,10 +400,8 @@ async def _handle_chat_sample(uid_key: str, ctx, message: str):
                                 system, 1024)
     except Exception as e:
         text = f"Erreur: {e}"
-    ts = time.time()
-    ctx.chat_history.appendleft({"role": "assistant", "content": text, "ts": ts})
     _push(uid_key, {"type": "chat_message", "token": ctx.token,
-                    "role": "assistant", "content": text, "ts": ts})
+                    "role": "assistant", "content": text, "ts": time.time()})
 
 
 # ── TOOLS ─────────────────────────────────────────────────────────────────────
@@ -375,18 +409,25 @@ async def _handle_chat_sample(uid_key: str, ctx, message: str):
 TOOLS = [
     # Sessions
     {"name": "sessions_list",
-     "description": "Liste tous les widgets actifs. Appeler EN PREMIER pour obtenir le token.",
+     "description": (
+         "PREMIERE ETAPE obligatoire — liste les widgets actifs et retourne token + doc_title. "
+         "La reponse inclut _next : action recommandee immediate (plan existant -> plan/{token}, "
+         "nouveau doc -> docs/qualification). Si plusieurs sessions : session_select(token) pour choisir."
+     ),
      "inputSchema": {"type": "object", "properties": {}},
      "annotations": {"readOnlyHint": True}},
 
     {"name": "session_select",
-     "description": "Selectionne une session par token. Inutile si une seule session.",
+     "description": "Selectionne une session parmi plusieurs. Inutile si sessions_list retourne une seule session.",
      "inputSchema": {"type": "object",
                      "properties": {"token": {"type": "string"}},
                      "required": ["token"]}},
 
     {"name": "session_info",
-     "description": "Resume de la session : tables, artefacts IsDoc, canvas. Preferer context/{token} pour snapshot complet.",
+     "description": (
+         "Resume leger de la session courante (tables, artefacts IsDoc, canvas actif). "
+         "Utiliser context/{token} pour le snapshot complet avant construction ou verification."
+     ),
      "inputSchema": {"type": "object", "properties": {}},
      "annotations": {"readOnlyHint": True}},
 
@@ -397,7 +438,13 @@ TOOLS = [
      "annotations": {"readOnlyHint": True}},
 
     {"name": "canvas_write",
-     "description": "Reecrit integralement le canvas. Preferer canvas_patch pour modifications ciblees.",
+     "description": (
+         "Reecrit integralement le canvas (artefact selectionne dans le widget). "
+         "Preferer canvas_patch pour modifications ciblees sur code existant. "
+         "Apres canvas_write : canvas_screenshot pour valider le rendu. "
+         "Pour sauvegarder dans Grist : grist_upsert sur table Artefacts (ou bouton Save du widget si WAF). "
+         "WAF grist.numerique.gouv.fr : payloads lourds avec <script> -> canvas_write/patch + Save widget."
+     ),
      "inputSchema": {"type": "object",
                      "properties": {
                          "code":     {"type": "string"},
@@ -437,10 +484,21 @@ TOOLS = [
     # Wizard
     {"name": "canvas_wizard",
      "description": (
-         "Affiche une etape interactive dans le render pane du widget. "
-         "Types interactifs (choice | form | confirm) : bloque jusqu a la reponse user (defaut 120s). "
-         "Types non-interactifs (progress | info sans actions) : retourne immediatement apres affichage. "
-         "Lire docs/wizard pour le schema complet et les workflows types."
+         "Affiche une etape contextuelle dans le render pane. "
+         "input : DEBUT DE SESSION — collecte le besoin brut (suggestions=chips rapides). "
+         "choice : QUALIFICATION — choix de categorie d app ou d architecture type. "
+         "form : QUALIFICATION — details techniques (nb users, donnees, integrations). "
+         "confirm : VALIDATION — soumet le plan markdown a l utilisateur avant construction. "
+         "progress : CONSTRUCTION — montre l avancement (tables->artefacts->pages). "
+         "info : INFORMATION — message contextuel avec actions optionnelles. "
+         "preview : VALIDATION COMPOSANT — iframe live du code + interaction contextuelle en dessous. "
+         "  code (str), code_type (html|react|svg, defaut html), bridge (bool, defaut true), height (px). "
+         "  Interaction : actions=[{id,label,style}] | choices=[...] | fields=[...] | input=placeholder. "
+         "  Non-bloquant si pas d interaction ; bloquant sinon. "
+         "Types bloquants (input|choice|form|confirm|preview+interaction) : attendent la reponse. "
+         "Types non-bloquants (progress|info sans actions|preview sans interaction) : retournent immediatement. "
+         "Apres chaque etape interactive : plan_update() pour persister les decisions. "
+         "Lire docs/wizard avant premiere utilisation."
      ),
      "inputSchema": {"type": "object",
                      "properties": {
@@ -464,26 +522,68 @@ TOOLS = [
                      "required": ["step"]}},
 
     {"name": "canvas_wizard_close",
-     "description": "Ferme le wizard overlay dans le widget et retourne au render pane normal.",
-     "inputSchema": {"type": "object", "properties": {}}},
+     "description": (
+         "Ferme un card specifique du panneau multi-card (par card_id) ou tous les cards (sans argument). "
+         "Sans args : vide le panneau et revient au render pane. "
+         "Avec card_id : retire uniquement ce card (les autres restent visibles). "
+         "Exemple : fermer la card progress apres construction, garder le plan visible."
+     ),
+     "inputSchema": {"type": "object", "properties": {
+         "card_id": {"type": "string", "description": "ID du card a fermer. Absent = fermer tous."}
+     }}},
+
+    # Plan meta-control
+    {"name": "plan_update",
+     "description": (
+         "META-CONTROLE — persiste le plan projet et met a jour l overlay contexte. "
+         "Appeler apres chaque decision structurante pour maintenir la source de verite. "
+         "Transitions status : qualifying -> assessing (doc existant a explorer) -> designing -> building -> verifying -> done. "
+         "Chaque transition push notifications/tools/list_changed (outils progressivement debloquees). "
+         "Sans actions/input : non bloquant, met a jour le panneau et continue. "
+         "Avec actions=[{label,value,style}] : bloquant — l utilisateur choisit (ex: Valider/Modifier). "
+         "Avec input='placeholder' : bloquant — l utilisateur saisit une correction ou direction. "
+         "Retourne {value} de l action choisie ou {value} du texte saisi."
+     ),
+     "inputSchema": {"type": "object", "properties": {
+         "need":         {"type": "string",  "description": "Besoin utilisateur qualifie (resumé)"},
+         "tables":       {"type": "array",   "description": "Tables prevues [{name, columns:[str]}]"},
+         "artefacts":    {"type": "array",   "description": "Artefacts UI prevus [{name, type}]"},
+         "pages":        {"type": "array",   "description": "Pages Grist prevues [{name, table}]"},
+         "integrations": {"type": "array",   "description": "Webhooks/integrations prevus"},
+         "decisions":    {"type": "array",   "description": "Decisions architecturales cles prises"},
+         "notes":        {"type": "string",  "description": "Notes libres sur le projet"},
+         "status":       {"type": "string",
+                          "enum": ["qualifying","assessing","designing","building","verifying","done"],
+                          "description": "Phase courante. assessing=exploration doc existant (debloque schema/canvas read). Chaque transition notifie tools/list_changed."},
+         "actions":      {"type": "array",   "description": "Boutons [{label,value,style?}] — rend bloquant, retourne la valeur choisie"},
+         "input":        {"type": "string",  "description": "Placeholder textarea — rend bloquant, retourne le texte saisi"},
+         "timeout":      {"type": "number",  "description": "Timeout en secondes (defaut 300)"},
+     }, "required": ["status"]}},
 
     # Context panel
     {"name": "canvas_context_update",
      "description": (
-         "Pousse un panneau contexte/memoire dans le widget. Non bloquant. "
-         "Visible en permanence en bas du preview pour informer l utilisateur. "
-         "Appeler en debut de session pour contextualiser, apres chaque etape cle, "
-         "et avec sections=[] pour fermer. "
+         "Affiche une card contextuelle libre dans l overlay wizard — complementaire a plan_update. "
+         "card_id fourni -> card independante et nommee (peut coexister avec d autres cards). "
+         "Absent -> met a jour la card ctx-plan (meme surface que plan_update). "
+         "Cas d usage : feedback d etape, resume subagent, etat processus externe, note temporaire. "
+         "Sans actions ni input : non bloquant, reste visible. "
+         "Avec actions=[{label,value,style?}] ou input='placeholder' : bloquant — attend reponse. "
+         "Fermer avec canvas_wizard_close(card_id=...) quand l info n est plus pertinente. "
          "sections[].style : default|success|info|warn|code"
      ),
      "inputSchema": {"type": "object", "properties": {
-         "title":    {"type": "string", "description": "Titre du panneau"},
+         "card_id":  {"type": "string", "description": "ID unique de la card (ex: 'arch-analysis', 'build-feedback'). Absent = card ctx-plan."},
+         "title":    {"type": "string", "description": "Titre de la card"},
          "sections": {"type": "array", "items": {"type": "object", "properties": {
              "label":   {"type": "string"},
              "content": {"type": "string"},
              "style":   {"type": "string", "enum": ["default","success","info","warn","code"]}
-         }}, "description": "Sections de contenu. Vide = fermer le panneau."},
+         }}, "description": "Sections de contenu."},
          "progress": {"type": "number", "description": "0-100, barre de progression optionnelle"},
+         "actions":  {"type": "array",  "description": "Boutons [{label,value,style?}] — rend bloquant"},
+         "input":    {"type": "string", "description": "Placeholder textarea — rend bloquant"},
+         "timeout":  {"type": "number", "description": "Timeout secondes (defaut 300)"},
      }, "required": ["title"]}},
 
     # Chat
@@ -500,14 +600,18 @@ TOOLS = [
     # Subagent
     {"name": "subagent_call",
      "description": (
-         "Delegue une tache analytique ou generative a un agent specialise via sampling MCP. "
-         "Le client MCP (Claude Desktop) doit supporter sampling. "
-         "Roles disponibles: data-architect | ui-designer | data-analyst | integrator | assistant. "
-         "Retourne la reponse textuelle de l agent pour informer les decisions du LLM principal."
+         "Delegue a un agent specialise via sampling MCP (necessite client supportant sampling). "
+         "data-architect : QUALIFICATION — analyse le besoin, propose tables + relations optimales. "
+         "ui-designer    : CONCEPTION — genere le plan artefacts UI adapte a la categorie d app. "
+         "page-architect : CONSTRUCTION — propose layout pages Grist optimal (grilles, widgets, liens, scenarios). "
+         "data-analyst   : CONSTRUCTION — analyse donnees existantes, genere donnees exemple. "
+         "integrator     : INTEGRATION — propose schema webhooks + services externes. "
+         "assistant      : tout contexte — reponse libre ou explications a l utilisateur. "
+         "Retourne la reponse textuelle : l utiliser pour informer plan_update ou canvas_wizard."
      ),
      "inputSchema": {"type": "object", "properties": {
          "role":       {"type": "string",
-                        "enum": ["data-architect","ui-designer","data-analyst","integrator","assistant"],
+                        "enum": ["data-architect","ui-designer","page-architect","data-analyst","integrator","assistant"],
                         "description": "Profil specialise de l agent"},
          "task":       {"type": "string", "description": "Instruction precise pour l agent"},
          "context":    {"type": "string", "description": "Contexte supplementaire (schema, code, etc.)"},
@@ -516,7 +620,11 @@ TOOLS = [
 
     # Artefact
     {"name": "artefact_init",
-     "description": "Cree la table Artefacts (9 colonnes) si absente. Idempotent. (Le widget le fait aussi automatiquement.)",
+     "description": (
+         "Cree la table Artefacts (9 colonnes) si absente. Idempotent. "
+         "Appeler en debut de phase CONSTRUCTION si grist_schema ne montre pas la table Artefacts. "
+         "(Le widget l appelle automatiquement au chargement.)"
+     ),
      "inputSchema": {"type": "object", "properties": {}},
      "annotations": {"idempotentHint": True}},
 
@@ -578,7 +686,13 @@ TOOLS = [
 
     # Document structure
     {"name": "grist_apply",
-     "description": "Execute des User Actions Grist (AddTable, AddColumn, BulkAddOrReplaceRecord, UpdateRecord...). Permet de creer tables, colonnes, et modifier les metadonnees du document.",
+     "description": (
+         "Execute des User Actions Grist (AddTable, AddColumn, BulkAddOrReplaceRecord, UpdateRecord...). "
+         "Creer tables et colonnes : AddTable + colonnes [{id, type, widgetOptions?}]. "
+         "Donnees exemple : BulkAddOrReplaceRecord (min 3-5 lignes pour rendre l app vivante). "
+         "OBLIGATOIRE pour toutes les tables meta _grist_Views* : UpdateRecord via grist_apply. "
+         "JAMAIS REST PATCH sur _grist_Views/_grist_Views_section -> crash frontend [object Object]."
+     ),
      "inputSchema": {"type": "object",
                      "properties": {
                          "actions": {"type": "array",
@@ -612,7 +726,12 @@ TOOLS = [
                      "required": ["view_ref", "table_id"]}},
 
     {"name": "grist_view_create",
-     "description": "Cree une page Grist avec grille de donnees + widget custom lies. Structure un ecran de l app.",
+     "description": (
+         "CONSTRUCTION PHASE 3 — cree une page Grist (grille + widget custom lies). "
+         "Pattern : table principal en grille gauche + artefact fiche en widget custom droit. "
+         "Avec artefact= : configure automatiquement le widget en display mode. "
+         "Apres creation : grist_view_add_widget si besoin d un 2e widget sur la meme page."
+     ),
      "inputSchema": {"type": "object",
                      "properties": {
                          "table_id":   {"type": "string", "description": "Table source (ex: 'Batiments')"},
@@ -634,6 +753,35 @@ TOOLS = [
                                         "description": "Pour create: {tableId, eventTypes, url, name, memo}. Pour update: champs a modifier."}},
                      "required": ["action"]}},
 ]
+
+# ── CONTEXT-BASED TOOL FILTERING ──────────────────────────────────────────────
+# Maps plan status → set of visible tool names (None = all tools visible)
+_QUALIFYING_TOOLS = {
+    "sessions_list", "session_select", "session_info",
+    "canvas_wizard", "canvas_wizard_close", "canvas_context_update",
+    "plan_update", "subagent_call", "artefact_init", "chat_reply",
+    "grist_schema", "grist_records", "grist_sql",
+}
+_ASSESSING_TOOLS = _QUALIFYING_TOOLS | {
+    "canvas_read", "canvas_screenshot", "grist_views_list",
+}
+_DESIGNING_TOOLS = _ASSESSING_TOOLS | {
+    "canvas_write", "canvas_patch", "canvas_type",
+}
+CONTEXT_TOOLS: dict[str, set | None] = {
+    "qualifying":  _QUALIFYING_TOOLS,
+    "assessing":   _ASSESSING_TOOLS,
+    "designing":   _DESIGNING_TOOLS,
+    "building":    None,   # all tools
+    "verifying":   None,   # all tools
+    "done":        _QUALIFYING_TOOLS,
+}
+
+def _tools_for_context(context: str) -> list:
+    allowed = CONTEXT_TOOLS.get(context)
+    if allowed is None:
+        return TOOLS
+    return [t for t in TOOLS if t["name"] in allowed]
 
 # ── PROMPTS ───────────────────────────────────────────────────────────────────
 
@@ -665,6 +813,9 @@ PROMPTS = [
     {"name": "design-schema",
      "description": "Concevoir le schema relationnel Grist pour un domaine metier.",
      "arguments": [{"name": "domaine", "description": "Domaine metier (ex: patrimoine, RH, stock)", "required": True}]},
+    {"name": "evolve-app",
+     "description": "Faire evoluer une app existante : audit, identification manques, enrichissement (nouvelles tables/artefacts/pages/integrations).",
+     "arguments": [{"name": "direction", "description": "Direction de l evolution (ex: ajouter kanban, integrer geocodage, ajouter webhooks)", "required": False}]},
 ]
 
 def _prompt_messages(name, args):
@@ -743,6 +894,22 @@ def _prompt_messages(name, args):
             "4. Creer Phase 1 (sans refs) via grist_records_add\n"
             "5. Creer Phase 2 (Ref:) via grist_records_add sur colonnes\n"
             "6. Configurer Phase 3 (visibleCol) via grist_records_patch"
+        )}}]
+    if name == "evolve-app":
+        direction = args.get("direction", "")
+        dir_str = f"Direction souhaitee : {direction}\n\n" if direction else ""
+        return [{"role": "user", "content": {"type": "text", "text": (
+            f"{dir_str}"
+            "1. sessions_list() -> token\n"
+            "2. plan_update(status='assessing') -> context assessing\n"
+            "3. resources/read grist-coder://context/{token} -> etat reel (tables, artefacts, pages)\n"
+            "4. resources/read grist-coder://code/{token} -> source des artefacts existants\n"
+            "5. Audit : manques par couche (Donnees/UI/Logique/Integrations) ?\n"
+            "6. canvas_context_update(card_id='audit') -> afficher le bilan\n"
+            "7. canvas_wizard(type='choice', id='evol-direction') -> proposer 3-5 axes d evolution\n"
+            "8. plan_update(status='designing') -> plan enrichissement valide\n"
+            "9. Enrichir : nouvelles tables (grist_apply), artefacts (canvas_write+upsert), pages, webhooks\n"
+            "10. plan_update(status='done') + canvas_wizard_close()"
         )}}]
     return [{"role": "user", "content": {"type": "text", "text": f"Prompt '{name}' inconnu."}}]
 
@@ -1049,6 +1216,19 @@ grist.onRecords(cb)         // liste de records change (cb: function(records, ma
 grist.onNewRecord(cb)       // nouvelle ligne vide cree -> cb({}) avec id=0
 grist.onOptions(cb)         // options du widget changent (widgetOptions JSON)
 
+## FORMATS DE DONNEES — DIFFERENCES CRITIQUES
+// onRecord : colonnes Reference = OBJETS EXPANDED {id, Nom, ...} (plugin API v2, grist.numerique.gouv.fr)
+//            colonnes formule (isFormula:true) ABSENTES si la colonne est cachee dans la vue
+// fetchTable : colonnes Reference = ID ENTIER (row ID brut) — fiable, toujours disponible
+// REGLE : pour fiches detail avec formules ou references, TOUJOURS utiliser docApi.fetchTable
+//         et ne PAS se fier au record de onRecord pour les colonnes formule
+
+// Exemple acces Reference depuis fetchTable (id entier):
+const d = await grist.docApi.fetchTable('Commandes');
+const clientId = d.Client[i];  // entier, ex: 3
+// Exemple acces Reference depuis onRecord (objet expanded):
+// record.Client = {id: 3, Nom: 'FinPlus', CA: 780, ...}  <- NE PAS UTILISER POUR JOINTURE
+
 ## NAVIGATION / CURSEUR
 await grist.setCursorPos({rowId: 42});               // positionne le curseur sur une ligne
 await grist.setSelectedRows([42, 43]);               // selectionne plusieurs lignes
@@ -1217,14 +1397,21 @@ window.addEventListener('message', e => {
 
 ---
 PATTERNS WIDGET LIE (IsDoc=false, linkSrcSectionRef defini)
-# Pattern 1: Fiche detail simple (onRecord via __APP_STATE__)
-function render() {
-  const r = window.__APP_STATE__?.record || {};
-  if (!r.id) { el.innerHTML = '<p class="text-gray-400">Selectionnez un enregistrement</p>'; return; }
-  el.innerHTML = `<h2 class="text-xl font-bold">${r.Nom}</h2><p>${r.Email||''}</p>`;
+# Pattern 1: Fiche detail simple — PATTERN CANONIQUE
+// __APP_STATE__.record = record injecte par le widget parent (id + colonnes de base)
+// app.on('record', cb) = reactive sur changement de selection (IDE mode)
+// IMPORTANT: colonnes formule et references completes via docApi.fetchTable (pas dans record)
+async function render(rowId) {
+  if (!rowId) { el.innerHTML = '<p>Selectionnez un enregistrement</p>'; return; }
+  const d = await grist.docApi.fetchTable('MaTable');  // toutes colonnes incl. formules
+  const i = d.id.indexOf(rowId);
+  const r = { id: rowId, Nom: d.Nom[i], CA: d.CA[i], NbCmd: d.NbCmd[i] };  // formules OK
+  el.innerHTML = `<h2>${r.Nom}</h2><p>CA: ${r.CA}</p>`;
 }
-grist.ready({requiredAccess:'full'}); render();
-app.on('record', r => { render(); });  // re-render sur changement de selection
+grist.ready({requiredAccess:'read table'});
+const _r0 = window.__APP_STATE__?.record || {};
+if (_r0.id) render(_r0.id);              // rendu initial
+app.on('record', r => { if (r?.id) render(r.id); });  // reactive (IDE + display mode)
 
 # Pattern 2: Liste filtree par selection (fetchSelectedTable)
 async function reload() {
@@ -1473,6 +1660,103 @@ Round 3:
 TROUVER colRef:
   grist_sql("SELECT id FROM _grist_Tables_column WHERE tableRef=<tableRef_Commandes> AND colId='Client'")
 """,
+
+    "kanban": """PLAYBOOK : Kanban (colonnes Statut + drag-drop)
+================================================
+Quand : suivi de taches/tickets avec colonnes Todo / En cours / Fait
+Rounds: 3
+
+Round 1 — Schema:
+  grist_apply([["AddTable","Taches",[
+    {"id":"Titre","type":"Text"},
+    {"id":"Statut","type":"Choice","widgetOptions":"{\"choices\":[\"Todo\",\"En cours\",\"Fait\"],\"choiceOptions\":{\"Todo\":{\"fillColor\":\"#e2e8f0\"},\"En cours\":{\"fillColor\":\"#fef3c7\"},\"Fait\":{\"fillColor\":\"#d1fae5\"}}}"},
+    {"id":"Priorite","type":"Choice","widgetOptions":"{\"choices\":[\"Haute\",\"Normale\",\"Basse\"]}"},
+    {"id":"Assigne","type":"Text"},
+    {"id":"Description","type":"Text"},
+    {"id":"DateLimite","type":"Date"}
+  ]]])
+  grist_apply([["BulkAddOrReplaceRecord","Taches",[null,null,null],[
+    {"Titre":["Configurer le projet","Concevoir le schema","Tester l app"],
+     "Statut":["Todo","En cours","Fait"],
+     "Priorite":["Haute","Haute","Normale"]}
+  ]]])
+
+Round 2 — Artefact Kanban:
+  canvas_write(code_kanban_html)  # voir pattern ci-dessous
+  grist_upsert("Artefacts",[{require:{Nom:"Kanban"},fields:{Type:"html",IsDoc:true,Code:"<voir pattern>"}}])
+
+Round 3:
+  grist_view_create("Taches","Kanban",artefact="Kanban")
+
+Pattern code artefact Kanban (IsDoc=true):
+  const COLS = ["Todo","En cours","Fait"];
+  const COLORS = {"Todo":"#e2e8f0","En cours":"#fef3c7","Fait":"#d1fae5"};
+  async function load() {
+    const d = await grist.docApi.fetchTable("Taches");
+    const tasks = d.id.map((id,i)=>({id,Titre:d.Titre[i],Statut:d.Statut[i],Assigne:d.Assigne[i]}));
+    document.getElementById("board").innerHTML = COLS.map(col=>
+      '<div class="col" ondragover="ev.preventDefault()" ondrop="drop(event,\''+col+'\')">' +
+      '<h3>'+col+'</h3>' +
+      tasks.filter(t=>t.Statut===col).map(t=>
+        '<div class="card" draggable="true" ondragstart="drag(event,'+t.id+')" data-id="'+t.id+'">'+t.Titre+'</div>'
+      ).join('')+'</div>'
+    ).join('');
+  }
+  async function drop(ev, newStatut) {
+    const id = parseInt(ev.dataTransfer.getData("id"));
+    await grist.docApi.applyUserActions([["UpdateRecord","Taches",id,{"Statut":newStatut}]]);
+    load();
+  }
+  function drag(ev, id) { ev.dataTransfer.setData("id", id); }
+  grist.ready(); load();
+""",
+
+    "calendar": """PLAYBOOK : Calendrier (vue mensuelle avec evenements)
+=====================================================
+Quand : planning, agenda, suivi de dates (RDV, livraisons, echeances)
+Rounds: 3
+
+Round 1 — Schema:
+  grist_apply([["AddTable","Evenements",[
+    {"id":"Titre","type":"Text"},
+    {"id":"DateDebut","type":"DateTime","widgetOptions":"{\"timeFormat\":\"HH:mm\"}"},
+    {"id":"DateFin","type":"DateTime","widgetOptions":"{\"timeFormat\":\"HH:mm\"}"},
+    {"id":"Categorie","type":"Choice","widgetOptions":"{\"choices\":[\"RDV\",\"Livraison\",\"Interne\",\"Urgence\"]}"},
+    {"id":"Description","type":"Text"},
+    {"id":"Lieu","type":"Text"}
+  ]]])
+
+Round 2 — Artefact Calendrier (IsDoc=true):
+  Utiliser une lib CDN legere : FullCalendar ou calendrier custom HTML/CSS
+  Pattern minimal avec HTML natif (sans lib):
+    - grille 7 colonnes (Lun-Dim)
+    - fetchTable("Evenements") -> positionner les evenements par date
+    - prev/next month nav
+    - click event -> affiche details en sidebar
+
+  Pattern avec FullCalendar (recommande):
+    <link href='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.css' rel='stylesheet'/>
+    <script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js'></script>
+    async function init() {
+      const d = await grist.docApi.fetchTable("Evenements");
+      const events = d.id.map((id,i)=>({
+        id, title:d.Titre[i],
+        start: new Date(d.DateDebut[i]*1000).toISOString(),
+        end:   d.DateFin[i] ? new Date(d.DateFin[i]*1000).toISOString() : null,
+        color: {RDV:"#3e5de7",Livraison:"#10b981",Urgence:"#ef4444"}[d.Categorie[i]]||"#94a3b8"
+      }));
+      const cal = new FullCalendar.Calendar(document.getElementById("cal"),{
+        initialView:"dayGridMonth", locale:"fr",
+        events: events,
+        eventClick: info => showDetail(info.event)
+      });
+      cal.render();
+    }
+    grist.ready(); init();
+
+Round 3:
+  grist_view_create("Evenements","Calendrier",artefact="Calendrier")
+""",
 }
 
 DOCS_APP_PATTERNS = """GRIST CODER - App Patterns multi-widgets
@@ -1647,115 +1931,428 @@ $CA * $Taux / 100
 """.strip()
 
 
-DOCS_WIZARD = """GRIST CODER - Wizard : dialogue interactif avec l utilisateur
-==============================================================
-Le wizard permet d afficher des etapes contextuelles dans le render pane du widget.
-Le LLM pousse une etape -> le widget la rend -> l utilisateur repond -> le LLM continue.
-Utiliser pour qualifier le besoin, confirmer l architecture, afficher la progression.
+DOCS_WIZARD = '''GRIST CODER - Wizard multi-card v5.6
+=====================================
+L overlay wizard est une SURFACE UNIFIEE de cards independantes superposees.
+Chaque card a un id unique, une duree de vie propre, et peut coexister avec d autres.
+Le LLM pousse des cards -> le widget les affiche -> l utilisateur repond -> le LLM continue.
 
-TYPES D ETAPES
---------------
+SURFACES DISPONIBLES
+--------------------
+canvas_wizard(step)              -> card interactive ou informative (id requis dans step)
+plan_update(...)                 -> card ctx-plan (plan courant, progress, actions optionnelles)
+canvas_context_update(card_id=X) -> card libre nommee (sections/progress, non-bloquante par defaut)
+canvas_wizard_close(card_id=X)   -> ferme UNE card specifique (les autres restent)
+canvas_wizard_close()            -> ferme TOUT l overlay (fin de session uniquement)
 
-1. choice — selection parmi des options (cartes cliquables)
-canvas_wizard({"id":"s1","type":"choice","title":"Type d app","subtitle":"Choisis le modele",
+TYPES DE STEPS (canvas_wizard)
+-------------------------------
+id : REQUIS — identifiant unique de la card (ex: "collect-need", "build-progress", "validate-plan")
+
+1. input — textarea libre (collecte besoin brut)
+canvas_wizard({"id":"collect-need","type":"input","title":"Ton projet",
+  "context":"Decris l app que tu veux construire.",
+  "placeholder":"Ex: un CRM pour suivre mes clients et relances...",
+  "submit_label":"Analyser",
+  "suggestions":["CRM clients","Gestion de stock","Suivi de projet","Tableau de bord"]
+})
+Reponse: {"step_id":"collect-need","type":"input","values":{"text":"..."}}
+
+2. choice — selection parmi des options (cartes cliquables)
+canvas_wizard({"id":"confirm-category","type":"choice","title":"Type d app","subtitle":"Confirme la categorie",
   "choices":[
-    {"id":"crm",      "icon":"👥","label":"CRM",      "desc":"Clients, contacts, contrats"},
-    {"id":"stock",    "icon":"📦","label":"Stock",    "desc":"Inventaire et mouvements"},
-    {"id":"projet",   "icon":"📋","label":"Projet",   "desc":"Tasks, milestones, equipe"},
-    {"id":"custom",   "icon":"⚙️","label":"Sur mesure","desc":"Architecture libre"}
+    {"id":"crm",    "icon":"👥","label":"CRM",    "desc":"Clients, contacts, contrats"},
+    {"id":"stock",  "icon":"📦","label":"Stock",  "desc":"Inventaire et mouvements"},
+    {"id":"projet", "icon":"📋","label":"Projet", "desc":"Tasks, milestones, equipe"},
+    {"id":"custom", "icon":"⚙️","label":"Custom", "desc":"Architecture libre"}
   ]
 })
 # multi=false (defaut) : clic = reponse immediate
 # multi=true : selection multiple + bouton Valider
-Reponse: {"step_id":"s1","type":"choice","values":{"selected":"crm"}}
-         {"step_id":"s1","type":"choice","values":{"selected":["crm","stock"]}}  # multi
+Reponse: {"step_id":"confirm-category","type":"choice","values":{"selected":"crm"}}
 
-2. form — formulaire avec champs structures
-canvas_wizard({"id":"s2","type":"form","title":"Entites du modele","subtitle":"Decris tes donnees",
+3. form — formulaire structure
+canvas_wizard({"id":"project-details","type":"form","title":"Details du projet",
   "fields":[
-    {"id":"entities","type":"text",     "label":"Entites principales","placeholder":"Clients, Contrats, Prestataires","required":true},
-    {"id":"desc",    "type":"textarea", "label":"Description du besoin","placeholder":"Ce que l app doit permettre de faire..."},
+    {"id":"entities","type":"text",     "label":"Entites principales","placeholder":"Clients, Contrats","required":true},
+    {"id":"volume",  "type":"number",   "label":"Volume estime (lignes)","placeholder":"500"},
     {"id":"import",  "type":"toggle",   "label":"Importer des donnees existantes"},
-    {"id":"nb",      "type":"number",   "label":"Volume estime (lignes)","placeholder":"500"},
-    {"id":"format",  "type":"select",   "label":"Format prefere","options":["CSV","Excel","Manuel"]}
+    {"id":"format",  "type":"select",   "label":"Format","options":["CSV","Excel","Manuel"]}
   ]
 })
-Types de champs : text | textarea | number | select | toggle
-select: "options" = ["val1","val2"] ou [{"id":"v","label":"L"}]
-Reponse: {"step_id":"s2","type":"form","values":{"entities":"Clients","desc":"...","import":false,"nb":"500","format":"CSV"}}
+Types champs : text | textarea | number | select | toggle
+Reponse: {"step_id":"project-details","type":"form","values":{...}}
 
-3. confirm — afficher une proposition et demander validation
-canvas_wizard({"id":"s3","type":"confirm","title":"Architecture proposee",
-  "content":"## Tables\\n- Clients\\n- Contrats (Ref:Clients)\\n\\n## Pages\\n- Dashboard (IsDoc)\\n- Liste Clients + Fiche\\n- Master-detail Clients -> Contrats",
+4. confirm — soumettre une proposition
+canvas_wizard({"id":"validate-plan","type":"confirm","title":"Architecture proposee",
+  "content":"## Tables\\n- Clients\\n- Contrats (Ref:Clients)\\n\\n## Artefacts\\n- Dashboard (react)\\n- Fiche Client (html)",
   "actions":[
-    {"id":"ok",     "label":"Valider ✓",  "style":"primary"},
-    {"id":"modify", "label":"Modifier",   "style":"secondary"},
-    {"id":"cancel", "label":"Annuler",    "style":"danger"}
+    {"id":"ok",     "label":"Valider ✓", "style":"primary"},
+    {"id":"modify", "label":"Modifier",  "style":"secondary"}
   ]
 })
-Reponse: {"step_id":"s3","type":"confirm","values":{"action":"ok"}}
+Reponse: {"step_id":"validate-plan","type":"confirm","values":{"action":"ok"}}
 
-4. progress — afficher la progression de build (non-interactif, retourne immediatement)
-canvas_wizard({"id":"build","type":"progress","title":"Construction en cours",
+5. progress — progression de build (non-bloquant, retourne immediatement)
+canvas_wizard({"id":"build-progress","type":"progress","title":"Construction en cours",
   "steps":[
-    {"id":"schema",  "label":"Schema relationnel","status":"done"},
-    {"id":"data",    "label":"Donnees initiales", "status":"done"},
-    {"id":"arts",    "label":"Artefacts HTML/JS", "status":"active"},
-    {"id":"pages",   "label":"Pages Grist",       "status":"pending"},
-    {"id":"webhooks","label":"Intégrations",      "status":"pending"}
+    {"id":"tables", "label":"Schema + donnees", "status":"done"},
+    {"id":"arts",   "label":"Artefacts UI",     "status":"active"},
+    {"id":"pages",  "label":"Pages Grist",      "status":"pending"}
   ]
 })
-# Mettre a jour : repousser meme id avec nouveaux statuts
-# Statuts : done (vert) | active (bleu, anime) | pending (gris) | error (rouge)
-# Fermer quand termine : canvas_wizard_close()
+# Mettre a jour : repousser meme id avec nouveaux statuts -> card mise a jour in-place
+# Statuts : done | active (anime) | pending | error
+# NE PAS fermer avec canvas_wizard_close() : laisser visible pendant toute la phase 3
+# Fermer uniquement : canvas_wizard_close(card_id="build-progress") quand tout est done
 
-5. info — message informatif avec action optionnelle
-canvas_wizard({"id":"s5","type":"info","title":"Donnees requises",
-  "content":"Colle le contenu de ton fichier CSV dans le champ ci-dessous, puis clique Importer.",
-  "actions":[{"id":"done","label":"Continu","style":"primary"}]
+6. info — message avec actions optionnelles
+canvas_wizard({"id":"delivery","type":"info","title":"App prete",
+  "sections":[
+    {"label":"Tables","content":"Clients, Contrats, Interactions","style":"code"},
+    {"label":"Artefacts","content":"Dashboard, Fiche Client","style":"code"}
+  ],
+  "actions":[{"id":"ok","label":"Parfait !","style":"primary"}]
 })
-# Sans actions -> retourne immediatement (pas de blocage)
-# Avec actions -> bloque comme confirm
+# Sans actions : non-bloquant, dismissable avec x
+# Avec actions : bloquant
 
-FERMER LE WIZARD
-canvas_wizard_close()  # cache l overlay, retourne au render pane normal
+7. preview — interface live dans le canvas + interaction contextuelle
+Principe : l iframe EST l interface complete. Le composant gere tout en interne.
+L agent fournit le code HTML/React du composant -> il s execute dans l iframe -> l utilisateur
+interagit directement -> wizard.submit(values) retourne les donnees structurees a l agent.
 
-WORKFLOWS TYPES
----------------
+canvas_wizard({"id":"geo-picker","type":"preview","title":"Localisation",
+  "subtitle":"Recherche et confirme l adresse",
+  "code": "...",   # HTML/React/SVG avec logique interne complete
+  "code_type": "html",   # html | react | svg (defaut: html)
+  "bridge": true,        # injecter bridge Grist (acces tables/records, defaut: true)
+  "height": 320          # hauteur iframe px (defaut: 260)
+})
+# Optionnel : interaction statique en dessous (complement simple)
+# "actions": [...] | "fields": [...] | "choices": [...] | "input": "placeholder"
 
-A. QUALIFICATION D UN NOUVEAU BESOIN (doc vide)
-   1. canvas_wizard(choice)   -> type d app (crm | stock | projet | custom)
-   2. canvas_wizard(form)     -> entites + description + volume + import
-   3. Elaborer l architecture (tables, artefacts, pages)
-   4. canvas_wizard(confirm)  -> montrer l architecture, demander validation
-   5. if "modify" -> canvas_wizard(form) pour ajustements -> retour etape 4
-   6. if "ok" -> construire
-   7. canvas_wizard(progress) -> suivre la construction etape par etape
-   8. canvas_wizard_close()   -> revenir a l artefact final
+API window.wizard (disponible dans le code de l iframe) :
+  wizard.submit(values)           -> retourne values a l agent (ferme la card)
+  wizard.fill({field_id: value})  -> pre-remplit les champs form en dessous
+  wizard.notify(msg, level)       -> toast dans le widget (info|success|warn|error)
+  wizard.setLoading(bool)         -> desactive/active bouton submit
+  wizard.cardId                   -> id de la card courante
 
-B. IMPORT DE DONNEES
-   1. canvas_wizard(choice)   -> format (CSV | JSON | coller | existant Grist)
-   2. canvas_wizard(form)     -> textarea pour coller les donnees brutes
-   3. Traiter (canvas_exec ou grist_apply)
-   4. canvas_wizard(info)     -> confirmer le resultat, proposer la suite
+Reponse (via wizard.submit ou form): {"step_id":"geo-picker","type":"preview","values":{...}}
 
-C. ITERATION SUR APP EXISTANTE (doc non vide)
-   1. context/{token}         -> lire l etat actuel
-   2. canvas_wizard(confirm)  -> montrer le diagnostic, proposer les ameliorations
-   3. if "ok" -> canvas_wizard(progress) pendant la construction
-   4. canvas_wizard_close()
+EXEMPLES D USAGE PREVIEW
+--------------------------
 
-D. DEMANDE AMBIGUE (besoin flou)
-   1. canvas_wizard(form)  -> poser les 2-3 questions cles
-   2. Construire la reponse sur la base de la saisie
-   # Toujours privilegier 1-2 questions ciblées plutot qu un long formulaire
+A. GEOCODAGE ADRESSE (API BAN data.gouv.fr)
+canvas_wizard({"id":"geocode","type":"preview","title":"Localisation du site","height":340,"code":"""
+<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>body{margin:0;padding:16px;font-family:Inter,sans-serif;background:#f8fafc}
+input{width:100%;padding:10px;border:1px solid #e2e8f0;border-radius:8px;font-size:.9rem;outline:none}
+.res{margin-top:10px;display:flex;flex-direction:column;gap:6px}
+.item{padding:10px 12px;background:#fff;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer;font-size:.82rem}
+.item:hover{border-color:#3e5de7;background:#eef2ff}</style></head><body>
+<input id="q" placeholder="Tapez une adresse..." autocomplete="off">
+<div id="res"></div>
+<script>
+var res = document.getElementById('res');
+document.getElementById('q').addEventListener('input', function(){ search(this.value); });
+res.addEventListener('click', function(e) {
+  var el = e.target.closest('.item'); if (!el) return;
+  var f = JSON.parse(decodeURIComponent(el.dataset.f));
+  wizard.submit({label: f.properties.label, lat: f.geometry.coordinates[1],
+                 lon: f.geometry.coordinates[0], code_postal: f.properties.postcode,
+                 ville: f.properties.city});
+});
+async function search(v) {
+  if (v.length < 3) { res.innerHTML = ''; return; }
+  const d = await (await fetch('https://api-adresse.data.gouv.fr/search/?q='+encodeURIComponent(v)+'&limit=5')).json();
+  res.innerHTML = d.features.map(f =>
+    '<div class="item" data-f="'+encodeURIComponent(JSON.stringify(f))+'">'+f.properties.label+'</div>'
+  ).join('');
+}
+</script></body></html>
+"""})
+# Agent recoit : {"label":"12 rue de la Paix, 75002 Paris","lat":48.869,"lon":2.330,...}
+# Agent ecrit dans Grist : grist_records_patch(table_id="Sites", records=[{id:X, fields:{Adresse, Lat, Lon}}])
 
-BONNES PRATIQUES
-- Garder les etapes courtes (1-2 questions max par form)
-- Utiliser subtitle pour donner du contexte sans alourdir le titre
-- Pour confirm : markdown simple (## h2, - liste, **gras**, `code`)
-- progress : toujours fermer avec canvas_wizard_close() une fois termine
-- Ne pas laisser le wizard ouvert en fin de session
+B. CARTE AVEC FILTRES (Leaflet + OSM)
+canvas_wizard({"id":"map-filter","type":"preview","title":"Zone d intervention","height":380,"code":"""
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9/dist/leaflet.js"><\/script>
+<div id="map" style="height:300px;border-radius:8px"></div>
+<div style="padding:10px;display:flex;gap:8px">
+  <button onclick="confirmZone()" style="flex:1;padding:9px;background:#3e5de7;color:#fff;border:none;border-radius:6px;cursor:pointer">Confirmer cette zone</button>
+</div>
+<script>
+var map = L.map('map').setView([46.6, 2.3], 6);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+var marker = null;
+map.on('click', function(e) {
+  if (marker) map.removeLayer(marker);
+  marker = L.marker(e.latlng).addTo(map);
+  wizard.notify('Position selectionnee', 'info');
+});
+function confirmZone() {
+  if (!marker) { wizard.notify('Selectionne un point sur la carte', 'warn'); return; }
+  wizard.submit({lat: marker.getLatLng().lat, lon: marker.getLatLng().lng,
+                 zoom: map.getZoom(), bbox: map.getBounds().toBBoxString()});
+}
+</script>
+"""})
+
+C. COMPOSANT AVEC DONNEES GRIST (bridge=true)
+canvas_wizard({"id":"client-selector","type":"preview","title":"Selectionner un client","bridge":true,"height":300,"code":"""
+<!DOCTYPE html><html><head><meta charset="UTF-8">
+<style>body{margin:0;padding:16px;font-family:Inter,sans-serif;background:#f8fafc}
+.item{padding:10px;background:#fff;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer;margin-bottom:6px}
+.item:hover{border-color:#3e5de7}</style></head><body>
+<div id="list">Chargement...</div>
+<script>
+grist.ready();
+grist.docApi.fetchTable('Clients').then(function(data) {
+  var html = data.Nom.map(function(n, i) {
+    return '<div class="item" onclick=\'wizard.submit({id:'+data.id[i]+', nom:'+JSON.stringify(n)+'})\'>'+n+'</div>';
+  }).join('');
+  document.getElementById('list').innerHTML = html || 'Aucun client';
+});
+</script></body></html>
+"""})
+# Charge les vrais clients Grist, l utilisateur clique -> wizard.submit({id, nom})
+
+PATTERNS MULTI-CARD RECOMMANDES
+--------------------------------
+
+A. BUILD (phase 3) — 3 cards simultanees
+   plan_update(status="building")               -> ctx-plan visible en permanence
+   canvas_wizard(id="build-progress", progress) -> progression active
+   canvas_context_update(card_id="arch-note")   -> note architecturale dismissable
+   -> Pendant la construction : update "build-progress" a chaque etape
+   -> En fin : canvas_wizard_close(card_id="build-progress") puis plan_update(status="verifying")
+
+B. QUALIFICATION (phase 1)
+   canvas_wizard(id="collect-need", input)     -> bloquant, collecte le besoin
+   subagent_call(role="data-architect")         -> analyse
+   canvas_context_update(card_id="arch-result") -> affiche le JSON structure
+   canvas_wizard(id="confirm-category", choice) -> bloquant, confirme categorie
+   plan_update(need=..., status="designing")    -> ctx-plan mis a jour
+
+C. ENRICHISSEMENT DONNEES (preview + Grist)
+   canvas_wizard(id="geo-picker", preview, bridge=true)  -> composant geocodage
+   # Agent recoit {label, lat, lon} -> grist_records_patch -> donnees enrichies
+
+D. LIVRAISON (phase 4)
+   canvas_wizard(id="delivery", confirm)  -> resume + validation user
+   plan_update(status="done")             -> ctx-plan -> "App livree 100%"
+   canvas_wizard_close()                  -> ferme tout (SEULEMENT en fin de session)
+
+REGLES
+------
+- id est REQUIS pour toute card canvas_wizard
+- Ne jamais canvas_wizard_close() sans card_id sauf en fin de session complete
+- Mettre a jour une card progress en repoussant le meme id (pas de close/reopen)
+- canvas_context_update(card_id=X) pour les infos non-interactives (subagent, notes)
+- plan_update() toujours non-bloquant sauf si actions/input explicitement utiles
+- preview sans interaction statique = iframe pleine hauteur, wizard.submit() obligatoire
+- preview avec bridge=true = acces complet aux tables Grist depuis le composant
+'''.strip()
+
+DOCS_SERVICES_GEO = """GRIST CODER - Services Géographiques (APIs publiques France)
+=============================================================
+Toutes ces APIs sont gratuites, sans auth, utilisables en fetch() depuis un artefact HTML.
+
+## 1. BAN — Base Adresse Nationale (géocodage)
+URL: https://api-adresse.data.gouv.fr/search/?q={adresse}&limit=5
+
+Pattern artefact (champ adresse + liste résultats):
+  async function searchAddress(q) {
+    const r = await fetch('https://api-adresse.data.gouv.fr/search/?q='+encodeURIComponent(q)+'&limit=5');
+    const d = await r.json();
+    return d.features; // [{type,geometry:{coordinates:[lon,lat]},properties:{label,postcode,city,score}}]
+  }
+  // Résultat: f.properties.label, f.properties.postcode, f.properties.city
+  // Coords: f.geometry.coordinates[0]=lon, [1]=lat
+
+Reverse (coords -> adresse):
+  fetch('https://api-adresse.data.gouv.fr/reverse/?lon=2.347&lat=48.859')
+
+Batch CSV (POST, max 50 lignes):
+  POST https://api-adresse.data.gouv.fr/search/csv/
+  body: FormData avec fichier CSV (colonnes: adresse, code_postal, ville)
+
+Stocker dans Grist (pattern wizard→artefact):
+  wizard.submit({label, lat, lon, code_postal, ville})
+  -> LLM reçoit le résultat -> grist_records_patch(table, [{id, fields:{Lat:lat, Lon:lon, Adresse:label}}])
+
+## 2. OSM Nominatim (géocodage mondial)
+URL: https://nominatim.openstreetmap.org/search?q={query}&format=json&limit=5
+Header requis: User-Agent: MonApp/1.0
+  fetch(url, {headers:{"User-Agent":"GristCoder/1.0"}})
+Résultat: [{display_name, lat, lon, type, importance}]
+Limite: 1 requête/s, pas de bulk.
+
+## 3. IGN Géoportail (fonds de carte, isochrones)
+Fonds de carte Leaflet:
+  L.tileLayer('https://wxs.ign.fr/essentiels/geoportail/wmts?...',{...})
+API isochrones: https://data.geopf.fr/navigation/isochrone
+  ?resource=bdtopo-pgr&profile=pedestrian&costType=time&costValue=15&point=lon,lat
+
+## 4. Affichage carte Leaflet (CDN, no auth)
+  <link rel='stylesheet' href='https://unpkg.com/leaflet@1.9/dist/leaflet.css'/>
+  <script src='https://unpkg.com/leaflet@1.9/dist/leaflet.js'></script>
+  const map = L.map('map').setView([48.85, 2.35], 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+  L.marker([lat, lon]).addTo(map).bindPopup(label);
+
+## Pattern Kanban géo (artefact IsDoc avec carte + liste):
+  grist.ready();
+  const d = await grist.docApi.fetchTable("Clients");
+  d.id.forEach((id,i) => {
+    if (d.Lat[i]) L.marker([d.Lat[i],d.Lon[i]]).addTo(map).bindPopup(d.Nom[i]);
+  });
+""".strip()
+
+DOCS_SERVICES_DATA = """GRIST CODER - Services de Données Publiques (APIs France)
+===========================================================
+APIs publiques françaises gratuites, sans auth sauf mention contraire.
+
+## 1. SIRENE — Recherche d'entreprises (INSEE)
+API publique: https://recherche-entreprises.api.gouv.fr/search?q={query}&per_page=5
+  const r = await fetch('https://recherche-entreprises.api.gouv.fr/search?q='+encodeURIComponent(q)+'&per_page=5');
+  const d = await r.json();
+  // d.results: [{siren, nom_complet, siege:{adresse_ligne_1, code_postal, libelle_commune}, activite_principale}]
+  // Identifiants: siren (9 chiffres), siret (14 chiffres = siren + nic)
+
+Fiche par SIREN:
+  fetch('https://recherche-entreprises.api.gouv.fr/search?q='+siren+'&per_page=1')
+
+## 2. data.gouv.fr — Catalogue open data
+Recherche datasets:
+  fetch('https://www.data.gouv.fr/api/1/datasets/?q={query}&page_size=5')
+  // d.data: [{id, title, description, resources:[{url, format, title}]}]
+
+Télécharger un dataset CSV (direct):
+  const csv = await fetch(resource.url).then(r=>r.text());
+  // Parser avec papaparse CDN ou split('\n').map(l=>l.split(','))
+
+## 3. DVF — Demandes de Valeurs Foncières (prix immobilier)
+API: https://apidf-preprod.cerema.fr/dvf_opendata/geomutations/?code_insee={code}&ordering=-date_mutation&page_size=10
+  // {count, results:[{date_mutation, valeur_fonciere, code_postal, libelle_commune, surface_reelle_bati, nombre_pieces_principales, nature_mutation}]}
+
+Ou par commune:
+  fetch('https://apidf-preprod.cerema.fr/dvf_opendata/geomutations/?code_insee=75056&page_size=20')
+
+## 4. API Geo — Communes, départements, régions
+Communes par code postal:
+  fetch('https://geo.api.gouv.fr/communes?codePostal=75001&fields=nom,code,centre')
+  // [{nom, code, centre:{coordinates:[lon,lat]}}]
+
+Communes dans un rayon (lat/lon/distance):
+  fetch('https://geo.api.gouv.fr/communes?lat=48.85&lon=2.35&distance=10000&fields=nom,code')
+
+Départements:
+  fetch('https://geo.api.gouv.fr/departements')
+  // [{code, nom}]
+
+## 5. Pattern Wizard → Grist (import données publiques)
+  // Dans un preview artefact:
+  const d = await fetch('https://recherche-entreprises.api.gouv.fr/search?q='+query+'&per_page=10').then(r=>r.json());
+  const items = d.results.map(e => encodeURIComponent(JSON.stringify(e)));
+  // Afficher liste avec data-f, clic -> wizard.submit(JSON.parse(decodeURIComponent(el.dataset.f)))
+  // LLM reçoit la sélection -> grist_records_add("Entreprises",[{fields:{Nom,SIREN,Adresse}}])
+
+## 6. Prix énergie — API ENEDIS (open data)
+  fetch('https://data.enedis.fr/api/explore/v2.1/catalog/datasets/bilan-electrique-by-town/records?where=code_commune_insee="{code}"&limit=5')
+""".strip()
+
+DOCS_QUALIFICATION = """PROTOCOLE DE QUALIFICATION DES BESOINS
+========================================
+Lire EN PHASE 1 avant canvas_wizard. Permet de deriver l architecture complete depuis le besoin brut.
+
+ETAPE 1 — CATEGORISER
+  Depuis la reponse canvas_wizard(type="input"), identifier la categorie principale :
+  CRM         : client, prospect, affaire, opportunite, contact, pipeline, vente, devis
+  Projets     : projet, tache, sprint, milestone, equipe, livrable, budget, planning
+  Stock       : produit, inventaire, stock, categorie, fournisseur, commande, mouvement
+  Analytics   : rapport, tableau de bord, KPI, metrique, analyse, statistiques
+  RH/Planning : employe, conge, planning, poste, evaluation, contrat, temps
+  Custom      : tout autre besoin -> questions qualifiantes complementaires
+
+ARCHITECTURES TYPES
+
+  CRM / Relation client
+    Tables    : Clients(Nom,Secteur,CA_Annuel,Statut,Ville,ResponsableId:Ref:Membres)
+                Contacts(Nom,Email,Telephone,Poste,ClientId:Ref:Clients)
+                Affaires(Titre,Valeur,Etape,DateCloture,ClientId:Ref:Clients,ResponsableId)
+                Activites(Type,Date,Note,AffaireId:Ref:Affaires) — si pertinent
+    Artefacts : Dashboard (KPIs: CA pipeline, nb affaires/etape, chart barres Chart.js)
+                FicheClient (detail client + contacts + affaires liees via grist.onRecord)
+                KanbanAffaires (colonnes Prospect|Qualification|Proposition|Gagne|Perdu)
+    Pages     : Clients (grille Clients | FicheClient linked par ClientId)
+                Affaires (grille ou Kanban | FicheClient linked)
+                Dashboard (table aggregation | widget Dashboard)
+    Formules  : NbAffaires = len(Affaires.lookupRecords(ClientId=id))
+                CA_Pipeline = SUM([a.Valeur for a in Affaires.lookupRecords(ClientId=id)])
+
+  Gestion de projets
+    Tables    : Projets(Nom,Statut,DateDebut,DateFin,Budget,ChefId:Ref:Membres)
+                Taches(Titre,Statut,Priorite,ProjetId:Ref:Projets,AssigneId:Ref:Membres,DateEcheance)
+                Membres(Nom,Role,Email)
+    Artefacts : Dashboard (nb projets/statut, taches en retard, charge equipe)
+                KanbanTaches (A faire|En cours|Revue|Termine)
+                GanttProjet (mermaid gantt ou SVG, basé grist.onRecord)
+    Pages     : Projets (grille | KanbanTaches linked par ProjetId)
+                Dashboard
+
+  Catalogue / Stock
+    Tables    : Produits(Ref,Nom,Description,PrixHT,CategorieId:Ref:Categories,StockActuel,SeuilAlerte)
+                Categories(Nom,Description,Couleur)
+                Mouvements(ProduitId:Ref:Produits,Type:Choice:Entree|Sortie,Qte,Date,Note)
+    Artefacts : Catalogue (cards produits avec filtres categorie, badge alerte stock)
+                Dashboard (valeur stock total, alertes rupture, mouvements recents)
+    Pages     : Produits (grille | Catalogue)
+                Stocks (Dashboard)
+
+  Analytics / Reporting
+    Tables    : (selon domaine existant) — se baser sur les tables deja presentes
+    Artefacts : Dashboard principal (Chart.js: barres empilees, lignes tendance, camembert)
+                Rapport (artefact markdown avec grist.docApi.fetchTable -> sections dynamiques)
+    Pages     : Dashboard — widget seul ou avec grille de donnees source
+
+  RH / Planning
+    Tables    : Employes(Nom,Prenom,Email,Poste,DateEntree,DepartementId:Ref:Departements)
+                Departements(Nom,ResponsableId:Ref:Employes)
+                Conges(EmployeId:Ref:Employes,Debut,Fin,Type,Statut)
+                Plannings(EmployeId:Ref:Employes,Date,HeureDebut,HeureFin,Activite) — si pertinent
+    Artefacts : PlanningCalendrier (HTML calendrier semaine/mois, grist.onRecords)
+                Dashboard (effectifs/departement, conges en cours, taux presence)
+    Pages     : Employes (grille | fiche linked)
+                Planning (PlanningCalendrier)
+                Dashboard
+
+QUESTIONS QUALIFIANTES (si besoin flou ou Custom)
+  - Quelles sont les 2-3 entites principales de votre metier ?
+  - Quelles relations entre ces entites ? (ex: 1 client -> N affaires)
+  - Quel est le flux principal ? (creation -> suivi -> cloture / commande -> expedition...)
+  - Combien d utilisateurs et quel niveau d acces ?
+  - Donnees existantes a importer ? (csv, autre systeme)
+  - Notifications, exports ou integrations necessaires ?
+
+DERIVE AUTOMATIQUE TABLES -> ARTEFACTS
+  1 table principale -> 1 artefact fiche detail + 1 vue grille
+  Ensemble de tables -> 1 dashboard global (KPIs + charts)
+  Si champs Statut/Etape -> 1 kanban
+  Si champs Date/Echeance -> envisager calendrier ou gantt
+  Si champs Valeur/Montant -> charts dans dashboard (Chart.js inclus via CDN)
+
+CRITERES DE COMPLETUDE (verifier en phase 4)
+  ✓ Toutes les tables avec types corrects et relations Ref:Table
+  ✓ Donnees d exemple realistes (BulkAddRecord, min 3-5 lignes par table principale)
+  ✓ Dashboard : vue globale avec au moins 2 KPIs ou 1 chart
+  ✓ Fiche detail : vue unitaire reactive a la selection (grist.onRecord)
+  ✓ Pages Grist : nommees, liees (grille + widget custom linked par FK)
+  ✓ Navigation inter-pages si app > 2 pages (artefact nav ou grist pages natives)
+  ✓ plan_update(status="done") + canvas_wizard_close() en fin de session
 """.strip()
 
 # ── STATIC RESOURCES ──────────────────────────────────────────────────────────
@@ -1790,9 +2387,572 @@ STATIC_RESOURCES = [
      "name":        "Wizard Guide",
      "description": "Lire avant canvas_wizard. Schema des 5 types d etapes + workflows de qualification besoin, import, iteration.",
      "mimeType":    "text/plain"},
+
+    {"uri":         "grist-coder://docs/qualification",
+     "name":        "Qualification Protocol",
+     "description": "LIRE EN PHASE 1. Categories de besoins, architectures types (CRM/Projets/Stock/RH/Analytics), questions qualifiantes, criteres de completude.",
+     "mimeType":    "text/plain"},
+
+    {"uri":         "grist-coder://docs/services-geo",
+     "name":        "Services Géo",
+     "description": "APIs géographiques publiques France (BAN geocoding, OSM, IGN, Leaflet). Patterns fetch() utilisables dans artefacts HTML. Workflow wizard→Grist.",
+     "mimeType":    "text/plain"},
+
+    {"uri":         "grist-coder://docs/services-data",
+     "name":        "Services Data Publiques",
+     "description": "APIs open data France (SIRENE/INSEE, DVF immobilier, data.gouv, API Geo). Patterns fetch() + import wizard→Grist.",
+     "mimeType":    "text/plain"},
+
+    {"uri":         "grist-coder://docs/services-ai",
+     "name":        "Services IA",
+     "description": "Integrer l IA dans une app Grist : 4 patterns (canvas_exec sync, webhook async, bridge artefact, subagent MCP). Anthropic/OpenAI/Ollama.",
+     "mimeType":    "text/plain"},
 ]
 
+DOCS_SERVICES_AI = """GRIST CODER - Intégrer l'IA dans une App Grist
+================================================
+4 patterns selon le contexte (sync/async, user-triggered/auto).
+
+## PATTERN 1 — canvas_exec (sync, test rapide, Python)
+Contexte: LLM veut tester/démo un appel IA sans webhook ni artefact.
+  # canvas_write puis canvas_exec :
+  import httpx, os, json
+  client = httpx.Client()
+  r = client.post("https://api.anthropic.com/v1/messages",
+    headers={"x-api-key": os.environ["ANTHROPIC_API_KEY"],
+             "anthropic-version": "2023-06-01", "content-type": "application/json"},
+    json={"model": "claude-haiku-4-5-20251001", "max_tokens": 512,
+          "messages": [{"role": "user", "content": "Résume : "+texte}]},
+    timeout=30)
+  print(r.json()["content"][0]["text"])
+Limites: pas d'écriture Grist depuis canvas_exec, timeout 10s.
+
+## PATTERN 2 — Webhook Async (auto-triggered, production)
+Contexte: action utilisateur dans Grist (ajout/modif) -> traitement IA -> résultat dans Grist.
+Architecture: Grist webhook -> POST /webhook-receive/{docId} -> SSE widget + traitement async
+
+Déclarer le webhook:
+  grist_webhooks(action="create", fields={
+    "tableId": "Clients", "eventTypes": ["add", "update"],
+    "url": HOST_URL+"/webhook-receive/"+doc_id,
+    "name": "ai-enrichment", "memo": "enrichissement IA auto"
+  })
+
+Dans le serveur (nouveau endpoint ou handler /webhook-receive):
+  # L'event arrive dans POST /webhook-receive/{docId}
+  # Payload: [{"id": rowId, "Nom": "...", ...}]
+  # Traitement async: httpx.AsyncClient -> Anthropic -> grist_patch REST
+
+Pattern traitement (à implémenter dans une route FastAPI séparée ou via canvas_exec one-shot):
+  async def process_ai(row):
+    async with httpx.AsyncClient() as c:
+      r = await c.post("https://api.anthropic.com/v1/messages", headers=...,
+        json={"model":"claude-haiku-4-5-20251001","max_tokens":256,
+              "messages":[{"role":"user","content":f"Classifie ce client: {row}"}]})
+      categorie = r.json()["content"][0]["text"].strip()
+      await grist_patch(ctx, "Clients", [{"id":row["id"],"fields":{"Categorie":categorie}}])
+
+## PATTERN 3 — Bridge Artefact (user-triggered, interactif)
+Contexte: bouton dans un artefact HTML/React -> appel IA -> affiche résultat dans l'artefact.
+  // Dans artefact HTML (bridge=true donne accès à grist.docApi)
+  async function analyserClient() {
+    const rec = window.__APP_STATE__?.record || {};
+    const prompt = "Analyse ce client et propose 3 actions : "+JSON.stringify(rec);
+    // Appel via proxy serveur (évite CORS + cache clé API côté serveur)
+    const r = await fetch(HOST_URL+'/ai-proxy', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({prompt, model:'claude-haiku-4-5-20251001', max_tokens:512})
+    });
+    const d = await r.json();
+    document.getElementById('result').innerHTML = d.text;
+    // Optionnel: sauvegarder dans Grist
+    await grist.docApi.applyUserActions([["UpdateRecord","Clients",rec.id,{"Analyse":d.text}]]);
+  }
+Note: /ai-proxy n'existe pas nativement — à implémenter comme route FastAPI ou utiliser pattern webhook.
+
+## PATTERN 4 — subagent_call (MCP sampling, intégré)
+Contexte: LLM principal délègue à un sous-agent spécialisé (déjà disponible dans le service).
+  subagent_call(role="data-analyst", task="Analyse les ventes Q1 et identifie les top clients",
+                context=json.dumps(grist_records("Ventes", limit=100)))
+  -> Retourne texte structuré
+  -> canvas_context_update(card_id="analyse-ia") pour afficher
+  -> grist_records_patch si données à persister
+
+## MODÈLES RECOMMANDÉS (Anthropic)
+  Rapide/économique : claude-haiku-4-5-20251001    (subagent, enrichissement auto)
+  Equilibré         : claude-sonnet-4-6             (analyse, conception)
+  Puissant          : claude-opus-4-6               (architecture complexe)
+
+## SÉCURITÉ
+  - Clé API dans variable d'environnement (ANTHROPIC_API_KEY, OPENAI_API_KEY)
+  - Jamais dans un artefact HTML (visible côté client)
+  - Pattern recommandé: proxy FastAPI côté serveur
+  - Rate limiting: ajouter asyncio.sleep(0.5) entre appels batch
+""".strip()
+
+# ── EXAMPLES PAR DOMAINE ───────────────────────────────────────────────────────
+EXAMPLES: dict[str, dict] = {
+    "crm": {
+        "domain": "CRM / Gestion clients",
+        "tables": [
+            {"name": "Clients", "actions": [
+                ["AddTable", "Clients", [
+                    {"id": "Nom", "type": "Text"}, {"id": "Email", "type": "Text"},
+                    {"id": "Telephone", "type": "Text"}, {"id": "Secteur", "type": "Choice",
+                     "widgetOptions": '{"choices":["Tech","Commerce","Industrie","Services","Santé"]}'},
+                    {"id": "Statut", "type": "Choice",
+                     "widgetOptions": '{"choices":["Prospect","Actif","Inactif"],"choiceOptions":{"Actif":{"fillColor":"#d1fae5"},"Inactif":{"fillColor":"#fee2e2"}}}'},
+                    {"id": "CA", "type": "Numeric"}, {"id": "Ville", "type": "Text"},
+                    {"id": "Notes", "type": "Text"}
+                ]],
+                ["BulkAddOrReplaceRecord", "Clients", [None]*5, {
+                    "Nom": ["Dupont & Fils", "Tech Solutions", "Boulangerie Martin", "Groupe Renard", "Santé Plus"],
+                    "Email": ["contact@dupont.fr", "info@techsol.fr", "martin.boulangerie@gmail.com", "contact@renard.fr", "rh@santeplus.fr"],
+                    "Secteur": ["Commerce", "Tech", "Commerce", "Industrie", "Santé"],
+                    "Statut": ["Actif", "Actif", "Prospect", "Inactif", "Actif"],
+                    "CA": [85000, 250000, 12000, 420000, 95000],
+                    "Ville": ["Paris", "Lyon", "Bordeaux", "Nantes", "Marseille"]
+                }]
+            ]},
+            {"name": "Contacts", "actions": [
+                ["AddTable", "Contacts", [
+                    {"id": "Prenom", "type": "Text"}, {"id": "Nom", "type": "Text"},
+                    {"id": "ClientId", "type": "Ref:Clients", "visibleCol": "Nom"},
+                    {"id": "Role", "type": "Text"}, {"id": "Email", "type": "Text"},
+                    {"id": "Telephone", "type": "Text"}
+                ]],
+                ["BulkAddOrReplaceRecord", "Contacts", [None]*4, {
+                    "Prenom": ["Jean", "Marie", "Pierre", "Sophie"],
+                    "Nom": ["Dupont", "Lefebvre", "Martin", "Renard"],
+                    "ClientId": [1, 2, 3, 4], "Role": ["Directeur", "Acheteuse", "Gérant", "DG"],
+                    "Email": ["j.dupont@dupont.fr", "m.lefebvre@techsol.fr", "p.martin@gmail.com", "s.renard@renard.fr"]
+                }]
+            ]},
+            {"name": "Opportunites", "actions": [
+                ["AddTable", "Opportunites", [
+                    {"id": "Titre", "type": "Text"},
+                    {"id": "ClientId", "type": "Ref:Clients", "visibleCol": "Nom"},
+                    {"id": "Montant", "type": "Numeric"},
+                    {"id": "Phase", "type": "Choice",
+                     "widgetOptions": '{"choices":["Decouverte","Proposition","Negociation","Gagnee","Perdue"]}'},
+                    {"id": "DateCloture", "type": "Date"}, {"id": "Probabilite", "type": "Numeric"},
+                    {"id": "Notes", "type": "Text"}
+                ]],
+                ["BulkAddOrReplaceRecord", "Opportunites", [None]*4, {
+                    "Titre": ["Refonte site web", "Audit SI", "Formation équipe", "Maintenance annuelle"],
+                    "ClientId": [1, 2, 3, 2], "Montant": [15000, 35000, 8000, 12000],
+                    "Phase": ["Proposition", "Negociation", "Decouverte", "Gagnee"],
+                    "Probabilite": [60, 80, 20, 100]
+                }]
+            ]}
+        ],
+        "artefacts": [
+            {"name": "DashboardCRM", "type": "html", "is_doc": True,
+             "description": "KPIs (CA total, nb clients actifs, opportunités en cours) + graphique pipeline"},
+            {"name": "FicheClient", "type": "html", "is_doc": False,
+             "description": "Fiche client liée (contacts, opportunités, historique, notes)"},
+            {"name": "Pipeline", "type": "html", "is_doc": True,
+             "description": "Vue kanban des opportunités par phase"}
+        ],
+        "pages": [
+            {"name": "Dashboard", "table": "Clients", "scenario": "dashboard"},
+            {"name": "Clients", "table": "Clients", "scenario": "fiche"},
+            {"name": "Pipeline", "table": "Opportunites", "scenario": "kanban"}
+        ]
+    },
+    "rh": {
+        "domain": "RH / Gestion des ressources humaines",
+        "tables": [
+            {"name": "Departements", "actions": [
+                ["AddTable", "Departements", [
+                    {"id": "Nom", "type": "Text"}, {"id": "Budget", "type": "Numeric"},
+                    {"id": "Localisation", "type": "Text"}
+                ]],
+                ["BulkAddOrReplaceRecord", "Departements", [None]*4, {
+                    "Nom": ["Direction", "Commercial", "Technique", "RH"],
+                    "Budget": [200000, 500000, 350000, 120000],
+                    "Localisation": ["Paris", "Paris", "Lyon", "Paris"]
+                }]
+            ]},
+            {"name": "Employes", "actions": [
+                ["AddTable", "Employes", [
+                    {"id": "Prenom", "type": "Text"}, {"id": "Nom", "type": "Text"},
+                    {"id": "Email", "type": "Text"},
+                    {"id": "DepartementId", "type": "Ref:Departements", "visibleCol": "Nom"},
+                    {"id": "Poste", "type": "Text"}, {"id": "Salaire", "type": "Numeric"},
+                    {"id": "DateEntree", "type": "Date"},
+                    {"id": "Statut", "type": "Choice",
+                     "widgetOptions": '{"choices":["Actif","Conge","Inactif"]}'},
+                    {"id": "NomComplet", "type": "Text",
+                     "formula": "$Prenom + ' ' + $Nom", "isFormula": True}
+                ]],
+                ["BulkAddOrReplaceRecord", "Employes", [None]*6, {
+                    "Prenom": ["Alice", "Bob", "Claire", "David", "Eva", "François"],
+                    "Nom": ["Moreau", "Dupuis", "Lambert", "Simon", "Petit", "Garcia"],
+                    "DepartementId": [2, 3, 3, 2, 4, 1],
+                    "Poste": ["Commercial", "Dev Senior", "Dev Junior", "Commercial", "RH", "DG"],
+                    "Salaire": [38000, 52000, 34000, 40000, 36000, 90000],
+                    "Statut": ["Actif", "Actif", "Actif", "Conge", "Actif", "Actif"]
+                }]
+            ]},
+            {"name": "Conges", "actions": [
+                ["AddTable", "Conges", [
+                    {"id": "EmployeId", "type": "Ref:Employes", "visibleCol": "NomComplet"},
+                    {"id": "Debut", "type": "Date"}, {"id": "Fin", "type": "Date"},
+                    {"id": "Type", "type": "Choice",
+                     "widgetOptions": '{"choices":["Payé","RTT","Maladie","Sans solde"]}'},
+                    {"id": "Statut", "type": "Choice",
+                     "widgetOptions": '{"choices":["En attente","Validé","Refusé"]}'},
+                    {"id": "NbJours", "type": "Numeric",
+                     "formula": "($Fin - $Debut).days + 1 if $Debut and $Fin else 0", "isFormula": True}
+                ]],
+                ["BulkAddOrReplaceRecord", "Conges", [None]*3, {
+                    "EmployeId": [1, 3, 4], "Type": ["Payé", "RTT", "Payé"],
+                    "Statut": ["Validé", "En attente", "Validé"]
+                }]
+            ]}
+        ],
+        "artefacts": [
+            {"name": "OrgChart", "type": "html", "is_doc": True,
+             "description": "Organigramme interactif par département"},
+            {"name": "FicheEmploye", "type": "html", "is_doc": False,
+             "description": "Fiche employé : infos, congés, historique"},
+            {"name": "DashboardRH", "type": "html", "is_doc": True,
+             "description": "Effectifs/département, congés en cours, masse salariale"}
+        ],
+        "pages": [
+            {"name": "Employés", "table": "Employes", "scenario": "fiche"},
+            {"name": "Congés", "table": "Conges", "scenario": "table"},
+            {"name": "Dashboard RH", "table": "Employes", "scenario": "dashboard"}
+        ]
+    },
+    "stock": {
+        "domain": "Stock / Gestion d'inventaire",
+        "tables": [
+            {"name": "Categories", "actions": [
+                ["AddTable", "Categories", [
+                    {"id": "Nom", "type": "Text"}, {"id": "Description", "type": "Text"}
+                ]],
+                ["BulkAddOrReplaceRecord", "Categories", [None]*4, {
+                    "Nom": ["Électronique", "Mobilier", "Consommables", "Outillage"],
+                    "Description": ["Appareils et composants", "Meubles et équipements", "Articles à usage unique", "Outils et machines"]
+                }]
+            ]},
+            {"name": "Produits", "actions": [
+                ["AddTable", "Produits", [
+                    {"id": "Reference", "type": "Text"}, {"id": "Nom", "type": "Text"},
+                    {"id": "CategorieId", "type": "Ref:Categories", "visibleCol": "Nom"},
+                    {"id": "PrixUnitaire", "type": "Numeric"},
+                    {"id": "StockActuel", "type": "Numeric"}, {"id": "StockMin", "type": "Numeric"},
+                    {"id": "Fournisseur", "type": "Text"},
+                    {"id": "Alerte", "type": "Text",
+                     "formula": "'⚠️ RUPTURE' if $StockActuel <= $StockMin else ''", "isFormula": True}
+                ]],
+                ["BulkAddOrReplaceRecord", "Produits", [None]*6, {
+                    "Reference": ["EL-001", "EL-002", "MB-001", "CS-001", "CS-002", "OT-001"],
+                    "Nom": ["Laptop HP", "Écran 27\"", "Bureau ergonomique", "Ramette papier A4", "Stylos (boîte 50)", "Visseuse"],
+                    "CategorieId": [1, 1, 2, 3, 3, 4],
+                    "PrixUnitaire": [899, 349, 450, 12, 8, 89],
+                    "StockActuel": [15, 8, 3, 45, 12, 6],
+                    "StockMin": [5, 3, 2, 20, 10, 3],
+                    "Fournisseur": ["Ingram", "Ingram", "OfficeMax", "Bureau Vallée", "Bureau Vallée", "Leroy Merlin"]
+                }]
+            ]},
+            {"name": "Mouvements", "actions": [
+                ["AddTable", "Mouvements", [
+                    {"id": "ProduitId", "type": "Ref:Produits", "visibleCol": "Nom"},
+                    {"id": "Type", "type": "Choice",
+                     "widgetOptions": '{"choices":["Entrée","Sortie","Inventaire"]}'},
+                    {"id": "Quantite", "type": "Numeric"},
+                    {"id": "Date", "type": "Date"}, {"id": "Motif", "type": "Text"}
+                ]],
+                ["BulkAddOrReplaceRecord", "Mouvements", [None]*4, {
+                    "ProduitId": [1, 2, 1, 4], "Type": ["Entrée", "Sortie", "Sortie", "Entrée"],
+                    "Quantite": [10, 2, 3, 50], "Motif": ["Commande fournisseur", "Service IT", "Direction", "Réappro"]
+                }]
+            ]}
+        ],
+        "artefacts": [
+            {"name": "DashboardStock", "type": "html", "is_doc": True,
+             "description": "Alertes stock, valeur inventaire, mouvements récents"},
+            {"name": "FicheProduit", "type": "html", "is_doc": False,
+             "description": "Fiche produit : stock, historique mouvements, seuils"}
+        ],
+        "pages": [
+            {"name": "Produits", "table": "Produits", "scenario": "fiche"},
+            {"name": "Mouvements", "table": "Mouvements", "scenario": "table"},
+            {"name": "Dashboard Stock", "table": "Produits", "scenario": "dashboard"}
+        ]
+    },
+    "projets": {
+        "domain": "Gestion de projets / Suivi tâches",
+        "tables": [
+            {"name": "Projets", "actions": [
+                ["AddTable", "Projets", [
+                    {"id": "Nom", "type": "Text"}, {"id": "Description", "type": "Text"},
+                    {"id": "Chef", "type": "Text"}, {"id": "DateDebut", "type": "Date"},
+                    {"id": "DateFin", "type": "Date"},
+                    {"id": "Statut", "type": "Choice",
+                     "widgetOptions": '{"choices":["Planifié","En cours","En pause","Terminé","Annulé"]}'},
+                    {"id": "Budget", "type": "Numeric"}, {"id": "Priorite", "type": "Choice",
+                     "widgetOptions": '{"choices":["Haute","Normale","Basse"]}'}
+                ]],
+                ["BulkAddOrReplaceRecord", "Projets", [None]*3, {
+                    "Nom": ["Refonte site web", "Migration ERP", "Formation équipes"],
+                    "Chef": ["Alice Martin", "Bob Dupuis", "Claire Simon"],
+                    "Statut": ["En cours", "Planifié", "Terminé"],
+                    "Budget": [25000, 80000, 12000], "Priorite": ["Haute", "Haute", "Normale"]
+                }]
+            ]},
+            {"name": "Taches", "actions": [
+                ["AddTable", "Taches", [
+                    {"id": "Titre", "type": "Text"},
+                    {"id": "ProjetId", "type": "Ref:Projets", "visibleCol": "Nom"},
+                    {"id": "Assigne", "type": "Text"},
+                    {"id": "Statut", "type": "Choice",
+                     "widgetOptions": '{"choices":["Todo","En cours","Review","Fait"],"choiceOptions":{"Fait":{"fillColor":"#d1fae5"},"En cours":{"fillColor":"#fef3c7"}}}'},
+                    {"id": "Priorite", "type": "Choice",
+                     "widgetOptions": '{"choices":["Haute","Normale","Basse"]}'},
+                    {"id": "DateLimite", "type": "Date"}, {"id": "Description", "type": "Text"}
+                ]],
+                ["BulkAddOrReplaceRecord", "Taches", [None]*6, {
+                    "Titre": ["Maquettes UX", "Dev homepage", "Tests", "Cahier des charges", "Choix prestataire", "Bilan formation"],
+                    "ProjetId": [1, 1, 1, 2, 2, 3],
+                    "Assigne": ["Alice", "Bob", "Claire", "Alice", "Bob", "Claire"],
+                    "Statut": ["Fait", "En cours", "Todo", "En cours", "Todo", "Fait"],
+                    "Priorite": ["Haute", "Haute", "Normale", "Haute", "Normale", "Basse"]
+                }]
+            ]}
+        ],
+        "artefacts": [
+            {"name": "KanbanTaches", "type": "html", "is_doc": False,
+             "description": "Kanban par statut des tâches du projet sélectionné"},
+            {"name": "DashboardProjets", "type": "html", "is_doc": True,
+             "description": "Vue globale : projets en cours, tâches urgentes, charge par personne"},
+            {"name": "Gantt", "type": "html", "is_doc": False,
+             "description": "Diagramme de Gantt simplifié par projet"}
+        ],
+        "pages": [
+            {"name": "Projets", "table": "Projets", "scenario": "master-detail"},
+            {"name": "Tâches", "table": "Taches", "scenario": "kanban"},
+            {"name": "Dashboard", "table": "Projets", "scenario": "dashboard"}
+        ]
+    },
+    "immobilier": {
+        "domain": "Immobilier / Gestion de biens",
+        "tables": [
+            {"name": "Biens", "actions": [
+                ["AddTable", "Biens", [
+                    {"id": "Reference", "type": "Text"}, {"id": "Adresse", "type": "Text"},
+                    {"id": "Ville", "type": "Text"}, {"id": "CodePostal", "type": "Text"},
+                    {"id": "Lat", "type": "Numeric"}, {"id": "Lon", "type": "Numeric"},
+                    {"id": "Type", "type": "Choice",
+                     "widgetOptions": '{"choices":["Appartement","Maison","Bureau","Local commercial","Terrain"]}'},
+                    {"id": "Surface", "type": "Numeric"}, {"id": "NbPieces", "type": "Numeric"},
+                    {"id": "PrixVente", "type": "Numeric"}, {"id": "Loyer", "type": "Numeric"},
+                    {"id": "Statut", "type": "Choice",
+                     "widgetOptions": '{"choices":["Disponible","Loué","Vendu","En travaux"]}'},
+                    {"id": "DPE", "type": "Choice",
+                     "widgetOptions": '{"choices":["A","B","C","D","E","F","G"]}'},
+                    {"id": "Notes", "type": "Text"}
+                ]],
+                ["BulkAddOrReplaceRecord", "Biens", [None]*4, {
+                    "Reference": ["B001", "B002", "B003", "B004"],
+                    "Adresse": ["12 rue de la Paix", "45 av. Victor Hugo", "8 place du Marché", "23 rue des Lilas"],
+                    "Ville": ["Paris", "Lyon", "Bordeaux", "Nantes"],
+                    "CodePostal": ["75001", "69002", "33000", "44000"],
+                    "Type": ["Appartement", "Bureau", "Local commercial", "Maison"],
+                    "Surface": [65, 120, 80, 110],
+                    "NbPieces": [3, 0, 0, 5],
+                    "PrixVente": [450000, 0, 180000, 320000],
+                    "Loyer": [1800, 2400, 1500, 0],
+                    "Statut": ["Loué", "Loué", "Disponible", "Vendu"],
+                    "DPE": ["C", "B", "D", "A"]
+                }]
+            ]},
+            {"name": "Proprietaires", "actions": [
+                ["AddTable", "Proprietaires", [
+                    {"id": "Nom", "type": "Text"}, {"id": "Prenom", "type": "Text"},
+                    {"id": "Email", "type": "Text"}, {"id": "Telephone", "type": "Text"},
+                    {"id": "IBAN", "type": "Text"}
+                ]],
+                ["BulkAddOrReplaceRecord", "Proprietaires", [None]*3, {
+                    "Nom": ["Durand", "Lefèvre", "Martin"],
+                    "Prenom": ["Michel", "Isabelle", "Stéphane"],
+                    "Email": ["m.durand@mail.fr", "i.lefevre@mail.fr", "s.martin@mail.fr"],
+                    "Telephone": ["06 12 34 56 78", "06 98 76 54 32", "07 11 22 33 44"]
+                }]
+            ]}
+        ],
+        "artefacts": [
+            {"name": "CarteBiens", "type": "html", "is_doc": True,
+             "description": "Carte Leaflet des biens avec filtres statut/type (BAN geocoding si Lat/Lon vides)"},
+            {"name": "FicheBien", "type": "html", "is_doc": False,
+             "description": "Fiche détaillée avec photos, localisation carte, DPE visuel"},
+            {"name": "DashboardImmo", "type": "html", "is_doc": True,
+             "description": "KPIs : surface totale, revenus locatifs, taux occupation, biens dispo"}
+        ],
+        "pages": [
+            {"name": "Biens", "table": "Biens", "scenario": "fiche"},
+            {"name": "Carte", "table": "Biens", "scenario": "dashboard"},
+            {"name": "Dashboard", "table": "Biens", "scenario": "dashboard"}
+        ]
+    },
+    "association": {
+        "domain": "Association / Gestion membres et activités",
+        "tables": [
+            {"name": "Membres", "actions": [
+                ["AddTable", "Membres", [
+                    {"id": "Prenom", "type": "Text"}, {"id": "Nom", "type": "Text"},
+                    {"id": "Email", "type": "Text"}, {"id": "Telephone", "type": "Text"},
+                    {"id": "DateAdhesion", "type": "Date"},
+                    {"id": "Statut", "type": "Choice",
+                     "widgetOptions": '{"choices":["Actif","Inactif","Honoraire","Bienfaiteur"]}'},
+                    {"id": "Cotisation", "type": "Numeric"},
+                    {"id": "CotisationPayee", "type": "Bool"}
+                ]],
+                ["BulkAddOrReplaceRecord", "Membres", [None]*5, {
+                    "Prenom": ["Marie", "Jean", "Sophie", "Pierre", "Lucas"],
+                    "Nom": ["Fontaine", "Leblanc", "Perrot", "Girard", "Roy"],
+                    "Email": ["m.fontaine@mail.fr", "j.leblanc@mail.fr", "s.perrot@mail.fr", "p.girard@mail.fr", "l.roy@mail.fr"],
+                    "Statut": ["Actif", "Actif", "Actif", "Honoraire", "Inactif"],
+                    "Cotisation": [50, 50, 50, 0, 50], "CotisationPayee": [True, True, False, True, False]
+                }]
+            ]},
+            {"name": "Activites", "actions": [
+                ["AddTable", "Activites", [
+                    {"id": "Titre", "type": "Text"}, {"id": "Date", "type": "Date"},
+                    {"id": "Lieu", "type": "Text"}, {"id": "Responsable", "type": "Text"},
+                    {"id": "NbPlaces", "type": "Numeric"}, {"id": "Statut", "type": "Choice",
+                     "widgetOptions": '{"choices":["Planifiée","En cours","Terminée","Annulée"]}'},
+                    {"id": "Description", "type": "Text"}
+                ]],
+                ["BulkAddOrReplaceRecord", "Activites", [None]*3, {
+                    "Titre": ["Atelier cuisine", "Randonnée forêt", "AG annuelle"],
+                    "Lieu": ["Salle communale", "Départ parking mairie", "Salle des fêtes"],
+                    "Responsable": ["Marie Fontaine", "Pierre Girard", "Jean Leblanc"],
+                    "NbPlaces": [20, 30, 100], "Statut": ["Planifiée", "Terminée", "Planifiée"]
+                }]
+            ]}
+        ],
+        "artefacts": [
+            {"name": "DashboardAsso", "type": "html", "is_doc": True,
+             "description": "Membres actifs, cotisations en attente, prochaines activités"},
+            {"name": "FicheMembre", "type": "html", "is_doc": False,
+             "description": "Fiche membre avec historique participations et statut cotisation"}
+        ],
+        "pages": [
+            {"name": "Membres", "table": "Membres", "scenario": "fiche"},
+            {"name": "Activités", "table": "Activites", "scenario": "table"},
+            {"name": "Dashboard", "table": "Membres", "scenario": "dashboard"}
+        ]
+    },
+    "restaurant": {
+        "domain": "Restaurant / Gestion commandes et service",
+        "tables": [
+            {"name": "Tables", "actions": [
+                ["AddTable", "Tables", [
+                    {"id": "Numero", "type": "Integer"}, {"id": "NbCouverts", "type": "Integer"},
+                    {"id": "Zone", "type": "Choice",
+                     "widgetOptions": '{"choices":["Salle","Terrasse","Bar","Privé"]}'},
+                    {"id": "Statut", "type": "Choice",
+                     "widgetOptions": '{"choices":["Libre","Occupée","Réservée","Hors service"]}'}
+                ]],
+                ["BulkAddOrReplaceRecord", "Tables", [None]*6, {
+                    "Numero": [1, 2, 3, 4, 5, 6],
+                    "NbCouverts": [2, 4, 4, 6, 8, 2],
+                    "Zone": ["Salle", "Salle", "Terrasse", "Salle", "Privé", "Bar"],
+                    "Statut": ["Libre", "Occupée", "Libre", "Réservée", "Libre", "Occupée"]
+                }]
+            ]},
+            {"name": "Menu", "actions": [
+                ["AddTable", "Menu", [
+                    {"id": "Nom", "type": "Text"}, {"id": "Categorie", "type": "Choice",
+                     "widgetOptions": '{"choices":["Entrée","Plat","Dessert","Boisson","Formule"]}'},
+                    {"id": "Prix", "type": "Numeric"}, {"id": "Description", "type": "Text"},
+                    {"id": "Disponible", "type": "Bool"}, {"id": "Allergenes", "type": "Text"}
+                ]],
+                ["BulkAddOrReplaceRecord", "Menu", [None]*6, {
+                    "Nom": ["Soupe à l'oignon", "Entrecôte frites", "Salade César", "Tarte tatin", "Formule midi", "Eau minérale"],
+                    "Categorie": ["Entrée", "Plat", "Entrée", "Dessert", "Formule", "Boisson"],
+                    "Prix": [8.5, 22, 12, 7, 15, 4],
+                    "Disponible": [True, True, True, True, True, True],
+                    "Allergenes": ["", "Gluten", "Lactose, Gluten", "Gluten, Œufs, Lactose", "", ""]
+                }]
+            ]}
+        ],
+        "artefacts": [
+            {"name": "PlanSalle", "type": "html", "is_doc": True,
+             "description": "Plan de salle interactif : statut tables, couleur par état, clic pour détails"},
+            {"name": "CarteMenu", "type": "html", "is_doc": True,
+             "description": "Carte digitale avec filtres catégorie, allergènes, prix"}
+        ],
+        "pages": [
+            {"name": "Service", "table": "Tables", "scenario": "dashboard"},
+            {"name": "Menu", "table": "Menu", "scenario": "table"}
+        ]
+    },
+    "formation": {
+        "domain": "Centre de formation / Suivi apprenants",
+        "tables": [
+            {"name": "Formations", "actions": [
+                ["AddTable", "Formations", [
+                    {"id": "Titre", "type": "Text"}, {"id": "Domaine", "type": "Choice",
+                     "widgetOptions": '{"choices":["Informatique","Management","Langues","Technique","Soft skills"]}'},
+                    {"id": "DureeHeures", "type": "Numeric"},
+                    {"id": "Modalite", "type": "Choice",
+                     "widgetOptions": '{"choices":["Présentiel","Distanciel","Hybride"]}'},
+                    {"id": "Prix", "type": "Numeric"}, {"id": "Formateur", "type": "Text"},
+                    {"id": "Description", "type": "Text"}
+                ]],
+                ["BulkAddOrReplaceRecord", "Formations", [None]*4, {
+                    "Titre": ["Python pour données", "Management d'équipe", "Excel avancé", "Communication"],
+                    "Domaine": ["Informatique", "Management", "Informatique", "Soft skills"],
+                    "DureeHeures": [21, 14, 7, 14],
+                    "Modalite": ["Présentiel", "Distanciel", "Hybride", "Présentiel"],
+                    "Prix": [1500, 1200, 600, 900],
+                    "Formateur": ["Alice M.", "Bob D.", "Claire L.", "David S."]
+                }]
+            ]},
+            {"name": "Apprenants", "actions": [
+                ["AddTable", "Apprenants", [
+                    {"id": "Prenom", "type": "Text"}, {"id": "Nom", "type": "Text"},
+                    {"id": "Email", "type": "Text"}, {"id": "Entreprise", "type": "Text"},
+                    {"id": "FormationId", "type": "Ref:Formations", "visibleCol": "Titre"},
+                    {"id": "Statut", "type": "Choice",
+                     "widgetOptions": '{"choices":["Inscrit","En cours","Certifié","Abandonné"]}'},
+                    {"id": "Note", "type": "Numeric"}, {"id": "DateDebut", "type": "Date"}
+                ]],
+                ["BulkAddOrReplaceRecord", "Apprenants", [None]*5, {
+                    "Prenom": ["Emma", "Thomas", "Léa", "Hugo", "Camille"],
+                    "Nom": ["Blanc", "Noir", "Rouge", "Vert", "Bleu"],
+                    "Entreprise": ["TechCorp", "StartupXYZ", "PME Loire", "TechCorp", "Indépendant"],
+                    "FormationId": [1, 2, 1, 3, 4],
+                    "Statut": ["Certifié", "En cours", "Inscrit", "Certifié", "En cours"],
+                    "Note": [87, None, None, 92, None]
+                }]
+            ]}
+        ],
+        "artefacts": [
+            {"name": "DashboardFormation", "type": "html", "is_doc": True,
+             "description": "Taux de certification, apprenants en cours, revenus par formation"},
+            {"name": "FicheApprenant", "type": "html", "is_doc": False,
+             "description": "Parcours apprenant, progression, attestation générée"}
+        ],
+        "pages": [
+            {"name": "Formations", "table": "Formations", "scenario": "fiche"},
+            {"name": "Apprenants", "table": "Apprenants", "scenario": "fiche"},
+            {"name": "Dashboard", "table": "Formations", "scenario": "dashboard"}
+        ]
+    },
+}
+
 RESOURCE_TEMPLATES = [
+    {"uriTemplate":  "grist-coder://examples/{domain}",
+     "name":         "Domain Examples",
+     "description":  "Schema + donnees exemple prets a l emploi pour un domaine metier. Valeurs: crm | rh | stock | projets | immobilier | association | restaurant | formation",
+     "mimeType":     "application/json"},
+
     {"uriTemplate":  "grist-coder://context/{token}",
      "name":         "Project Context",
      "description":  "Snapshot live : tables+colonnes+artefacts+pages. Lire en debut de session.",
@@ -1807,6 +2967,11 @@ RESOURCE_TEMPLATES = [
      "name":         "Scenario Playbook",
      "description":  "Guide cible par scenario. Valeurs: dashboard | fiche | table | full-app | master-detail",
      "mimeType":     "text/plain"},
+
+    {"uriTemplate":  "grist-coder://plan/{token}",
+     "name":         "Project Plan",
+     "description":  "Plan de projet persistant : besoin qualifie, tables, artefacts, pages, status de construction. Lire en debut de session pour reprendre. Mis a jour par plan_update.",
+     "mimeType":     "application/json"},
 ]
 
 # ── RESOURCE READ ─────────────────────────────────────────────────────────────
@@ -1829,6 +2994,53 @@ async def _read_resource(uid_key, mcp_sid, uri):
 
     if uri == "grist-coder://docs/wizard":
         return {"uri": uri, "mimeType": "text/plain", "text": DOCS_WIZARD}
+
+    if uri == "grist-coder://docs/qualification":
+        return {"uri": uri, "mimeType": "text/plain", "text": DOCS_QUALIFICATION}
+
+    if uri == "grist-coder://docs/services-geo":
+        return {"uri": uri, "mimeType": "text/plain", "text": DOCS_SERVICES_GEO}
+
+    if uri == "grist-coder://docs/services-data":
+        return {"uri": uri, "mimeType": "text/plain", "text": DOCS_SERVICES_DATA}
+
+    if uri == "grist-coder://docs/services-ai":
+        return {"uri": uri, "mimeType": "text/plain", "text": DOCS_SERVICES_AI}
+
+    if uri.startswith("grist-coder://examples/"):
+        domain = uri.split("/")[-1]
+        ex = EXAMPLES.get(domain)
+        if not ex:
+            available = " | ".join(EXAMPLES.keys())
+            return {"uri": uri, "mimeType": "application/json",
+                    "text": json.dumps({"error": f"Domaine inconnu : '{domain}'",
+                                        "disponibles": available}, ensure_ascii=False)}
+        return {"uri": uri, "mimeType": "application/json",
+                "text": json.dumps(ex, ensure_ascii=False, indent=2)}
+
+    if uri.startswith("grist-coder://plan/"):
+        token = uri.split("/")[-1]
+        ctx = registry.resolve(uid_key, token)
+        if not ctx: raise ValueError(f"Session inconnue : {token}")
+        plan = dict(ctx.project_plan)
+        plan.setdefault("status", "not_started")
+        plan.setdefault("doc_title", ctx.doc_title)
+        status = plan["status"]
+        _next_steps = {
+            "not_started": "canvas_wizard(type='input', id='collect-need') -> collecter le besoin utilisateur",
+            "qualifying":  "canvas_wizard(type='choice'/'form') -> affiner besoin, puis plan_update(status='assessing' ou 'designing')",
+            "assessing":   "grist_schema + grist_records -> explorer doc, puis plan_update(status='designing') avec tables/artefacts cibles",
+            "designing":   "canvas_wizard(type='confirm') -> valider plan avec user, puis plan_update(status='building') + artefact_init()",
+            "building":    "context/{token} -> verifier etat reel, continuer construction selon plan.tables/artefacts/pages",
+            "verifying":   "context/{token} -> snapshot final, canvas_wizard(type='confirm') -> livraison, plan_update(status='done')",
+            "done":        "App livree — plan_update() pour modifier, ou nouvelle session pour nouveau projet",
+        }
+        plan["_next_step"] = _next_steps.get(status, "plan_update(status=...) pour avancer")
+        plan["_hint"] = ("Plan vide — commencer par Phase 1 (canvas_wizard type=input + docs/qualification)"
+                         if not plan.get("need") else
+                         f"Plan en cours — status: {status}")
+        return {"uri": uri, "mimeType": "application/json",
+                "text": json.dumps(plan, ensure_ascii=False, indent=2)}
 
     if uri.startswith("grist-coder://playbook/"):
         scenario = uri.split("/")[-1]
@@ -1935,6 +3147,29 @@ async def _read_resource(uid_key, mcp_sid, uri):
         except Exception as e:
             snapshot["pages"] = []
             snapshot["pages_error"] = str(e)
+        # Delta plan vs realite
+        plan = ctx.project_plan
+        if plan.get("need"):
+            def _name(x): return (x.get("name", x) if isinstance(x, dict) else x).strip().lower()
+            plan_tables = {_name(t) for t in plan.get("tables", [])}
+            actual_tables = {tid.lower() for tid in snapshot.get("tables", [])
+                             if tid.lower() != "artefacts"}
+            plan_arts = {_name(a) for a in plan.get("artefacts", [])}
+            actual_arts = {a["nom"].lower() for a in snapshot.get("artefacts", [])}
+            plan_pages = {_name(p) for p in plan.get("pages", [])}
+            actual_pages = {p["name"].lower() for p in snapshot.get("pages", []) if p.get("name")}
+            snapshot["_delta"] = {
+                "plan_status": plan.get("status", "not_started"),
+                "tables":   {"missing": sorted(plan_tables - actual_tables),
+                             "present": sorted(plan_tables & actual_tables),
+                             "extra":   sorted(actual_tables - plan_tables)},
+                "artefacts":{"missing": sorted(plan_arts - actual_arts),
+                             "present": sorted(plan_arts & actual_arts),
+                             "extra":   sorted(actual_arts - plan_arts)},
+                "pages":    {"missing": sorted(plan_pages - actual_pages),
+                             "present": sorted(plan_pages & actual_pages),
+                             "extra":   sorted(actual_pages - plan_pages)},
+            }
         return {"uri": uri, "mimeType": "application/json",
                 "text": json.dumps(snapshot, ensure_ascii=False, indent=2)}
 
@@ -1958,19 +3193,6 @@ async def _read_resource(uid_key, mcp_sid, uri):
             return {"uri": uri, "mimeType": "text/plain",
                     "text": f"Table Artefacts non trouvee. Appeler artefact_init() d abord.\nErreur: {e}"}
 
-    if uri.startswith("grist-coder://chat/"):
-        token = uri.split("/")[-1]
-        ctx = registry.resolve(uid_key, token)
-        if not ctx: raise ValueError(f"Session inconnue : {token}")
-        history = list(ctx.chat_history)
-        pending = [m for m in history if m.get("pending")]
-        # Effacer le flag pending après lecture
-        for m in ctx.chat_history:
-            m.pop("pending", None)
-        return {"uri": uri, "mimeType": "application/json",
-                "text": json.dumps({"pending_messages": pending, "history": history},
-                                   ensure_ascii=False)}
-
     raise ValueError(f"Resource inconnue : {uri}")
 
 
@@ -1987,10 +3209,9 @@ def _resources_list(uid_key):
              "name": f"Code — {title}",
              "description": "Code source de tous les artefacts.",
              "mimeType": "text/plain"},
-            {"uri": f"grist-coder://chat/{t}",
-             "name": f"Chat — {title}",
-             "description": "Messages entrants utilisateur (pending + historique). "
-                            "Se met à jour via notifications/resources/updated.",
+            {"uri": f"grist-coder://plan/{t}",
+             "name": f"Plan — {title}",
+             "description": "Plan de projet persistant. Lire en debut de session pour reprendre.",
              "mimeType": "application/json"},
         ]
     return res
@@ -2002,7 +3223,21 @@ _active_tokens: dict[str, str] = {}
 async def call_tool(uid_key, mcp_sid, name, args):
     if name == "sessions_list":
         s = registry.list_sessions(uid_key)
-        if s: return s
+        if s:
+            # Determine _next based on whether a plan exists in any session
+            result = list(s)
+            first_token = s[0]["token"] if s else None
+            first_ctx = registry.resolve(uid_key, first_token) if first_token else None
+            has_plan = bool(first_ctx and first_ctx.project_plan.get("need"))
+            plan_status = first_ctx.project_plan.get("status", "not_started") if first_ctx else "not_started"
+            if has_plan:
+                _next = (f"Plan existant (status={plan_status}) — lire plan/{first_token} "
+                         "pour reprendre, puis context/{token} pour etat reel du doc.")
+            else:
+                _next = ("Nouveau projet — lire docs/qualification pour choisir la categorie, "
+                         "puis canvas_wizard(type='input') pour collecter le besoin utilisateur.")
+            return {"sessions": result, "_next": _next,
+                    "_hint": "Apres selection : plan/{token} si reprise, docs/qualification si debut"}
         # Debug: lister tous les users connus pour diagnostiquer le mismatch d uid
         all_uids = {u: len(d["sessions"]) for u, d in registry._users.items()}
         return {
@@ -2058,7 +3293,11 @@ async def call_tool(uid_key, mcp_sid, name, args):
         if args.get("art_type"):ctx.current_art_type = args["art_type"]
         sha = hashlib.sha1(ctx.canvas.encode()).hexdigest()[:8]
         ctx.history.appendleft({"ts": time.time(), "sha": sha, "op": "write"})
-        _push(uid_key, {"type": "canvas_updated", "token": ctx.token, "sha": sha})
+        ev = {"type": "canvas_updated", "token": ctx.token, "sha": sha}
+        if ctx.current_art_nom: ev["art_nom"]  = ctx.current_art_nom
+        if ctx.current_art_id:  ev["art_id"]   = ctx.current_art_id
+        if ctx.current_art_type:ev["art_type"]  = ctx.current_art_type
+        _push(uid_key, ev)
         _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
         return {"ok": True, "sha": sha}
 
@@ -2092,7 +3331,8 @@ async def call_tool(uid_key, mcp_sid, name, args):
         try:
             image_b64 = await asyncio.wait_for(fut, timeout=15.0)
             raw = image_b64.split(",")[1] if "," in image_b64 else image_b64
-            return {"ok": True, "_image_b64": raw, "mime": "image/png"}
+            mime = "image/jpeg" if image_b64.startswith("data:image/jpeg") else "image/png"
+            return {"ok": True, "_image_b64": raw, "mime": mime}
         except asyncio.TimeoutError:
             return {"error": "Timeout 15s : widget ferme ou iframe vide."}
         finally:
@@ -2115,46 +3355,150 @@ async def call_tool(uid_key, mcp_sid, name, args):
     if name == "canvas_wizard":
         step = args.get("step", {})
         step_type = step.get("type", "info")
-        interactive = step_type in ("choice", "form", "confirm", "input") or (
-            step_type == "info" and step.get("actions")
+        interactive = step_type in ("choice", "form", "confirm", "input", "preview") or (
+            step_type == "info" and (
+                step.get("actions") or step.get("choices") or
+                step.get("fields") or step.get("input")
+            )
         )
-        timeout = step.get("timeout", 300)
-        _push(uid_key, {"type": "wizard_step", "token": ctx.token, "step": step})
+        timeout = float(step.get("timeout", 300))
+        step_id = step.get("id") or uuid.uuid4().hex[:8]
+        ev = {"type": "wizard_step", "token": ctx.token, "step": step}
+        ctx._active_wizard_cards[step_id] = ev  # persist for SSE reconnect
+        _push(uid_key, ev)
         if not interactive:
-            return {"ok": True, "status": "displayed", "step_id": step.get("id")}
-        # Initialise event si besoin et attend la reponse user
-        if ctx._wizard_event is None:
-            ctx._wizard_event = asyncio.Event()
-        ctx._wizard_event.clear()
+            return {"ok": True, "status": "displayed", "step_id": step_id}
+        event = asyncio.Event()
+        ctx._wizard_events[step_id] = event
         try:
-            await asyncio.wait_for(ctx._wizard_event.wait(), timeout=float(timeout))
+            await asyncio.wait_for(event.wait(), timeout=timeout)
             resp = ctx.wizard_responses[0] if ctx.wizard_responses else None
-            return resp or {"status": "no_response", "step_id": step.get("id")}
+            return resp or {"status": "no_response", "step_id": step_id}
         except asyncio.TimeoutError:
-            return {"status": "timeout", "step_id": step.get("id"),
+            return {"status": "timeout", "step_id": step_id,
                     "hint": "L utilisateur n a pas repondu dans le delai imparti."}
+        finally:
+            ctx._wizard_events.pop(step_id, None)
+            ctx._active_wizard_cards.pop(step_id, None)
 
     if name == "canvas_wizard_close":
-        _push(uid_key, {"type": "wizard_close", "token": ctx.token})
+        card_id = args.get("card_id")
+        if card_id:
+            ctx._active_wizard_cards.pop(card_id, None)
+        else:
+            ctx._active_wizard_cards.clear()
+        _push(uid_key, {"type": "wizard_close", "token": ctx.token,
+                        **({"card_id": card_id} if card_id else {})})
         return {"ok": True}
+
+    # ── Plan meta-control
+    if name == "plan_update":
+        for k, v in args.items():
+            if v is not None:
+                ctx.project_plan[k] = v
+        ctx.project_plan["updated_at"] = time.time()
+        plan = ctx.project_plan
+        status = plan.get("status", "qualifying")
+        STATUS_META = {
+            "qualifying":  ("Qualification du besoin",   "info",    10),
+            "assessing":   ("Exploration du document",   "info",    20),
+            "designing":   ("Conception de l app",       "info",    35),
+            "building":    ("Construction en cours",     "warn",    65),
+            "verifying":   ("Verification finale",       "success", 85),
+            "done":        ("App livree",                "success", 100),
+        }
+        label, style, progress = STATUS_META.get(status, ("En cours", "default", 20))
+        sections = [{"label": "Phase", "content": label, "style": style}]
+        if plan.get("need"):
+            sections.append({"label": "Besoin", "content": plan["need"][:90], "style": "default"})
+        tables = plan.get("tables", [])
+        if tables:
+            names = ", ".join(t.get("name", t) if isinstance(t, dict) else t for t in tables[:6])
+            sections.append({"label": "Tables", "content": names, "style": "code"})
+        arts = plan.get("artefacts", [])
+        if arts:
+            names = ", ".join(a.get("name", a) if isinstance(a, dict) else a for a in arts[:5])
+            sections.append({"label": "Artefacts", "content": names, "style": "code"})
+        if plan.get("notes"):
+            sections.append({"label": "Note", "content": plan["notes"][:80], "style": "default"})
+        panel = {
+            "title": f"Plan · {ctx.doc_title}",
+            "sections": sections,
+            "progress": progress,
+        }
+        if args.get("actions"):   panel["actions"] = args["actions"]
+        if args.get("input"):     panel["input"]   = args["input"]
+        _push(uid_key, {"type": "context_update", "token": ctx.token, "panel": panel})
+        _notify_resource(uid_key, f"grist-coder://plan/{ctx.token}")
+        # Update context and notify tools/list change if status changed
+        prev_context = ctx.current_context
+        ctx.current_context = status if status in CONTEXT_TOOLS else "qualifying"
+        if ctx.current_context != prev_context:
+            _push(uid_key, {"type": "mcp_notification",
+                            "method": "notifications/tools/list_changed", "params": {}})
+        interactive = bool(args.get("actions") or args.get("input"))
+        _next_resources = {
+            "qualifying":  ["docs/qualification", "docs/wizard"],
+            "assessing":   [f"context/{ctx.token}", "docs/schema"],
+            "designing":   ["docs/schema", "docs/artefacts", "docs/playbook"],
+            "building":    [f"context/{ctx.token}", "docs/artefacts", "docs/formulas"],
+            "verifying":   [f"context/{ctx.token}", f"code/{ctx.token}"],
+            "done":        [],
+        }.get(status, [])
+        if not interactive:
+            return {"ok": True, "status": status, "plan_keys": list(plan.keys()),
+                    "_next_resources": _next_resources,
+                    "_next": f"Lire : {', '.join(_next_resources)}" if _next_resources else "Plan termine."}
+        timeout = float(args.get("timeout", 300))
+        event = asyncio.Event()
+        ctx._wizard_events["ctx-plan"] = event
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+            resp = ctx.wizard_responses[0] if ctx.wizard_responses else None
+            return resp or {"status": "no_response"}
+        except asyncio.TimeoutError:
+            return {"status": "timeout"}
+        finally:
+            ctx._wizard_events.pop("ctx-plan", None)
 
     # ── Context panel
     if name == "canvas_context_update":
-        panel = {k: args[k] for k in ("title", "sections", "progress") if k in args}
-        _push(uid_key, {"type": "context_update", "token": ctx.token, "panel": panel})
-        return {"ok": True}
+        card_id = args.get("card_id")
+        panel = {k: args[k] for k in ("title", "sections", "progress", "actions", "input") if k in args}
+        interactive = bool(args.get("actions") or args.get("input"))
+        if card_id:
+            # Push as independent named wizard card
+            step = {"id": card_id, "type": "info", **panel}
+            if interactive:
+                step["type"] = "choice" if args.get("actions") else "input"
+            tok = uuid.uuid4().hex[:8]
+            _push(uid_key, {"type": "wizard_step", "token": ctx.token,
+                            "step": step, "wizard_token": tok})
+        else:
+            # Push as ctx-plan card (same surface as plan_update)
+            _push(uid_key, {"type": "context_update", "token": ctx.token, "panel": panel})
+        if not interactive:
+            return {"ok": True, **({"card_id": card_id} if card_id else {})}
+        timeout = float(args.get("timeout", 300))
+        ev_key = card_id or "ctx-plan"
+        event = asyncio.Event()
+        ctx._wizard_events[ev_key] = event
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+            resp = ctx.wizard_responses[0] if ctx.wizard_responses else None
+            return resp or {"status": "no_response"}
+        except asyncio.TimeoutError:
+            return {"status": "timeout"}
+        finally:
+            ctx._wizard_events.pop(ev_key, None)
 
     # ── Chat reply
     if name == "chat_reply":
         message = args.get("message", "").strip()
         if not message:
             return {"error": "message vide"}
-        ts = time.time()
-        ctx.chat_history.appendleft({"role": "assistant", "content": message, "ts": ts})
-        for m in ctx.chat_history:
-            m.pop("pending", None)
         _push(uid_key, {"type": "chat_message", "token": ctx.token,
-                        "role": "assistant", "content": message, "ts": ts})
+                        "role": "assistant", "content": message, "ts": time.time()})
         return {"ok": True}
 
     # ── Subagent call via sampling
@@ -2167,12 +3511,34 @@ async def call_tool(uid_key, mcp_sid, name, args):
             "data-architect": (
                 "Tu es un architecte de donnees expert Grist. "
                 "Tu analyses les structures, proposes des schemas relationnels optimaux, "
-                "des types de colonnes et des formules Grist natives."
+                "des types de colonnes (Text/Numeric/Date/Bool/Choice/Ref:Table) et des formules Grist natives. "
+                "IMPORTANT : Reponds TOUJOURS en JSON valide avec ces cles exactes :\n"
+                '{"tables":[{"name":"X","columns":[{"id":"Y","type":"Z","label":"L","formula":""}]}],'
+                '"artefacts":[{"name":"X","type":"react|html|grist"}],'
+                '"pages":[{"name":"X","table":"Y","type":"grid|master-detail|dashboard"}],'
+                '"notes":"considerations architecturales cles"}'
             ),
             "ui-designer": (
-                "Tu es un designer UI expert en artefacts Grist (HTML/CSS/JS). "
+                "Tu es un designer UI expert en artefacts Grist (HTML/CSS/JS/React). "
                 "Tu generes des interfaces utilisateur elegantes, responsives et fonctionnelles. "
-                "Tu respectes la charte visuelle du widget (Inter, palette #3e5de7/#10b981/#f8fafc)."
+                "Charte visuelle : Inter, palette #3e5de7/#10b981/#f8fafc. "
+                "IMPORTANT : Reponds TOUJOURS en JSON valide avec ces cles exactes :\n"
+                '{"artefacts":[{"name":"X","type":"react|html","description":"role UX","components":["comp1"]}],'
+                '"pages":[{"name":"X","widgets":["grid","custom"]}],'
+                '"styles":{"palette":["#hex"],"font":"Inter","layout":"flex|grid"},'
+                '"notes":"decisions design cles"}'
+            ),
+            "page-architect": (
+                "Tu es un architecte de pages Grist expert. "
+                "Tu proposes des layouts de pages optimaux selon le besoin metier. "
+                "Tu choisis les bons scenarios (dashboard/fiche/master-detail/kanban/calendar), "
+                "les liaisons entre sections (linkSrcSectionRef), les widgets (grille/custom/chart). "
+                "IMPORTANT : Reponds TOUJOURS en JSON valide avec ces cles exactes :\n"
+                '{"pages":[{"name":"X","scenario":"dashboard|fiche|master-detail|kanban|calendar",'
+                '"table":"X","widgets":[{"type":"grid|custom|chart","linked_to":"section?"}],'
+                '"artefact":"NomArtefact?","notes":"pourquoi ce layout"}],'
+                '"sequence":"ordre de creation recommande",'
+                '"notes":"decisions architecturales cles"}'
             ),
             "data-analyst": (
                 "Tu es un analyste de donnees. "
@@ -2197,7 +3563,16 @@ async def call_tool(uid_key, mcp_sid, name, args):
         msgs = [{"role": "user", "content": {"type": "text", "text": task}}]
         try:
             text = await _do_sample(uid_key, msgs, system, max_tok)
-            return {"role": role, "response": text}
+            result = {"role": role, "response": text}
+            # Essayer de parser le JSON structuré pour data-architect et ui-designer
+            if role in ("data-architect", "ui-designer", "page-architect"):
+                try:
+                    m = re.search(r'\{[\s\S]*\}', text)
+                    if m:
+                        result["structured"] = json.loads(m.group(0))
+                except Exception:
+                    pass
+            return result
         except Exception as e:
             return {"error": str(e),
                     "hint": "Verifier que le client MCP supporte sampling (Claude Desktop OK)"}
@@ -2247,22 +3622,26 @@ async def call_tool(uid_key, mcp_sid, name, args):
         result = await grist_post(ctx, f"tables/{args['table_id']}/records",
                                   {"records": args["records"]})
         ids = [r["id"] for r in result.get("records", [])]
+        _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
         return {"ok": True, "created": len(ids), "ids": ids}
 
     if name == "grist_records_patch":
         await grist_patch(ctx, f"tables/{args['table_id']}/records",
                           {"records": args["records"]})
+        _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
         return {"ok": True, "updated": len(args["records"])}
 
     if name == "grist_upsert":
         await grist_put(ctx, f"tables/{args['table_id']}/records",
                         {"records": args["records"]})
+        _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
         return {"ok": True, "upserted": len(args["records"])}
 
     # ── Document structure
     if name == "grist_apply":
         try:
             result = await grist_apply(ctx, args["actions"])
+            _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
             return {"ok": True, "result": result}
         except Exception as e:
             return {"error": str(e)}
@@ -2354,6 +3733,7 @@ async def call_tool(uid_key, mcp_sid, name, args):
                     fields["linkSrcColRef"]     = 0
                     fields["linkTargetColRef"]  = 0
                 await grist_apply(ctx, [["UpdateRecord", "_grist_Views_section", section_ref, fields]])
+                _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
                 return {"ok": True, "section_ref": section_ref,
                         "artefact": artefact or "(coding mode)",
                         "hint": f"Section {section_ref} configuree."}
@@ -2373,13 +3753,21 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 if not table_ref:
                     return {"error": f"Table '{table_id}' introuvable"}
                 # Creer la section custom
-                r = await grist_apply(ctx, [["CreateViewSection", table_ref, view_ref, "custom", None, None]])
-                section_ref = r["result"]["retValues"][0]["sectionRef"]
-                # Recup sections existantes pour le layout
-                sects_resp = await grist_get(ctx, "tables/_grist_Views_section/records")
-                view_sects = [r["id"] for r in sects_resp.get("records", [])
-                              if r["fields"].get("parentId") == view_ref
-                              and r["id"] != section_ref]
+                sects_before = await grist_get(ctx, "tables/_grist_Views_section/records")
+                ids_before = {s["id"] for s in sects_before.get("records", [])}
+                await grist_apply(ctx, [["CreateViewSection", table_ref, view_ref, "custom", None, None]])
+                # Retrouver la nouvelle section en comparant avant/apres
+                sects_after = await grist_get(ctx, "tables/_grist_Views_section/records")
+                new_sects = [s for s in sects_after.get("records", [])
+                             if s["id"] not in ids_before
+                             and s["fields"].get("parentId") == view_ref]
+                if not new_sects:
+                    return {"error": "Section custom non trouvee apres CreateViewSection"}
+                section_ref = new_sects[-1]["id"]
+                # Sections existantes pour le layout (hors nouvelle)
+                view_sects = [s["id"] for s in sects_after.get("records", [])
+                              if s["fields"].get("parentId") == view_ref
+                              and s["id"] != section_ref]
                 # Configurer widget + lien + layout
                 section_fields: dict = {"options": _make_widget_options(artefact, "")}
                 if grid_section_ref:
@@ -2399,10 +3787,17 @@ async def call_tool(uid_key, mcp_sid, name, args):
                     ["UpdateRecord", "_grist_Views_section", section_ref, section_fields],
                     ["UpdateRecord", "_grist_Views", view_ref, {"layoutSpec": json.dumps(layout)}],
                 ])
+                _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
                 return {"ok": True, "section_ref": section_ref, "view_ref": view_ref,
                         "artefact": artefact or "(coding mode)",
                         "hint": f"Widget ajoute a la vue {view_ref}."}
             except Exception as e:
+                # Cleanup orphan section if it was created before the error
+                try:
+                    if 'section_ref' in dir():
+                        await grist_apply(ctx, [["RemoveViewSection", section_ref]])
+                except Exception:
+                    pass
                 return {"error": str(e)}
 
     if name == "grist_view_create":
@@ -2487,6 +3882,7 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 update_fields["name"] = page_name
             await grist_apply(ctx, [["UpdateRecord", "_grist_Views", view_ref, update_fields]])
 
+            _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
             return {
                 "ok": True, "view_ref": view_ref, "page_name": page_name,
                 "grid_section": grid_ref, "widget_section": custom_ref,
@@ -2506,23 +3902,25 @@ async def dispatch(uid_key, mcp_sid, method, params):
         _client_capabilities[uid_key] = params.get("capabilities", {})
         return {
             "protocolVersion": MCP_VER,
-            "serverInfo": {"name": "grist-coder", "version": "5.4.0",
+            "serverInfo": {"name": "grist-coder", "version": "5.9.1",
                            "instructions": SERVER_INSTRUCTIONS},
             "capabilities": {
-                "tools":     {"listChanged": False},
+                "tools":     {"listChanged": True},
                 "resources": {"subscribe": True, "listChanged": True},
                 "prompts":   {"listChanged": False},
                 "logging":   {},
             },
         }
     if method == "tools/list":
-        return {"tools": TOOLS}
+        ctx = registry.resolve(uid_key, None)
+        context = ctx.current_context if ctx else "qualifying"
+        return {"tools": _tools_for_context(context)}
     if method == "tools/call":
         name   = params["name"]
         result = await call_tool(uid_key, mcp_sid, name, params.get("arguments", {}))
         if name == "canvas_screenshot" and isinstance(result, dict) and result.get("ok") and "_image_b64" in result:
             return {"content": [
-                {"type": "image", "data": result["_image_b64"], "mimeType": "image/png"},
+                {"type": "image", "data": result["_image_b64"], "mimeType": result.get("mime","image/jpeg")},
                 {"type": "text",  "text": "Capture du panneau de rendu."},
             ]}
         return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}]}
@@ -2560,7 +3958,7 @@ async def dispatch(uid_key, mcp_sid, method, params):
 
 @asynccontextmanager
 async def lifespan(app):
-    print(f"Grist Coder v5.4 · {HOST_URL}")
+    print(f"Grist Coder v5.5 · {HOST_URL}")
     print(f"  tools: {len(TOOLS)}  prompts: {len(PROMPTS)}")
     print(f"  resources: {len(STATIC_RESOURCES)} static + {len(RESOURCE_TEMPLATES)} templates")
     print(f"  widget: {'widget.html' if WIDGET_PATH.exists() else 'MANQUANT'}")
@@ -2660,6 +4058,12 @@ async def mcp_sse(request: Request,
     _queues[sid] = asyncio.Queue(maxsize=64)
     if is_mcp_client:
         _mcp_client_sids[uid_key] = sid  # Track pour sampling
+    # Re-push active wizard cards on reconnect (SSE restore)
+    ctx_for_replay = registry.resolve(uid_key, None)
+    if ctx_for_replay and ctx_for_replay._active_wizard_cards:
+        for card_ev in ctx_for_replay._active_wizard_cards.values():
+            try: _queues[sid].put_nowait({**card_ev, "_user": uid_key})
+            except asyncio.QueueFull: pass
     async def stream():
         try:
             while True:
@@ -2754,8 +4158,13 @@ async def wizard_response(token: str, request: Request):
         return JSONResponse({"error": "session introuvable"}, status_code=404)
     body = await request.json()
     ctx.wizard_responses.appendleft({**body, "ts": time.time()})
-    if ctx._wizard_event:
-        ctx._wizard_event.set()
+    step_id = body.get("step_id")
+    if step_id and step_id in ctx._wizard_events:
+        ctx._wizard_events[step_id].set()
+    else:
+        # Fallback : déclencher tous les events en attente
+        for ev in list(ctx._wizard_events.values()):
+            ev.set()
     return {"ok": True}
 
 
@@ -2773,7 +4182,6 @@ async def chat_message(token: str, request: Request):
     if not message:
         return JSONResponse({"error": "message vide"}, status_code=400)
     ts = time.time()
-    ctx.chat_history.appendleft({"role": "user", "content": message, "ts": ts, "pending": True})
     # Echo immédiat au widget (bulle user)
     _push(uid_key, {"type": "chat_message", "token": token,
                     "role": "user", "content": message, "ts": ts})
@@ -2809,7 +4217,7 @@ async def webhook_receive(doc_id: str, request: Request):
 @app.get("/health")
 async def health():
     total = sum(len(u["sessions"]) for u in registry._users.values())
-    return {"ok": True, "version": "5.4.0", "mcp_protocol": MCP_VER,
+    return {"ok": True, "version": "5.9.1", "mcp_protocol": MCP_VER,
             "sessions": total, "users": len(registry._users),
             "tools": len(TOOLS), "prompts": len(PROMPTS),
             "resources": {"static": len(STATIC_RESOURCES), "templates": len(RESOURCE_TEMPLATES)},

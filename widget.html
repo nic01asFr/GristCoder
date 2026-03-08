@@ -71,14 +71,33 @@ body{display:flex;flex-direction:column}
   font-size:12px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,.2);
   animation:ti .2s ease;pointer-events:none}
 @keyframes ti{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
-/* ── WIZARD ─────────────────────────────────────────────────────────── */
+/* ── WIZARD MULTI-CARD ──────────────────────────────────────────────── */
 #wizardOverlay{position:absolute;inset:0;z-index:50;background:var(--bg2);
-  flex-direction:column;overflow:hidden;animation:ti .18s ease}
-.wz-header{padding:14px 12px 12px;border-bottom:1px solid var(--border);flex-shrink:0}
-.wz-title{font-size:.92rem;font-weight:700;color:var(--text);line-height:1.3}
-.wz-subtitle{font-size:.76rem;color:var(--text2);margin-top:2px;line-height:1.4}
-.wz-body{flex:1;padding:20px 12px;display:flex;flex-direction:column;overflow-y:auto}
-.wz-inner{width:100%;max-width:520px;margin:auto;display:flex;flex-direction:column;gap:14px}
+  flex-direction:column;overflow-y:auto;gap:10px;padding:14px 12px;
+  animation:ti .18s ease;scroll-behavior:smooth}
+/* card container */
+.wz-card{background:#fff;border-radius:10px;border:1px solid var(--border);
+  box-shadow:0 1px 5px rgba(0,0,0,.05);overflow:hidden;flex-shrink:0;
+  animation:wz-ci .26s cubic-bezier(.34,1.15,.64,1)}
+.wz-card.card-blocking{border-color:rgba(62,93,231,.45);
+  box-shadow:0 2px 16px rgba(62,93,231,.1)}
+.wz-card.card-plan{border-left:3px solid #3e5de7;
+  background:linear-gradient(135deg,rgba(62,93,231,.025) 0%,#fff 60%)}
+.wz-card.card-exit{animation:wz-co .18s ease forwards;pointer-events:none}
+@keyframes wz-ci{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes wz-co{from{opacity:1;transform:translateY(0) scale(1)}to{opacity:0;transform:translateY(-6px) scale(.97)}}
+/* card structure */
+.wz-hd{padding:12px 14px 10px;border-bottom:1px solid var(--border);flex-shrink:0;
+  display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.wz-hd-l{flex:1;min-width:0}
+.wz-title{font-size:.88rem;font-weight:700;color:var(--text);line-height:1.3}
+.wz-subtitle{font-size:.74rem;color:var(--text2);margin-top:3px;line-height:1.4}
+.wz-hd-x{background:none;border:none;cursor:pointer;color:var(--text2);
+  font-size:.95rem;padding:0 2px;line-height:1;opacity:.45;flex-shrink:0;margin-top:1px;
+  transition:opacity .12s}
+.wz-hd-x:hover{opacity:1}
+.wz-body{padding:16px 14px;display:flex;flex-direction:column}
+.wz-inner{width:100%;max-width:520px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
 /* choice */
 .wz-choices{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px}
 .wz-choice{display:flex;flex-direction:column;gap:4px;padding:11px 13px;border-radius:8px;
@@ -153,25 +172,11 @@ textarea.wz-input{resize:vertical;min-height:62px;line-height:1.5}
 .wz-btn.secondary:hover{background:var(--bg3)}
 .wz-btn.danger{background:var(--error);color:#fff;border-color:var(--error)}
 .wz-btn.danger:hover{background:#dc2626;border-color:#dc2626}
-/* ── CONTEXT BAR ─────────────────────────────────────────────────────── */
-#contextBar{position:absolute;left:0;right:0;bottom:0;z-index:20;
-  background:rgba(248,250,252,.96);border-top:1px solid var(--border);
-  backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
-  max-height:200px;overflow-y:auto;padding:10px 14px 10px;
-  animation:ti .2s ease;display:none}
-.ctx-header{display:flex;align-items:center;justify-content:space-between;
-  margin-bottom:7px;flex-shrink:0}
-.ctx-title{font-size:.76rem;font-weight:700;color:var(--text);letter-spacing:.01em}
-.ctx-close{background:none;border:none;cursor:pointer;color:var(--text2);
-  font-size:.9rem;padding:0 2px;line-height:1;opacity:.6}
-.ctx-close:hover{opacity:1}
-.ctx-progress{height:3px;border-radius:2px;background:var(--border);
-  margin-bottom:8px;overflow:hidden}
-.ctx-progress-fill{height:100%;border-radius:2px;background:#3e5de7;
-  transition:width .4s ease}
+/* ── PLAN CARD (ctx-* classes used inside .card-plan) ───────────────── */
+.ctx-progress{height:4px;border-radius:2px;background:var(--border);overflow:hidden}
+.ctx-progress-fill{height:100%;border-radius:2px;background:#3e5de7;transition:width .4s ease}
 .ctx-sections{display:flex;flex-direction:column;gap:5px}
-.ctx-section{display:flex;gap:8px;align-items:baseline;font-size:.74rem;
-  padding:4px 8px;border-radius:5px}
+.ctx-section{display:flex;gap:8px;align-items:baseline;font-size:.75rem;padding:5px 9px;border-radius:6px}
 .ctx-section.default{background:transparent}
 .ctx-section.success{background:rgba(16,185,129,.07);color:#059669}
 .ctx-section.info{background:rgba(59,130,246,.07);color:#2563eb}
@@ -187,6 +192,11 @@ textarea.wz-input{resize:vertical;min-height:62px;line-height:1.5}
   font-family:inherit;transition:all .12s;touch-action:manipulation;
   -webkit-tap-highlight-color:transparent}
 .wz-suggestion:hover{border-color:#3e5de7;color:#3e5de7;background:#eef2ff}
+/* ── WIZARD PREVIEW ───────────────────────────────────────────────────── */
+.wz-preview-wrap{border-radius:8px;overflow:hidden;border:1px solid var(--border);
+  background:#f8fafc;position:relative;flex-shrink:0}
+.wz-preview-wrap iframe{width:100%;display:block;border:none;background:#f8fafc}
+.wz-preview-sep{height:1px;background:var(--border);margin:10px 0 6px}
 </style>
 </head>
 <body>
@@ -213,7 +223,6 @@ textarea.wz-input{resize:vertical;min-height:62px;line-height:1.5}
   <div id="previewPane">
     <iframe id="renderFrame" sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups"></iframe>
     <div id="wizardOverlay" style="display:none"></div>
-    <div id="contextBar"></div>
   </div>
   <div id="splitter"></div>
   <div id="editorPane">
@@ -303,11 +312,27 @@ const APP_RUNTIME_SCRIPT =
 function prepareWidgetHTML(html, ctx) {
   ctx = ctx || {};
   var bridgeTag = '<script>' + GRIST_BRIDGE_SCRIPT + '<' + '/script>';
-  html = html.replace(/<script[^>]*grist-plugin-api\.js[^>]*><\/script>/gi, bridgeTag);
-  var init = '<script>window.__APP_STATE__=' + JSON.stringify(ctx.state || {}) +
+  html = html.replace(/<script[^>]*grist-plugin-api\.js[^>]*><\/script>/gi, '');
+  var init = bridgeTag + '<script>window.__APP_STATE__=' + JSON.stringify(ctx.state || {}) +
     ';window.__APP_ROUTE__="' + (ctx.route || '/') + '";' + APP_RUNTIME_SCRIPT + '<' + '/script>';
   return html.includes('</head>') ? html.replace('</head>', init + '</head>') : init + html;
 }
+
+// ── WIZARD PREVIEW SCRIPT (injecté dans les iframes preview) ────────────────
+const WIZARD_PREVIEW_SCRIPT =
+  "(function(cid){" +
+  "window.wizard={" +
+    "cardId:cid," +
+    // Pré-remplit les champs du formulaire en dessous de l'iframe
+    "fill:function(fields){window.parent.postMessage({type:'wizard-fill',cardId:cid,fields:fields},'*');}," +
+    // Soumet directement la réponse (sans formulaire)
+    "submit:function(values){window.parent.postMessage({type:'wizard-submit',cardId:cid,values:values},'*');}," +
+    // Notification toast dans le widget
+    "notify:function(msg,lvl){window.parent.postMessage({type:'app-notification',msg:msg,notifType:lvl||'info'},'*');}," +
+    // Indique un état de chargement (label du bouton submit)
+    "setLoading:function(on){window.parent.postMessage({type:'wizard-loading',cardId:cid,loading:!!on},'*');}" +
+  "};" +
+  "})('__CARD_ID__');";
 
 // ── GristBridgeParent ───────────────────────────────────────────────────────
 window.addEventListener('message', async function(e) {
@@ -335,9 +360,15 @@ window.addEventListener('message', async function(e) {
       else if (action === 'selectedTable.destroy') result = await grist.selectedTable.destroy(args[0]);
       else if (action === 'selectedTable.upsert')  result = await grist.selectedTable.upsert(args[0], args[1]||{});
       else if (action === 'onRecords') {
-        grist.onRecords(function(r,m){ src.postMessage({type:'grist-bridge-callback',callbackId:cid,args:[r,m]},'*'); });
+        // Register relay without overriding parent handler; fire immediately if records available
+        var recRelay = {cid:cid,src:src};
+        _bridgeOnRecordRelays.push(recRelay);
+        if (_lastRecords) src.postMessage({type:'grist-bridge-callback',callbackId:cid,args:[_lastRecords,null]},'*');
       } else if (action === 'onRecord') {
-        grist.onRecord(function(r,m){ src.postMessage({type:'grist-bridge-callback',callbackId:cid,args:[r,m]},'*'); });
+        // Register relay without overriding parent handler; fire immediately if record available
+        var recRelay = {cid:cid,src:src};
+        _bridgeOnRecordRelays.push(recRelay);
+        if (_sharedState.record) src.postMessage({type:'grist-bridge-callback',callbackId:cid,args:[_sharedState.record,null]},'*');
       } else if (action === 'onNewRecord') {
         grist.onNewRecord(function(m){ src.postMessage({type:'grist-bridge-callback',callbackId:cid,args:[m]},'*'); });
       }
@@ -359,6 +390,30 @@ window.addEventListener('message', async function(e) {
   }
   if (m.type === 'app-setState') Object.assign(_sharedState, m.state);
   if (m.type === 'app-notification') showToast(m.msg, m.notifType||'info');
+
+  // ── Wizard preview bridge ──────────────────────────────────────────────────
+  if (m.type === 'wizard-fill' && m.fields) {
+    // Pré-remplit les champs du formulaire dans la card preview
+    Object.keys(m.fields).forEach(function(fid) {
+      var el = document.getElementById('wzf-'+fid);
+      if (!el) return;
+      if (el.type === 'checkbox') el.checked = !!m.fields[fid];
+      else el.value = m.fields[fid];
+      el.dispatchEvent(new Event('input', {bubbles:true}));
+    });
+  }
+  if (m.type === 'wizard-submit' && m.cardId && m.values) {
+    // Soumission directe depuis l'iframe (bypass form)
+    wzPost(m.cardId, 'preview', m.values);
+  }
+  if (m.type === 'wizard-loading' && m.cardId) {
+    // Met le bouton submit en état loading
+    var btn = document.querySelector('.wz-card[data-wid="'+m.cardId+'"] button[type="submit"],.wz-card[data-wid="'+m.cardId+'"] .wz-btn.primary');
+    if (btn) {
+      btn.disabled = !!m.loading;
+      btn.style.opacity = m.loading ? '0.6' : '';
+    }
+  }
 });
 
 // ── STATE ───────────────────────────────────────────────────────────────────
@@ -368,6 +423,7 @@ const _DISPLAY_MODE = !!_DISPLAY_ART;
 var _registered=false, _registering=false, _token=null, _mcpId=1, _es=null, _refreshTimer=null;
 var _artefacts=[], _artefactsMap={}, _currentArt=null, _sharedState={};
 var _editor, _panelOpen=false;
+var _bridgeOnRecordRelays=[], _lastRecords=null;
 
 // ── ACE EDITOR ──────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', function() {
@@ -412,20 +468,32 @@ grist.on('message', async function(msg) {
 // React to row selection from linked grid
 grist.onRecord(function(record) {
   if (!record) return;
+  Object.assign(_sharedState, {record: record});
+  // Relay bridge callbacks (grist.onRecord in artefact)
+  _bridgeOnRecordRelays.forEach(function(r) {
+    try { r.src.postMessage({type:'grist-bridge-callback',callbackId:r.cid,args:[record,null]},'*'); } catch(_) {}
+  });
+  // Always relay via app-event 'record' to rendered iframe (app.on('record') pattern)
+  var frame = document.getElementById('renderFrame');
+  if (frame && frame.contentWindow) {
+    frame.contentWindow.postMessage({type:'app-event-relay',event:'record',data:record},'*');
+  }
   if (_DISPLAY_MODE) {
-    // Deployed artefact: relay record state to rendered iframe
-    Object.assign(_sharedState, {record: record});
+    // Re-render iframe with fresh __APP_STATE__.record on every selection change
     if (_currentArt) renderArt(_currentArt);
   } else {
     // IDE mode: auto-select artefact if linked to Artefacts table (record has Nom field)
     if (record.Nom && _artefactsMap[record.Nom]) {
       var sel = document.getElementById('artSelect');
-      if (sel && sel.value !== record.Nom) {
-        sel.value = record.Nom;
-        onArtSelect();
-      }
+      if (sel && sel.value !== record.Nom) { sel.value = record.Nom; onArtSelect(); }
     }
   }
+});
+grist.onRecords(function(records) {
+  _lastRecords = records;
+  _bridgeOnRecordRelays.forEach(function(r) {
+    try { r.src.postMessage({type:'grist-bridge-callback',callbackId:r.cid,args:[records,null]},'*'); } catch(_) {}
+  });
 });
 
 // onOptions: support artefact name via Grist widgetOptions (set in customView JSON)
@@ -494,7 +562,17 @@ function listenSSE() {
       var ev = JSON.parse(e.data);
       if (ev.token === _token) {
         if (ev.type === 'canvas_updated' || ev.type === 'canvas_patched') {
-          loadCanvasIntoEditor().then(renderCurrent);
+          // Focus temporaire : si l'event cible un artefact précis, auto-switch sans friction
+          if (ev.art_nom && _artefactsMap[ev.art_nom]) {
+            var sel = document.getElementById('artSelect');
+            if (sel && sel.value !== ev.art_nom) {
+              sel.value = ev.art_nom;
+              _currentArt = _artefactsMap[ev.art_nom];
+              if (ev.art_type) setEditorMode(ev.art_type);
+              if (!_panelOpen) openPanel();
+            }
+          }
+          loadCanvasIntoEditor().then(function(){ saveArt(); return renderCurrent(); });
           document.getElementById('sbCanvas').textContent = ev.sha || 'updated';
         }
         if (ev.type === 'type_changed' && _currentArt) {
@@ -505,9 +583,9 @@ function listenSSE() {
           renderArtSelect();
         }
         if (ev.type === 'screenshot_request') captureScreenshot();
-        if (ev.type === 'wizard_step')    showWizard(ev.step);
-        if (ev.type === 'wizard_close')   closeWizard();
-        if (ev.type === 'context_update') showContext(ev.panel);
+        if (ev.type === 'wizard_step')    showWizardCard(ev.step, ev.token);
+        if (ev.type === 'wizard_close')   { if(ev.card_id) closeWizardCard(ev.card_id); else closeWizard(); }
+        if (ev.type === 'context_update') _ctxToCard(ev.panel, ev.token);
       }
     } catch(_) {}
   };
@@ -674,6 +752,7 @@ function renderEmpty() {
 
 function renderArt(art) {
   if (!art) { renderEmpty(); return; }
+  _bridgeOnRecordRelays = []; // Reset relays: new iframe will re-register
   var ee = document.getElementById('editorEmpty');
   if (ee) ee.style.display = 'none';
   var type = art.Type || 'html', code = art.Code || '';
@@ -757,34 +836,24 @@ function autoSave() { saveArt(); }
 
 // ── SCREENSHOT ───────────────────────────────────────────────────────────────
 async function captureScreenshot() {
-  var frame = document.getElementById('renderFrame');
   try {
-    var fdoc = frame.contentDocument || (frame.contentWindow && frame.contentWindow.document);
-    if (!fdoc || !fdoc.body) return;
-    if (!frame.contentWindow.html2canvas) {
+    // Load html2canvas into the widget (not the iframe) to capture previewPane + overlay
+    if (!window.html2canvas) {
       await new Promise(function(res, rej) {
-        var s = fdoc.createElement('script');
+        var s = document.createElement('script');
         s.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
         s.onload = res; s.onerror = rej;
-        fdoc.head.appendChild(s);
+        document.head.appendChild(s);
       });
     }
-    await new Promise(function(r){ setTimeout(r, 600); });
-    var msgId = 'sc-' + Date.now();
-    var image = await new Promise(function(res) {
-      var timer = setTimeout(function(){ window.removeEventListener('message',h); res(''); }, 10000);
-      function h(e) {
-        if (e.data && e.data.type === 'screenshot-result' && e.data.id === msgId) {
-          clearTimeout(timer); window.removeEventListener('message', h); res(e.data.image);
-        }
-      }
-      window.addEventListener('message', h);
-      var s = fdoc.createElement('script');
-      s.textContent = '(function(){html2canvas(document.body,{useCORS:true,allowTaint:true,logging:false})' +
-        '.then(function(c){parent.postMessage({type:"screenshot-result",id:"' + msgId + '",image:c.toDataURL("image/png")},"*")})' +
-        '.catch(function(){parent.postMessage({type:"screenshot-result",id:"' + msgId + '",image:""},"*")});})();';
-      fdoc.body.appendChild(s);
+    await new Promise(function(r){ setTimeout(r, 300); });
+    var pane = document.getElementById('previewPane');
+    if (!pane) return;
+    var canvas = await window.html2canvas(pane, {
+      useCORS: true, allowTaint: true, logging: false,
+      backgroundColor: '#f8fafc', scale: 0.75
     });
+    var image = canvas.toDataURL('image/jpeg', 0.82);
     if (!image) return;
     await fetch(BASE+'/screenshot', {method:'POST',
       headers:{'Content-Type':'application/json'},
@@ -872,36 +941,109 @@ function debounce(fn, delay) {
   return function() { clearTimeout(timer); timer = setTimeout(fn, delay); };
 }
 
-// ── CONTEXT BAR ──────────────────────────────────────────────────────────────
-function showContext(panel) {
-  var bar = document.getElementById('contextBar');
+// ── WIZARD MULTI-CARD ─────────────────────────────────────────────────────────
+var _wzCards = {};       // id → {step, token}
+var _wzOrder = [];       // card display order (non-blocking first, blocking last)
+
+function _ctxToCard(panel, token) {
   if (!panel || (!panel.title && !(panel.sections||[]).length)) {
-    bar.style.display = 'none'; bar.innerHTML = ''; return;
+    closeWizardCard('ctx-plan'); return;
   }
-  var STYLE_ICONS = {success:'✓ ',info:'ℹ ',warn:'⚠ ',code:'',default:''};
-  var html = '<div class="ctx-header">'
-    + '<span class="ctx-title">'+_wzEsc(panel.title||'')+'</span>'
-    + '<button class="ctx-close" onclick="closeContext()" title="Fermer">✕</button>'
-    + '</div>';
-  if (typeof panel.progress === 'number') {
-    html += '<div class="ctx-progress"><div class="ctx-progress-fill" style="width:'
-      + Math.max(0,Math.min(100,panel.progress)) + '%"></div></div>';
-  }
-  html += '<div class="ctx-sections">';
-  (panel.sections||[]).forEach(function(s) {
-    var st = s.style||'default';
-    html += '<div class="ctx-section '+st+'">';
-    if (s.label) html += '<span class="ctx-label">'+_wzEsc(s.label)+'</span>';
-    html += '<span class="ctx-content">'+(STYLE_ICONS[st]||'')+_wzEsc(s.content||'')+'</span>';
-    html += '</div>';
-  });
-  html += '</div>';
-  bar.innerHTML = html;
-  bar.style.display = 'block';
+  showWizardCard({id:'ctx-plan', type:'plan', title:panel.title,
+    sections:panel.sections, progress:panel.progress,
+    actions:panel.actions, input:panel.input}, token);
 }
-function closeContext() {
-  var bar = document.getElementById('contextBar');
-  bar.style.display = 'none'; bar.innerHTML = '';
+
+function showWizardCard(step, token) {
+  if (!step || !step.id) return;
+  var id = step.id, isNew = !_wzCards[id];
+  _wzCards[id] = {step:step, token:token||_token};
+  if (isNew) {
+    if (_wzIsBlocking(step)) _wzOrder.push(id);
+    else { var li = _wzLastNB(); _wzOrder.splice(li+1, 0, id); }
+  }
+  _wzRebuild();
+  var ov = document.getElementById('wizardOverlay');
+  ov.style.display = 'flex';
+  // scroll to blocking card
+  if (_wzIsBlocking(step)) setTimeout(function(){
+    var el = ov.querySelector('.card-blocking');
+    if (el) el.scrollIntoView({behavior:'smooth', block:'nearest'});
+  }, 80);
+}
+
+function _wzLastNB() {
+  var li = -1;
+  for (var i = 0; i < _wzOrder.length; i++) {
+    var c = _wzCards[_wzOrder[i]];
+    if (c && !_wzIsBlocking(c.step)) li = i;
+  }
+  return li;
+}
+
+function closeWizardCard(id) {
+  var el = document.querySelector('.wz-card[data-wid="'+id+'"]');
+  if (el) {
+    el.classList.add('card-exit');
+    setTimeout(function() { _wzRemove(id); }, 200);
+  } else { _wzRemove(id); }
+}
+
+function _wzRemove(id) {
+  _wzOrder = _wzOrder.filter(function(x){return x!==id;});
+  delete _wzCards[id];
+  if (_wzOrder.length === 0) {
+    var ov = document.getElementById('wizardOverlay');
+    ov.style.display = 'none'; ov.innerHTML = '';
+  } else { _wzRebuild(); }
+}
+
+function closeWizard() {
+  _wzCards = {}; _wzOrder = [];
+  var ov = document.getElementById('wizardOverlay');
+  ov.style.display = 'none'; ov.innerHTML = '';
+}
+
+function _wzRebuild() {
+  var ov = document.getElementById('wizardOverlay');
+  // preserve exit-animated cards
+  var exiting = {};
+  ov.querySelectorAll('.wz-card.card-exit').forEach(function(el){
+    exiting[el.dataset.wid] = el.outerHTML;
+  });
+  var html = '';
+  _wzOrder.forEach(function(id) {
+    var c = _wzCards[id]; if (!c) return;
+    html += _wzBuildCard(id, c.step);
+  });
+  // re-append exiting cards so their animation finishes
+  Object.values(exiting).forEach(function(h){ html += h; });
+  ov.innerHTML = html;
+}
+
+function _wzBuildCard(id, step) {
+  var blocking = _wzIsBlocking(step);
+  var isPlan   = (step.type === 'plan');
+  var cls = 'wz-card'+(blocking?' card-blocking':'')+(isPlan?' card-plan':'');
+  var esc = _wzEsc(id);
+  var hd  = '<div class="wz-hd"><div class="wz-hd-l">'
+    + '<div class="wz-title">'+_wzEsc(step.title||'')+'</div>'
+    + (step.subtitle?'<div class="wz-subtitle">'+_wzEsc(step.subtitle)+'</div>':'')
+    + '</div>'
+    + (!blocking?'<button class="wz-hd-x" onclick="closeWizardCard(\''+esc+'\')" title="Fermer">✕</button>':'')
+    + '</div>';
+  return '<div class="'+cls+'" data-wid="'+esc+'">'
+    + hd
+    + '<div class="wz-body"><div class="wz-inner">'+_wzRenderBody(step,id)+'</div></div>'
+    + '</div>';
+}
+
+function _wzIsBlocking(step) {
+  if (!step) return false;
+  var t = step.type;
+  return t==='choice'||t==='form'||t==='confirm'||t==='input'||t==='preview'
+    ||(t==='plan'&&((step.actions||[]).length>0||!!step.input))
+    ||(t==='info'&&(step.actions||[]).length>0);
 }
 
 // ── WIZARD ────────────────────────────────────────────────────────────────────
@@ -924,66 +1066,86 @@ function _wzMd(md) {
     .replace(/`(.+?)`/g,'<code>$1</code>');
 }
 
-function showWizard(step) {
-  if (!step) return;
-  var ov = document.getElementById('wizardOverlay');
-  var header = '<div class="wz-header">'
-    + '<div class="wz-title">'+ _wzEsc(step.title||'') +'</div>'
-    + (step.subtitle ? '<div class="wz-subtitle">'+_wzEsc(step.subtitle)+'</div>' : '')
-    + '</div>';
-  var body = '<div class="wz-body"><div class="wz-inner">' + _wzRenderBody(step) + '</div></div>';
-  ov.innerHTML = header + body;
-  ov.style.display = 'flex';
-}
-
-function closeWizard() {
-  var ov = document.getElementById('wizardOverlay');
-  ov.style.display = 'none';
-  ov.innerHTML = '';
-}
-
-function _wzRenderBody(step) {
-  var sid = _wzEsc(step.id||'');
+function _wzRenderBody(step, cid) {
+  var c = _wzEsc(cid||step.id||'');
   switch (step.type) {
-    case 'choice':  return _wzChoice(step, sid);
-    case 'form':    return _wzForm(step, sid);
-    case 'confirm': return _wzConfirm(step, sid);
+    case 'plan':    return _wzPlan(step, c);
+    case 'choice':  return _wzChoice(step, c);
+    case 'form':    return _wzForm(step, c);
+    case 'confirm': return _wzConfirm(step, c);
     case 'progress':return _wzProgress(step);
-    case 'info':    return _wzInfo(step, sid);
-    case 'input':   return _wzInput(step, sid);
+    case 'info':    return _wzInfo(step, c);
+    case 'input':   return _wzInput(step, c);
+    case 'preview': return _wzPreview(step, c);
     default:        return '<pre style="font-size:.72rem;color:var(--text2)">'+_wzEsc(JSON.stringify(step,null,2))+'</pre>';
   }
 }
 
-function _wzChoice(step, sid) {
+function _wzPlan(step, cid) {
+  var ICONS = {success:'✓ ',info:'ℹ ',warn:'⚠ ',code:'',default:''};
+  var h = '';
+  if (typeof step.progress === 'number')
+    h += '<div class="ctx-progress"><div class="ctx-progress-fill" style="width:'
+      +Math.max(0,Math.min(100,step.progress))+'%"></div></div>';
+  if ((step.sections||[]).length) {
+    h += '<div class="ctx-sections">';
+    step.sections.forEach(function(s){
+      var st = s.style||'default';
+      h += '<div class="ctx-section '+st+'">';
+      if (s.label) h += '<span class="ctx-label">'+_wzEsc(s.label)+'</span>';
+      h += '<span class="ctx-content">'+(ICONS[st]||'')+_wzEsc(s.content||'')+'</span></div>';
+    });
+    h += '</div>';
+  }
+  if (step.input) {
+    h += '<textarea id="wz-ta-'+cid+'" class="wz-input wz-request-ta" placeholder="'+_wzEsc(step.input)+'" style="margin-top:10px"></textarea>';
+    h += '<div class="wz-actions"><button class="wz-btn secondary" onclick="closeWizardCard(\''+cid+'\')">Annuler</button>'
+      + '<button class="wz-btn primary" onclick="wzPlanInput(\''+cid+'\')">Envoyer</button></div>';
+  }
+  if ((step.actions||[]).length) {
+    h += '<div class="wz-actions">';
+    step.actions.forEach(function(a,i){
+      h += '<button class="wz-btn '+(a.style||'secondary')+'" onclick="wzPost(\''+cid+'\',\'action\',{value:\''+_wzEsc(a.value||a.label)+'\'})">'+_wzEsc(a.label)+'</button>';
+    });
+    h += '</div>';
+  }
+  return h;
+}
+function wzPlanInput(cid) {
+  var ta = document.getElementById('wz-ta-'+cid);
+  if (ta && ta.value.trim()) wzPost(cid,'input',{text:ta.value.trim()});
+}
+
+function _wzChoice(step, cid) {
   var multi = !!step.multi;
   var html = '<div class="wz-choices">';
   (step.choices||[]).forEach(function(c) {
-    var cid = _wzEsc(c.id||'');
-    html += '<button class="wz-choice" data-cid="'+cid+'" onclick="wzChoiceClick(this,\''+sid+'\','+multi+')">';
+    var choiceId = _wzEsc(c.id||'');
+    html += '<button class="wz-choice" data-cid="'+choiceId+'" onclick="wzChoiceClick(this,\''+cid+'\','+multi+')">';
     if (c.icon) html += '<span class="wz-choice-icon">'+c.icon+'</span>';
     html += '<span class="wz-choice-label">'+_wzEsc(c.label||c.id)+'</span>';
     if (c.desc) html += '<span class="wz-choice-desc">'+_wzEsc(c.desc)+'</span>';
     html += '</button>';
   });
   html += '</div>';
-  if (multi) html += '<div class="wz-actions"><button class="wz-btn primary" onclick="wzSubmitChoice(\''+sid+'\',true)">Valider</button></div>';
+  if (multi) html += '<div class="wz-actions"><button class="wz-btn primary" onclick="wzSubmitChoice(\''+cid+'\',true)">Valider</button></div>';
   return html;
 }
 
-function wzChoiceClick(el, sid, multi) {
+function wzChoiceClick(el, cid, multi) {
   if (multi) {
     el.classList.toggle('selected');
   } else {
-    wzSubmitChoice(sid, false, el.dataset.cid);
+    wzSubmitChoice(cid, false, el.dataset.cid);
   }
 }
 
-function wzSubmitChoice(sid, multi, singleId) {
+function wzSubmitChoice(cid, multi, singleId) {
+  var cardEl = document.querySelector('.wz-card[data-wid="'+cid+'"]');
   var selected = multi
-    ? Array.from(document.querySelectorAll('.wz-choice.selected')).map(function(e){return e.dataset.cid;})
+    ? Array.from(cardEl?cardEl.querySelectorAll('.wz-choice.selected'):document.querySelectorAll('.wz-choice.selected')).map(function(e){return e.dataset.cid;})
     : singleId;
-  wzPost(sid, 'choice', {selected: selected});
+  wzPost(cid, 'choice', {selected: selected});
 }
 
 function _wzForm(step, sid) {
@@ -1027,22 +1189,40 @@ function _wzForm(step, sid) {
   return html;
 }
 
-function wzSubmitForm(event, sid) {
+function wzSubmitForm(event, cid) {
   var vals = {};
-  var els = event.target.querySelectorAll('[name]');
-  els.forEach(function(el) {
-    vals[el.name] = (el.type==='checkbox') ? el.checked : el.value;
+  var missing = [];
+  event.target.querySelectorAll('[name]').forEach(function(el) {
+    var v = (el.type==='checkbox') ? el.checked : el.value.trim();
+    if (el.required && !v && el.type !== 'checkbox') {
+      missing.push(el.name);
+      el.style.borderColor = '#ef4444';
+    } else {
+      el.style.borderColor = '';
+      vals[el.name] = (el.type==='checkbox') ? el.checked : el.value;
+    }
   });
-  wzPost(sid, 'form', vals);
+  if (missing.length) {
+    var errEl = event.target.querySelector('.wz-form-error');
+    if (!errEl) {
+      errEl = document.createElement('div');
+      errEl.className = 'wz-form-error';
+      errEl.style.cssText = 'color:#ef4444;font-size:12px;margin-top:4px';
+      event.target.querySelector('.wz-actions').before(errEl);
+    }
+    errEl.textContent = 'Champs requis : ' + missing.join(', ');
+    return;
+  }
+  wzPost(cid, 'form', vals);
 }
 
-function _wzConfirm(step, sid) {
+function _wzConfirm(step, cid) {
   var html = '';
   if (step.content) html += '<div class="wz-confirm-content">'+_wzMd(step.content)+'</div>';
   var actions = step.actions||[{id:'ok',label:'Valider',style:'primary'}];
   html += '<div class="wz-actions">';
   actions.forEach(function(a) {
-    html += '<button class="wz-btn '+(a.style||'secondary')+'" onclick="wzPost(\''+sid+'\',\'confirm\',{action:\''+_wzEsc(a.id)+'\'})">'+_wzEsc(a.label)+'</button>';
+    html += '<button class="wz-btn '+(a.style||'secondary')+'" onclick="wzPost(\''+cid+'\',\'confirm\',{action:\''+_wzEsc(a.id)+'\'})">'+_wzEsc(a.label)+'</button>';
   });
   html += '</div>';
   return html;
@@ -1061,61 +1241,129 @@ function _wzProgress(step) {
   return html;
 }
 
-function _wzInfo(step, sid) {
+function _wzInfo(step, cid) {
+  var ICONS = {success:'✓ ',info:'ℹ ',warn:'⚠ ',code:'',default:''};
   var html = '';
+  if (typeof step.progress === 'number')
+    html += '<div class="ctx-progress"><div class="ctx-progress-fill" style="width:'
+      +Math.max(0,Math.min(100,step.progress))+'%"></div></div>';
   if (step.content) html += '<div class="wz-info-content">'+_wzEsc(step.content)+'</div>';
+  if ((step.sections||[]).length) {
+    html += '<div class="ctx-sections">';
+    step.sections.forEach(function(s){
+      var st = s.style||'default';
+      html += '<div class="ctx-section '+st+'">';
+      if (s.label) html += '<span class="ctx-label">'+_wzEsc(s.label)+'</span>';
+      html += '<span class="ctx-content">'+(ICONS[st]||'')+_wzEsc(s.content||'')+'</span></div>';
+    });
+    html += '</div>';
+  }
   var actions = step.actions||[];
   if (actions.length) {
     html += '<div class="wz-actions">';
     actions.forEach(function(a) {
-      html += '<button class="wz-btn '+(a.style||'primary')+'" onclick="wzPost(\''+sid+'\',\'confirm\',{action:\''+_wzEsc(a.id)+'\'})">'+_wzEsc(a.label)+'</button>';
+      html += '<button class="wz-btn '+(a.style||'primary')+'" onclick="wzPost(\''+cid+'\',\'action\',{value:\''+_wzEsc(a.value||a.label||a.id)+'\'})">'+_wzEsc(a.label)+'</button>';
     });
     html += '</div>';
   }
   return html;
 }
 
-function _wzInput(step, sid) {
+function _wzInput(step, cid) {
   var html = '';
-  if (step.context) {
-    html += '<div class="wz-info-content" style="margin-bottom:4px">'+_wzEsc(step.context)+'</div>';
-  }
-  var ph = _wzEsc(step.placeholder||'Décrivez votre demande…');
+  if (step.context) html += '<div class="wz-info-content" style="margin-bottom:4px">'+_wzEsc(step.context)+'</div>';
+  var ph  = _wzEsc(step.placeholder||'Décrivez votre demande…');
   var lbl = _wzEsc(step.submit_label||'Envoyer');
-  html += '<form onsubmit="wzSubmitInput(event,\''+sid+'\');return false;">';
-  html += '<textarea class="wz-input wz-request-ta" id="wz-req-ta" placeholder="'+ph+'" rows="4" required autofocus></textarea>';
-  if (step.suggestions && step.suggestions.length) {
+  html += '<form onsubmit="wzSubmitInput(event,\''+cid+'\');return false;">';
+  html += '<textarea class="wz-input wz-request-ta" id="wz-req-ta-'+cid+'" placeholder="'+ph+'" rows="4" required autofocus></textarea>';
+  if ((step.suggestions||[]).length) {
     html += '<div class="wz-suggestions">';
     step.suggestions.forEach(function(s) {
-      html += '<button type="button" class="wz-suggestion" onclick="wzSuggestion(\''+_wzEsc(s)+'\')">'+_wzEsc(s)+'</button>';
+      html += '<button type="button" class="wz-suggestion" onclick="wzSuggestion(\''+cid+'\',\''+_wzEsc(s)+'\')">'+_wzEsc(s)+'</button>';
     });
     html += '</div>';
   }
-  html += '<div class="wz-actions"><button type="submit" class="wz-btn primary">'+lbl+'</button></div>';
-  html += '</form>';
+  html += '<div class="wz-actions"><button type="submit" class="wz-btn primary">'+lbl+'</button></div></form>';
   return html;
 }
 
-function wzSubmitInput(event, sid) {
-  var text = document.getElementById('wz-req-ta').value.trim();
+function wzSubmitInput(event, cid) {
+  var ta = document.getElementById('wz-req-ta-'+cid);
+  var text = ta ? ta.value.trim() : '';
   if (!text) return;
-  wzPost(sid, 'input', {text: text});
+  wzPost(cid, 'input', {text: text});
 }
 
-function wzSuggestion(text) {
-  var ta = document.getElementById('wz-req-ta');
+function wzSuggestion(cid, text) {
+  var ta = document.getElementById('wz-req-ta-'+cid);
   if (ta) { ta.value = text; ta.focus(); }
 }
 
-async function wzPost(stepId, type, values) {
+function _wzPreview(step, cid) {
+  var code     = step.code      || '';
+  var ctype    = step.code_type || 'html';
+  var height   = parseInt(step.height) || 260;
+  var useBridge= step.bridge !== false;
+
+  // Script wizard bridge avec card_id injecté
+  var wzScript = '<script>' + WIZARD_PREVIEW_SCRIPT.replace('__CARD_ID__', cid) + '<' + '/script>';
+
+  function _injectWzScript(html) {
+    return html.includes('</head>') ? html.replace('</head>', wzScript+'</head>') : wzScript+html;
+  }
+
+  // Préparer le srcdoc selon le type
+  var srcdoc;
+  if (!code) {
+    srcdoc = '<!DOCTYPE html><html><body style="margin:0;display:flex;align-items:center;justify-content:center;height:100%;background:#f8fafc;color:#94a3b8;font-family:Inter,sans-serif;font-size:.8rem">Aucun code fourni</body></html>';
+  } else if (ctype === 'html' || ctype === 'react' || ctype === 'grist') {
+    srcdoc = useBridge ? _injectWzScript(prepareWidgetHTML(code, {state: _sharedState, route: '/'}))
+                       : _injectWzScript(code);
+  } else if (ctype === 'svg') {
+    var svgHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{margin:0;display:flex;align-items:center;justify-content:center;background:#f8fafc;min-height:100%}</style></head><body>' + code + '</body></html>';
+    srcdoc = _injectWzScript(useBridge ? prepareWidgetHTML(svgHtml, {state:_sharedState}) : svgHtml);
+  } else {
+    var wrap = '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{margin:0;padding:16px;font-family:Inter,sans-serif;background:#f8fafc;font-size:.84rem;line-height:1.6;color:#1e293b}</style></head><body>' + code + '</body></html>';
+    srcdoc = _injectWzScript(useBridge ? prepareWidgetHTML(wrap, {state:_sharedState}) : wrap);
+  }
+
+  var html = '<div class="wz-preview-wrap">'
+    + '<iframe srcdoc="' + _wzEsc(srcdoc) + '" sandbox="allow-scripts allow-same-origin allow-forms"'
+    + ' style="height:' + height + 'px" title="Aperçu composant"></iframe>'
+    + '</div>';
+
+  // Interaction contextuelle en dessous
+  var hasChoices = (step.choices||[]).length > 0;
+  var hasFields  = (step.fields ||[]).length > 0;
+  var hasInput   = !!step.input;
+  var hasActions = (step.actions||[]).length > 0;
+
+  if (hasChoices || hasFields || hasInput || hasActions) {
+    html += '<div class="wz-preview-sep"></div>';
+    if (hasChoices) html += _wzChoice(step, cid);
+    else if (hasFields) html += _wzForm(step, cid);
+    else if (hasInput) html += _wzInput(step, cid);
+    if (hasActions && !hasChoices && !hasFields && !hasInput) {
+      html += '<div class="wz-actions">';
+      step.actions.forEach(function(a) {
+        html += '<button class="wz-btn '+(a.style||'secondary')+'" onclick="wzPost(\''+_wzEsc(cid)+'\',\'action\',{value:\''+_wzEsc(a.value||a.id||a.label)+'\'})">'
+          + _wzEsc(a.label) + '</button>';
+      });
+      html += '</div>';
+    }
+  }
+  return html;
+}
+
+async function wzPost(cid, type, values) {
+  closeWizardCard(cid);
   try {
-    closeWizard();
     await fetch(BASE+'/wizard/'+_token, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({step_id: stepId, type: type, values: values})
+      body: JSON.stringify({step_id: cid, type: type, values: values})
     });
-  } catch(e) { showToast('Erreur wizard: '+e.message, 'error'); }
+  } catch(e) { showToast('Erreur: '+e.message, 'error'); }
 }
 </script>
 </body>
