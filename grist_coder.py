@@ -7,7 +7,7 @@ LLM via MCP : schema relationnel + artefacts + pages structurées.
 
 AUTH  : widget -> grist.docApi.getAccessToken() -> POST /register -> gc-xxx
         Claude Desktop -> Bearer <grist_key> -> uid:user_id stable
-TOOLS : sessions(3) canvas(5) artefact(1) grist-r(3) grist-w(3) doc(2) = 17
+TOOLS : sessions(3) canvas(6) artefact(1) grist-r(3) grist-w(3) doc(5) webhooks(1) = 22
 """
 
 import asyncio, base64, hashlib, json, os, re, subprocess, sys, time, uuid
@@ -30,19 +30,32 @@ WIDGET_PATH = Path(__file__).parent / "widget.html"
 SERVER_INSTRUCTIONS = """
 Tu es connecte a Grist Coder MCP v5.2 — service de dev d apps Grist.
 
-CONCEPT
-  Tables de donnees (Clients, Commandes...)  = modele de donnees
-  Table Artefacts (widgets HTML/JS)          = fichiers source
-  Pages Grist (grille + widget custom)       = ecrans de l app
+VISION
+  Un document Grist devient une app metier complete, deployee dans le navigateur,
+  sans infrastructure supplementaire. L utilisateur final interagit avec des artefacts
+  (widgets HTML/React) lies a ses donnees. Ses actions peuvent declencher des effets
+  externes (webhooks). Tout est construit et maintenu depuis ce MCP.
 
-OUTILS (20)
+  Philosophie : n implémenter que ce qui est optimal, peu complexe, facile au regard
+  de l existant. Pas de surarchitecture.
+
+COUCHES D UNE APP COMPLETE
+  1. Donnees  : tables Grist + formules colonnes (ce que l utilisateur possede)
+  2. UI       : artefacts HTML/React + pages Grist (ce que l utilisateur voit)
+  3. Logique  : grist_apply, grist_sql, grist_upsert (ce que le systeme fait)
+  4. Integr.  : grist_webhooks -> services externes CRM/email/ERP/IA async
+               (ce que le doc declenche dans le monde exterieur — transparent pour l utilisateur)
+               Receiver : HOST_URL/webhook-receive/{docId} si HOST_URL est public
+
+OUTILS (21)
   Sessions : sessions_list, session_select, session_info
-  Canvas   : canvas_read, canvas_write, canvas_patch, canvas_exec, canvas_screenshot
+  Canvas   : canvas_read, canvas_write, canvas_patch, canvas_exec, canvas_screenshot, canvas_type
   Artefact : artefact_init
   Grist R  : grist_schema, grist_records, grist_sql
   Grist W  : grist_records_add, grist_records_patch, grist_upsert
   Document : grist_apply, grist_views_list, grist_view_create,
              grist_section_configure, grist_view_add_widget
+  Webhooks : grist_webhooks (list OK accessToken | create/update/delete = cle API owner)
 
 RESSOURCES
   docs/schema           -> recettes tables/colonnes (lire avant schema)
@@ -59,12 +72,15 @@ WORKFLOW
   2. context/{token} -> etat doc
   3. docs/playbook (ou playbook/{scenario}) -> sequence exacte
   4. Construire : tables -> artefacts (canvas_write+screenshot+upsert) -> pages
-  5. context/{token} -> verifier
+  5. (optionnel) grist_webhooks(create) -> integration externe ou async processing
+  6. context/{token} -> verifier
 
 REGLES CRITIQUES
   JAMAIS REST PATCH sur _grist_Views / _grist_Views_section -> crash frontend
   TOUJOURS grist_apply(["UpdateRecord", ...]) pour toutes les tables meta
   canvas_read() AVANT canvas_patch() — old_str doit etre exact et unique
+  ARTEFACTS LOURDS (HTML avec script) : grist_records_patch et grist_apply bloques (403 WAF)
+    sur grist.numerique.gouv.fr. WORKFLOW : canvas_write/patch -> screenshot -> Save widget
 """.strip()
 
 # ── SESSION CTX ───────────────────────────────────────────────────────────────
@@ -76,12 +92,15 @@ class SessionCtx:
         self.site_url     = site_url.rstrip("/")
         self.grist_key    = grist_key
         self.access_token = access_token
-        self.canvas       = ""
-        self.history      = deque(maxlen=50)
-        self.created_at   = time.time()
-        self.last_seen    = time.time()
-        self.token        = "gc-" + uuid.uuid4().hex[:6]
+        self.canvas          = ""
+        self.history         = deque(maxlen=50)
+        self.created_at      = time.time()
+        self.last_seen       = time.time()
+        self.token           = "gc-" + uuid.uuid4().hex[:6]
         self.subscribers: set[str] = set()
+        self.current_art_id  = None   # id Grist de l'artefact courant
+        self.current_art_nom = None
+        self.current_art_type= None
 
     def touch(self): self.last_seen = time.time()
 
@@ -92,9 +111,11 @@ class SessionCtx:
             "doc_id":       self.doc_id,
             "doc_title":    self.doc_title,
             "site_url":     self.site_url,
-            "canvas_sha":   hashlib.sha1(self.canvas.encode()).hexdigest()[:8] if self.canvas else None,
-            "canvas_lines": len(self.canvas.splitlines()) if self.canvas else 0,
-            "last_seen":    f"{age}s ago" if age < 3600 else f"{age//3600}h ago",
+            "canvas_sha":        hashlib.sha1(self.canvas.encode()).hexdigest()[:8] if self.canvas else None,
+            "canvas_lines":      len(self.canvas.splitlines()) if self.canvas else 0,
+            "last_seen":         f"{age}s ago" if age < 3600 else f"{age//3600}h ago",
+            "current_artefact":  {"id": self.current_art_id, "nom": self.current_art_nom,
+                                  "type": self.current_art_type} if self.current_art_id else None,
         }
 
 
@@ -209,6 +230,12 @@ async def grist_put(ctx, path, body):
                         content=json.dumps(body))
         r.raise_for_status(); return r.json()
 
+async def grist_delete(ctx, path):
+    async with httpx.AsyncClient(timeout=15) as c:
+        r = await c.delete(f"{_base(ctx)}/{path}", headers=_gh(ctx), params=_aq(ctx))
+        r.raise_for_status()
+        return r.json() if r.content else {"ok": True}
+
 async def grist_apply(ctx, actions: list) -> dict:
     """Applique des user actions Grist via POST /apply."""
     async with httpx.AsyncClient(timeout=15) as c:
@@ -235,13 +262,12 @@ ARTEFACTS_TABLE_DEF = {
             {"id": "Nom",          "fields": {"type": "Text",     "label": "Nom"}},
             {"id": "Type",         "fields": {"type": "Choice",   "label": "Type",
                                               "widgetOptions": json.dumps({"choices": [
-                                                  "app","grist","html","react","markdown",
-                                                  "svg","mermaid","python","sql","component"]})}},
+                                                  "html","react","grist","markdown","mermaid",
+                                                  "python","sql","svg","app"]})}},
             {"id": "Code",         "fields": {"type": "Text",     "label": "Code"}},
             {"id": "Description",  "fields": {"type": "Text",     "label": "Description"}},
             {"id": "Dependencies", "fields": {"type": "Text",     "label": "Dependencies"}},
             {"id": "IsDoc",        "fields": {"type": "Bool",     "label": "IsDoc"}},
-            {"id": "Icon",         "fields": {"type": "Text",     "label": "Icon"}},
             {"id": "Output",       "fields": {"type": "Text",     "label": "Output"}},
             {"id": "UpdatedAt",    "fields": {"type": "DateTime", "label": "Mis a jour"}},
         ]
@@ -277,7 +303,11 @@ TOOLS = [
     {"name": "canvas_write",
      "description": "Reecrit integralement le canvas. Preferer canvas_patch pour modifications ciblees.",
      "inputSchema": {"type": "object",
-                     "properties": {"code": {"type": "string"}},
+                     "properties": {
+                         "code":     {"type": "string"},
+                         "art_id":   {"type": "integer", "description": "Id Grist de l artefact (optionnel, renseigne automatiquement par le widget)"},
+                         "art_nom":  {"type": "string",  "description": "Nom de l artefact courant"},
+                         "art_type": {"type": "string",  "description": "Type de l artefact courant"}},
                      "required": ["code"]}},
 
     {"name": "canvas_patch",
@@ -297,6 +327,16 @@ TOOLS = [
      "description": "Capture le rendu iframe du widget (html2canvas injecte). Timeout 15s. Retourne image/png.",
      "inputSchema": {"type": "object", "properties": {}},
      "annotations": {"readOnlyHint": True}},
+
+    {"name": "canvas_type",
+     "description": "Change le type de l artefact courant (html|react|grist|markdown|mermaid|python|sql|svg|app). "
+                    "Met a jour Grist + notifie le widget pour re-render et changer le mode editeur. "
+                    "Appeler apres canvas_write quand le type change (ex: on commence en html puis on passe a react).",
+     "inputSchema": {"type": "object",
+                     "properties": {"type": {"type": "string",
+                                             "enum": ["html","react","grist","markdown","mermaid","python","sql","svg","app"],
+                                             "description": "Nouveau type de l artefact"}},
+                     "required": ["type"]}},
 
     # Artefact
     {"name": "artefact_init",
@@ -404,6 +444,19 @@ TOOLS = [
                          "widget_url": {"type": "string", "description": "URL du widget custom (defaut: HOST_URL/)"},
                          "artefact":   {"type": "string", "description": "Nom d un artefact a afficher automatiquement dans le widget (mode display). Ex: 'FicheClient'. Ajoute ?a=NomArtefact a l URL."}},
                      "required": ["table_id"]}},
+
+    {"name": "grist_webhooks",
+     "description": "CRUD webhooks du document Grist. list=GET toujours dispo. create/update/delete necessitent une cle API owner (pas accessToken widget seul). Champs create: tableId, eventTypes (['add','update']), url, name, memo.",
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "action":     {"type": "string",
+                                        "enum": ["list", "create", "update", "delete"],
+                                        "description": "list=GET /webhooks | create=POST | update=PATCH | delete=DELETE /webhooks/{id}"},
+                         "webhook_id": {"type": "string",
+                                        "description": "ID du webhook (requis pour update/delete)"},
+                         "fields":     {"type": "object",
+                                        "description": "Pour create: {tableId, eventTypes, url, name, memo}. Pour update: champs a modifier."}},
+                     "required": ["action"]}},
 ]
 
 # ── PROMPTS ───────────────────────────────────────────────────────────────────
@@ -707,7 +760,7 @@ TEMPLATE BASE - TYPE: grist (widget reactif aux donnees)
 <script src="https://cdn.tailwindcss.com"></script>
 </head><body><div id="app" class="p-4"></div>
 <script>
-const app = window.app || {navigate:p=>showToast(p,'info'),emit:()=>{},on:()=>{},setState:()=>{},state:{}};
+const app = window.app || {navigate:p=>showToast(p,'info'),emit:()=>{},on:()=>{},'setState':(k,v)=>{},state:{}};
 const isGristCoder = typeof window.app?.navigate === 'function';
 function showToast(msg,type='info'){
   const c={info:'#3b82f6',success:'#10b981',error:'#ef4444',warning:'#f59e0b'};
@@ -787,7 +840,32 @@ await grist.selectedTable.upsert(                                        // cree
   {require:{Nom:'Unique'}, fields:{CA:100}},
   {onMany:'all', allowEmptyRequire:false}
 );
-await grist.selectedTable.fetch({filters:{Actif:[true]}});               // lecture avec filtre
+// ATTENTION: selectedTable.fetch() N EXISTE PAS — utiliser a la place :
+const d = await grist.fetchSelectedTable();  // lignes filtrees (pas d arg filtre)
+// ou filtrer cote client apres safeLoad() / docApi.fetchTable()
+
+## selectedTable.getTableId()
+const tableName = await grist.selectedTable.getTableId(); // nom de la table liee au widget
+
+## ACCESS TOKEN (appels REST API depuis le widget)
+// CORRECT: grist.docApi.getAccessToken (pas grist.getAccessToken)
+const ti = await grist.docApi.getAccessToken({readOnly: false});
+// ti = { token: '...', baseUrl: 'https://grist.../api/docs/DOCID', ttlMsecs: 300000 }
+// Pattern REST recommande : ?auth= en query param (pas Authorization header)
+async function gristREST(endpoint, opts={}) {
+  const ti = await grist.docApi.getAccessToken({readOnly: opts.method==='GET'});
+  const url = new URL(ti.baseUrl + endpoint);
+  url.searchParams.set('auth', ti.token);
+  const r = await fetch(url, { method: opts.method||'GET',
+    headers:{'Content-Type':'application/json'}, body: opts.body ? JSON.stringify(opts.body) : undefined });
+  return r.json();
+}
+// ex: gristREST('/tables'), gristREST('/sql', {method:'POST', body:{sql:'SELECT ...'}})
+
+## IDENTIFIER L UTILISATEUR COURANT
+const principals = await grist.docApi.getAclPrincipals();
+const me = principals.users.find(u => u.id === principals.currentUserId);
+// me = { id: 37212, email: 'user@example.com', name: 'User Name' }
 
 ## ECOUTE EVENEMENTS
 grist.onRecord(cb)          // record selectionne change (cb: function(record, mappings))
@@ -857,9 +935,12 @@ async function ensureTable(name, schema) {
 gristList.slice(1)             // -> JS array (lecture)
 ['L', ...array]                // -> Grist list (ecriture)
 
-// Dates : Grist stocke en SECONDES Unix (pas ms !)
-Math.floor(Date.now() / 1000)  // JS -> Grist DateTime
-new Date(timestamp * 1000)     // Grist -> JS Date
+// DateTime : secondes Unix (pas ms !)
+Math.floor(Date.now() / 1000)          // JS -> Grist DateTime
+new Date(timestamp * 1000)             // Grist DateTime -> JS Date
+// Date : jours depuis epoch (1970-01-01 = 0)
+Math.floor(Date.now() / 86400000)      // JS -> Grist Date
+new Date(days * 86400 * 1000)          // Grist Date -> JS Date
 
 ## TABLES SYSTEME (requiredAccess:'full')
 const tables = await grist.docApi.fetchTable('_grist_Tables');
@@ -892,7 +973,9 @@ function navigateTo(path) {
 EVENEMENTS INTER-ARTEFACTS (bus d evenements partage entre artefacts de la meme page)
 app.emit('client-select', {id: 42, nom: 'Mairie de Paris'});
 app.on('client-select', ({id, nom}) => { _filteredId = id; render(); });
-app.setState({currentClientId: 42});
+// app.emit/on fonctionne en self-relay via le parent (app_runtime.html) :
+//   emit → window.parent (app-event) → parent broadcast → même iframe (app-event-broadcast) → on callbacks
+app.setState('currentClientId', 42);   // signature: (key, value) — PAS ({key:value})
 const cid = app.state.currentClientId;
 
 ---
@@ -907,6 +990,54 @@ MANIFESTE APP - TYPE: app (JSON)
     {"path": "/contrats", "label": "Contrats",   "icon": "📄", "artefact": "Contrats"}
   ]
 }
+
+---
+WEBHOOKS GRIST
+
+## PERMISSIONS
+// list (GET)  : OK avec accessToken widget
+// create/update/delete : necessite cle API owner — via MCP (grist_webhooks tool)
+// Pas CORS : la 403 sur POST est une question de permission, pas de browser policy
+
+## VIA MCP (recommande pour setup)
+// grist_webhooks(action="list")
+// grist_webhooks(action="create", fields={tableId:"Clients", eventTypes:["add","update"],
+//   url:"https://HOST_URL/webhook-receive/DOC_ID", name:"MonWebhook"})
+// grist_webhooks(action="delete", webhook_id="abc123")
+
+## RECEIVER INTEGRE (production uniquement)
+// URL : HOST_URL/webhook-receive/{docId}  (HOST_URL doit etre public, pas localhost)
+// Grist POSTe le payload -> grist-coder fan-out SSE -> widget recoit l evenement
+// Ecoute dans le widget:
+grist.ready({requiredAccess:'full'});
+window.addEventListener('message', e => {
+  if (e.data?.type === 'webhook_event') {
+    const rows = e.data.payload;  // [{id, Nom, ...}, ...]
+    console.log('webhook recu:', rows);
+  }
+});
+
+## PATTERNS D USAGE
+
+# Pattern A — Integration externe (CRM, email, ERP) : cas principal
+// Table Commandes change -> webhook -> POST /api/crm/sync ou /api/notify
+// Setup via MCP: grist_webhooks(action="create", ...)
+// Pas de code widget necessaire
+
+# Pattern B — Async processing loop (prod, HOST_URL public)
+// 1. Artefact ecrit record avec Statut="pending"
+// 2. Webhook -> HOST_URL/webhook-receive/{docId} -> SSE au widget
+// 3. Widget recoit evenement -> lance traitement ou affiche resultat
+// 4. grist-coder ou service externe patch le record Statut="done"
+// Cas: "Soumettre pour analyse IA" -> resultat apparait sans polling
+
+# Pattern C — Inter-artefacts temps reel (pas de webhook necessite)
+// Utiliser app.emit/on ou grist.setCursorPos/onRecord a la place
+// Plus simple, fonctionne sur localhost, zero latence
+
+## EN DEV LOCAL
+// Webhook receiver inaccessible depuis Grist externe
+// Alternatives: ngrok tunnel | polling setInterval | Pattern C natif Grist
 
 ---
 PATTERNS WIDGET LIE (IsDoc=false, linkSrcSectionRef defini)
@@ -954,7 +1085,7 @@ WORKFLOW COMPLET PAR ARTEFACT
 3. canvas_patch(old_str, new_str)                -> affiner si besoin
 4. grist_upsert('Artefacts', [{
      require: {Nom: 'MonArtefact'},
-     fields:  {Type: 'grist', Code: '<code>', Description: '...', IsDoc: false, Icon: '📋'}
+     fields:  {Type: 'grist', Code: '<code>', Description: '...', IsDoc: false}
    }])                                           -> persister dans Grist
 5. grist_view_create('MaTable', 'Nom Page')      -> page Grist complete
 
@@ -1033,7 +1164,7 @@ Rounds: 2
 
 Round 1 (parallele):
   grist_records_add("Artefacts",[{
-    Nom: "Dashboard", Type: "html", IsDoc: true, Icon: "📊",
+    Nom: "Dashboard", Type: "html", IsDoc: true,
     Description: "Vue d ensemble",
     Code: "<html>...fetchTable via grist.docApi.fetchTable(table)..."
   }])
@@ -1059,7 +1190,7 @@ Rounds: 2 (si table existe) ou 3 (si table a creer)
 
 Round 1 — si table existante (parallele):
   grist_records_add("Artefacts",[{
-    Nom: "FicheClient", Type: "html", IsDoc: false, Icon: "👤",
+    Nom: "FicheClient", Type: "html", IsDoc: false,
     Code: "...window.__APP_STATE__?.record || {}..."
   }])
 
@@ -1264,12 +1395,15 @@ const isArtefactory = typeof window.app?.navigate === 'function';
 app.navigate('/clients');
 app.navigate('/fiche?id=42');
 
-// Bus d evenements inter-artefacts
+// Bus d evenements inter-artefacts (app_runtime.html)
+// Flux : emit → window.parent (app-event) → parent broadcast → mainFrame (app-event-broadcast) → on callbacks
+// Self-relay : OUI — l artefact emetteur recoit ses propres emissions (parent relay vers mainFrame)
 app.emit('client-selected', { id: 42 });
 app.on('client-selected', ({ id }) => loadDetail(id));
 
-// Etat partage
-app.setState({ currentId: 42 });
+// Etat partage — signature setState(key, value) PAS setState({key:value})
+app.setState('currentId', 42);         // correct
+app.setState({ currentId: 42 });       // FAUX — cle sera "[object Object]"
 const id = app.state.currentId;
 
 // Record courant (injecte par le widget parent)
@@ -1454,7 +1588,6 @@ async def _read_resource(uid_key, mcp_sid, uri):
                  "type":        r["fields"].get("Type",""),
                  "description": r["fields"].get("Description",""),
                  "isDoc":       bool(r["fields"].get("IsDoc",False)),
-                 "icon":        r["fields"].get("Icon",""),
                  "updatedAt":   r["fields"].get("UpdatedAt","")}
                 for r in arts_resp.get("records",[])
             ]
@@ -1607,6 +1740,9 @@ async def call_tool(uid_key, mcp_sid, name, args):
 
     if name == "canvas_write":
         ctx.canvas = args["code"]
+        if args.get("art_id"):  ctx.current_art_id   = int(args["art_id"])
+        if args.get("art_nom"): ctx.current_art_nom  = args["art_nom"]
+        if args.get("art_type"):ctx.current_art_type = args["art_type"]
         sha = hashlib.sha1(ctx.canvas.encode()).hexdigest()[:8]
         ctx.history.appendleft({"ts": time.time(), "sha": sha, "op": "write"})
         _push(uid_key, {"type": "canvas_updated", "token": ctx.token, "sha": sha})
@@ -1649,6 +1785,19 @@ async def call_tool(uid_key, mcp_sid, name, args):
         finally:
             _screenshot_waiters.pop(ctx.token, None)
 
+    if name == "canvas_type":
+        art_type = args.get("type","html")
+        valid = ["html","react","grist","markdown","mermaid","python","sql","svg","app"]
+        if art_type not in valid:
+            return {"error": f"Type invalide. Valeurs: {valid}"}
+        art_id = ctx.current_art_id
+        if not art_id:
+            return {"error": "Aucun artefact selectionne. Appeler session_select puis onArtSelect."}
+        await grist_patch(ctx, f"tables/Artefacts/records",
+                          {"records": [{"id": art_id, "fields": {"Type": art_type}}]})
+        _push(uid_key, {"type": "type_changed", "token": ctx.token, "artType": art_type})
+        return {"ok": True, "type": art_type, "art_id": art_id}
+
     # ── Artefact
     if name == "artefact_init":
         try:
@@ -1663,7 +1812,7 @@ async def call_tool(uid_key, mcp_sid, name, args):
             await grist_post(ctx, "tables", ARTEFACTS_TABLE_DEF)
             return {"ok": True, "status": "created",
                     "columns": ["Nom","Type","Code","Description","Dependencies",
-                                "IsDoc","Icon","Output","UpdatedAt"]}
+                                "IsDoc","Output","UpdatedAt"]}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
@@ -1711,6 +1860,35 @@ async def call_tool(uid_key, mcp_sid, name, args):
         try:
             result = await grist_apply(ctx, args["actions"])
             return {"ok": True, "result": result}
+        except Exception as e:
+            return {"error": str(e)}
+
+    if name == "grist_webhooks":
+        action = args["action"]
+        try:
+            if action == "list":
+                result = await grist_get(ctx, "webhooks")
+                return {"ok": True, "webhooks": result.get("webhooks", result)}
+            if action == "create":
+                fields = args.get("fields", {})
+                result = await grist_post(ctx, "webhooks",
+                                          {"webhooks": [{"fields": fields}]})
+                return {"ok": True, "result": result}
+            if action == "update":
+                wid = args.get("webhook_id")
+                if not wid:
+                    return {"error": "webhook_id requis pour update"}
+                fields = args.get("fields", {})
+                result = await grist_patch(ctx, "webhooks",
+                                           {"webhooks": [{"id": wid, "fields": fields}]})
+                return {"ok": True, "result": result}
+            if action == "delete":
+                wid = args.get("webhook_id")
+                if not wid:
+                    return {"error": "webhook_id requis pour delete"}
+                result = await grist_delete(ctx, f"webhooks/{wid}")
+                return {"ok": True, "result": result}
+            return {"error": f"action inconnue: {action}"}
         except Exception as e:
             return {"error": str(e)}
 
@@ -2138,6 +2316,25 @@ async def screenshot(request: Request):
         fut.set_result(image)
         return {"ok": True}
     return {"ok": False, "error": "Pas de waiter actif pour ce token."}
+
+
+@app.post("/webhook-receive/{doc_id}")
+async def webhook_receive(doc_id: str, request: Request):
+    """Reçoit les événements webhook Grist et les fan-out via SSE aux widgets connectés.
+    URL a configurer dans Grist : HOST_URL/webhook-receive/{docId}
+    Fonctionne uniquement si HOST_URL est publiquement accessible (pas localhost).
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    notified = 0
+    for uid, udata in registry._users.items():
+        for token, ctx in udata.get("sessions", {}).items():
+            if ctx.doc_id == doc_id:
+                _push(uid, {"type": "webhook_event", "doc_id": doc_id, "payload": payload})
+                notified += 1
+    return {"ok": True, "notified": notified}
 
 
 @app.get("/health")

@@ -1,26 +1,25 @@
 # grist-coder-mcp
 
-> Widget Grist + MCP Server HTTP streamable · spec 2025-03-26
-
-**v4.3** — authentification sans saisie de clé : le widget se connecte automatiquement via `grist.docApi.getAccessToken()`.
+> Widget Grist + MCP Server HTTP streamable · spec 2025-03-26 · v5.2
 
 ---
 
-## Concept
+## Vision
 
-Le **canevas est le fichier de travail**. Claude Desktop manipule le code Python du widget Grist exactement comme Claude Code manipule un fichier local.
+Un document Grist devient une **app métier complète**, déployée dans le navigateur, sans infrastructure supplémentaire. L'utilisateur final interagit avec des artefacts (widgets HTML/React) liés à ses données. Ses actions peuvent déclencher des effets externes. Tout est construit et maintenu depuis ce MCP.
+
+**Philosophie** : n'implémenter que ce qui est optimal, peu complexe, facile au regard de l'existant.
+
+---
+
+## Architecture — 4 couches d'une app complète
 
 ```
-Widget Grist                   Grist Coder MCP              Claude Desktop
-────────────                   ───────────────              ──────────────
-getAccessToken()  →  /register → uid:user_id  ←  Bearer <grist_key>
-← arto-xxxxxx                  sessions{}         sessions_list()
-SSE /mcp?token=…               canvas             canvas_read()
-POST /mcp Bearer arto-xxx   →  canvas_patch()  ←  canvas_patch(old, new)
-                               grist API          grist_records("Table")
+1. Données    tables Grist + formules colonnes       ce que l'utilisateur possède
+2. UI         artefacts HTML/React + pages Grist     ce que l'utilisateur voit
+3. Logique    grist_apply, grist_sql, grist_upsert   ce que le système fait
+4. Intégr.    grist_webhooks → CRM / email / ERP     ce que le doc déclenche à l'extérieur
 ```
-
-**Identité** : `uid:{grist_user_id}` — partagé entre widget (via JWT docApi) et Claude Desktop (via clé API). Chaque utilisateur ne voit que ses propres sessions.
 
 ---
 
@@ -67,20 +66,16 @@ Fichier : `%APPDATA%\Claude\claude_desktop_config.json`
 }
 ```
 
-La clé API Grist est le seul credential — Claude Desktop l'utilise comme Bearer. Le service la vérifie auprès de Grist (`GET /api/profile/user`) pour établir l'identité `uid:{user_id}`.
-
-Redémarrer Claude Desktop après toute modification.
-
 ---
 
-## Tools MCP (13)
+## Tools MCP (21)
 
 ### Sessions
 | Tool | Description |
 |------|-------------|
 | `sessions_list()` | Liste les documents Grist ouverts — **appeler en premier** |
-| `session_select(token)` | Sélectionne une session (auto si une seule active) |
-| `session_info()` | Infos complètes : doc, tables, état canvas |
+| `session_select(token)` | Sélectionne une session |
+| `session_info()` | Infos complètes : doc, tables, artefacts, état canvas |
 
 ### Canvas
 | Tool | Description |
@@ -89,20 +84,40 @@ Redémarrer Claude Desktop après toute modification.
 | `canvas_write(code)` | Réécrit intégralement le canvas |
 | `canvas_patch(old_str, new_str)` | str_replace ciblé — SSE push vers le widget |
 | `canvas_exec()` | Exécute le canvas Python (subprocess isolé, timeout 10s) |
+| `canvas_screenshot()` | Capture le rendu iframe du widget |
 
-### Grist (lecture)
+### Artefact
 | Tool | Description |
 |------|-------------|
-| `grist_schema()` | Définitions des tables du document actif |
-| `grist_records(table_id, limit?)` | Enregistrements d'une table |
+| `artefact_init()` | Crée la table Artefacts si absente (idempotent) |
+
+### Grist — Lecture
+| Tool | Description |
+|------|-------------|
+| `grist_schema()` | Schéma des tables du document actif |
+| `grist_records(table_id, filter?, limit?)` | Enregistrements d'une table |
 | `grist_sql(sql)` | Requête SQL libre sur le document |
 
-### Grist (écriture)
+### Grist — Écriture
 | Tool | Description |
 |------|-------------|
 | `grist_records_add(table_id, records)` | Ajoute des enregistrements |
 | `grist_records_patch(table_id, records)` | Met à jour des enregistrements existants |
 | `grist_upsert(table_id, records)` | Upsert sur clé métier (`require` + `fields`) |
+| `grist_apply(actions)` | User Actions Grist bas niveau (AddTable, AddColumn…) |
+
+### Document / Pages
+| Tool | Description |
+|------|-------------|
+| `grist_views_list()` | Liste les pages avec leurs sections |
+| `grist_view_create(table_id, page_name, artefact?)` | Crée une page grille + widget lié |
+| `grist_view_add_widget(view_ref, table_id, artefact?)` | Ajoute un widget à une page existante |
+| `grist_section_configure(section_ref, artefact?, link_section_ref?)` | Configure un widget custom |
+
+### Webhooks
+| Tool | Description |
+|------|-------------|
+| `grist_webhooks(action, fields?, webhook_id?)` | CRUD webhooks — `list` OK avec accessToken ; `create/update/delete` nécessitent clé API owner |
 
 ---
 
@@ -110,52 +125,66 @@ Redémarrer Claude Desktop après toute modification.
 
 | Méthode | Route | Rôle |
 |---------|-------|------|
-| `POST` | `/mcp` | JSON-RPC MCP (tools, initialize, prompts, resources) |
-| `GET` | `/mcp` | SSE stream — pousse les mises à jour canvas au widget |
+| `POST` | `/mcp` | JSON-RPC MCP |
+| `GET` | `/mcp` | SSE stream — mises à jour canvas vers widget |
 | `DELETE` | `/mcp` | Ferme une session SSE |
-| `POST` | `/register` | Enregistrement automatique du widget (`{accessToken, docId, siteUrl, userId?}`) |
-| `GET` | `/` | Sert le widget HTML Grist |
+| `POST` | `/register` | Enregistrement automatique widget |
+| `POST` | `/webhook-receive/{docId}` | Receiver webhooks Grist → SSE fan-out (production uniquement, HOST_URL public requis) |
+| `GET` | `/` | Widget HTML Grist |
 | `GET` | `/health` | Healthcheck JSON |
 
 ---
 
-## Analogie Claude Code
+## Webhooks — Patterns d'usage
 
 ```
-Claude Code           →  Grist Coder
-─────────────────────────────────────
-str_replace(old, new) →  canvas_patch(old_str, new_str)
-read_file(path)       →  canvas_read()
-bash('python ...')    →  canvas_exec()
-list_files()          →  grist_schema()
-read_file('data.csv') →  grist_records(table_id)
+Pattern A — Intégration externe (cas principal)
+  Table change → webhook → POST /api/crm | /api/notify | /api/erp
+  Setup via MCP : grist_webhooks(action="create", fields={tableId, eventTypes, url, name})
+
+Pattern B — Async processing loop (HOST_URL public requis)
+  Artefact écrit record Statut="pending"
+  → webhook → HOST_URL/webhook-receive/{docId} → SSE au widget
+  → traitement externe → patch Statut="done" → onRecords met à jour l'UI
+
+Pattern C — Inter-artefacts temps réel (localhost OK, pas de webhook)
+  app.emit/on | grist.setCursorPos | grist.onRecord
 ```
+
+> En développement local (localhost) : Grist externe ne peut pas atteindre le receiver. Utiliser ngrok ou Pattern C.
 
 ---
 
-## Auth v4.3 — détail technique
+## Ressources MCP
+
+| URI | Contenu |
+|-----|---------|
+| `docs/schema` | Recettes tables/colonnes |
+| `docs/artefacts` | Templates HTML/JS + API bridge Grist |
+| `docs/playbook` | Séquences pages, layouts, liaisons |
+| `docs/app-patterns` | Patterns multi-widgets : nav, sync, Artefactory |
+| `docs/formulas` | Formules colonnes Python natives Grist |
+| `playbook/{scenario}` | Guide cible : dashboard\|fiche\|table\|full-app\|master-detail |
+| `context/{token}` | Snapshot live : tables + artefacts + pages |
+| `code/{token}` | Source de tous les artefacts |
+
+---
+
+## Auth
 
 ```
 Widget                          Serveur
 ──────                          ───────
-grist.docApi                    POST /register
-  .getAccessToken()  ────────►  decode JWT payload → userId
-  .token (JWT)                  uid_key = "uid:{userId}"
-  .baseUrl → siteUrl, docId     → arto-xxxxxx session token
-
-grist API calls     ◄────────►  GET  /api/docs/{id}/tables?auth={token}
-(document-scoped)               POST /api/docs/{id}/tables/{t}/records?auth={token}
+grist.docApi.getAccessToken()  → POST /register → decode JWT → uid:{userId}
+                                                → gc-xxxxxx session token
 
 Claude Desktop                  _resolve_uid_key()
-  Bearer grist_key  ────────►   GET /api/profile/user → id
-                                uid_key = "uid:{id}"
+  Bearer grist_api_key         → GET /api/profile/user → uid:{id}
 ```
 
-Points clés :
-- L'access token Grist est un **JWT signé par document** (HS256, TTL 15 min)
-- Le payload contient `userId` (int) et `docId` — décodé sans vérification côté serveur
-- Les appels Grist API utilisent `?auth=token` (pas `Authorization: Bearer`) pour les sessions widget
-- Le token `arto-xxx` ne contient aucune credential Grist
+- Les appels Grist API utilisent `?auth=token` (widget) ou `Authorization: Bearer` (Claude Desktop)
+- accessToken widget = permission document (pas admin webhooks)
+- Clé API owner = CRUD complet dont webhooks
 
 ---
 
@@ -163,11 +192,12 @@ Points clés :
 
 | Erreur | Cause | Solution |
 |--------|-------|----------|
-| `401` widget | Token expiré | Le widget se re-enregistre automatiquement toutes les 12 min |
-| `401` Claude Desktop | Clé Grist incorrecte | Vérifier la clé dans `claude_desktop_config.json` |
-| `Fragment introuvable` | `old_str` inexact | Appeler `canvas_read()` d'abord pour copier le fragment exact |
-| Pas de sessions | Widget non chargé | Ouvrir le widget dans Grist, attendre la connexion automatique |
-| `timeout 10s` | Boucle infinie | Éviter les boucles sans condition de sortie dans le canvas |
+| `401` widget | Token expiré | Widget se ré-enregistre automatiquement toutes les 12 min |
+| `401` Claude Desktop | Clé Grist incorrecte | Vérifier `Authorization: Bearer` dans `claude_desktop_config.json` |
+| `403` sur webhook create | accessToken insuffisant | Utiliser `grist_webhooks` via MCP avec clé API owner |
+| `Fragment introuvable` | `old_str` inexact | Appeler `canvas_read()` d'abord |
+| Pas de sessions | Widget non chargé | Ouvrir le widget dans Grist, attendre la connexion |
+| `timeout 10s` | Boucle infinie canvas | Éviter les boucles sans condition de sortie |
 
 ---
 
@@ -175,5 +205,5 @@ Points clés :
 
 - Python 3.11+ · FastAPI · uvicorn · httpx
 - Transport MCP : Streamable HTTP 2025-03-26
-- Authentification : Grist docApi JWT (widget) / Grist API key (Claude Desktop)
+- Auth : Grist docApi JWT (widget) / Grist API key (Claude Desktop)
 - Widget : Grist Custom Widget API (`grist-plugin-api.js`)
