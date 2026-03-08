@@ -28,11 +28,16 @@ body{display:flex;flex-direction:column}
   flex-shrink:0;transition:background .3s}
 #dot.on{background:var(--success);cursor:pointer;box-shadow:0 0 0 2px rgba(16,185,129,.18)}
 #dot.on:hover{box-shadow:0 0 0 3px rgba(16,185,129,.28)}
-#navEditor{display:none;align-items:center;gap:6px}
-#artSelect{padding:3px 7px;border-radius:6px;border:1px solid var(--border);
-  background:var(--bg2);color:var(--text);font-size:.78rem;font-family:inherit;max-width:160px}
+/* edit bar — inside editorPane, mirrors navbar style */
+#editBar{height:40px;background:#fff;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;padding:0 12px;gap:8px;flex-shrink:0}
+#artSelect{padding:3px 28px 3px 7px;border-radius:6px;border:1px solid var(--border);
+  background:var(--bg2) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='13' height='13' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E") no-repeat right 8px center;
+  -webkit-appearance:none;appearance:none;
+  color:var(--text);font-size:.78rem;font-family:inherit;
+  max-width:140px;cursor:pointer;flex-shrink:0}
 #artSelect:focus{outline:none;border-color:#3e5de7}
-#saveStatus{font-size:.72rem;color:var(--text2)}
+#saveStatus{font-size:.72rem;color:var(--text2);white-space:nowrap;flex-shrink:0}
 #panelToggle{display:flex;align-items:center;justify-content:center;
   width:30px;height:28px;border-radius:6px;border:1px solid var(--border);
   background:#3e5de7;color:#fff;cursor:pointer;transition:all .15s;flex-shrink:0}
@@ -84,10 +89,6 @@ body{display:flex;flex-direction:column}
   <span id="sbCanvas" style="display:none"></span>
   <span id="tokenBadge" style="display:none"></span>
   <div style="flex:1"></div>
-  <div id="navEditor">
-    <select id="artSelect" onchange="onArtSelect()"><option value="">— aucun —</option></select>
-    <span id="saveStatus"></span>
-  </div>
   <button id="panelToggle" class="off" onclick="togglePanel()" title="Ouvrir panel code">
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
   </button>
@@ -98,6 +99,11 @@ body{display:flex;flex-direction:column}
   </div>
   <div id="splitter"></div>
   <div id="editorPane">
+    <div id="editBar">
+      <div style="flex:1"></div>
+      <span id="saveStatus"></span>
+      <select id="artSelect" onchange="onArtSelect()"><option value="">— aucun —</option></select>
+    </div>
     <div id="aceEditor"></div>
     <div id="editorEmpty">
       <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#3e5de7" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity=".4"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
@@ -378,7 +384,7 @@ function listenSSE() {
           _artefactsMap[_currentArt.Nom].Type = ev.artType;
           setEditorMode(ev.artType);
           renderArt(_currentArt);
-          renderArtSelect(); // refresh icons in dropdown
+          renderArtSelect();
         }
         if (ev.type === 'screenshot_request') captureScreenshot();
       }
@@ -674,13 +680,11 @@ function openPanel() {
   var ep = document.getElementById('editorPane');
   var sp = document.getElementById('splitter');
   var pt = document.getElementById('panelToggle');
-  var ne = document.getElementById('navEditor');
   var w = ep._savedWidth || Math.round(document.getElementById('appBody').offsetWidth * 0.4);
   ep.classList.add('open');
   ep.style.width = w + 'px';
   sp.classList.add('visible');
   pt.innerHTML = SVG_OPEN; pt.classList.remove('off'); pt.title = 'Rendu plein';
-  ne.style.display = 'flex';
   // resize after CSS transition completes (~220ms)
   setTimeout(function(){ if (_editor) _editor.resize(); }, 240);
 }
@@ -692,7 +696,6 @@ function closePanel() {
   document.getElementById('splitter').classList.remove('visible');
   var pt = document.getElementById('panelToggle');
   pt.innerHTML = SVG_CLOSE; pt.classList.add('off'); pt.title = 'Ouvrir panel code';
-  document.getElementById('navEditor').style.display = 'none';
   setTimeout(function(){ if (_editor) _editor.resize(); }, 240);
 }
 function togglePanel() {
