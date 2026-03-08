@@ -10,7 +10,7 @@ AUTH  : widget -> grist.docApi.getAccessToken() -> POST /register -> gc-xxx
 TOOLS : sessions(3) canvas(5) artefact(1) grist-r(3) grist-w(3) doc(2) = 17
 """
 
-import asyncio, base64, hashlib, json, os, subprocess, sys, time, uuid
+import asyncio, base64, hashlib, json, os, re, subprocess, sys, time, uuid
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -705,10 +705,16 @@ TEMPLATE BASE - TYPE: grist (widget reactif aux donnees)
 <script src="https://cdn.tailwindcss.com"></script>
 </head><body><div id="app" class="p-4"></div>
 <script>
-const appContext = {
-  isGristCoder: typeof window.app !== 'undefined' && typeof window.app.navigate === 'function',
-  app: window.app || { navigate: p => showToast(p,'info'), emit:()=>{}, on:()=>{}, setState:()=>{}, state:{} }
-};
+const app = window.app || {navigate:p=>showToast(p,'info'),emit:()=>{},on:()=>{},setState:()=>{},state:{}};
+const isGristCoder = typeof window.app?.navigate === 'function';
+function showToast(msg,type='info'){
+  const c={info:'#3b82f6',success:'#10b981',error:'#ef4444',warning:'#f59e0b'};
+  const t=document.createElement('div');
+  t.style.cssText='position:fixed;bottom:20px;right:20px;padding:12px 20px;background:'+c[type]+
+    ';color:#fff;border-radius:8px;font-size:13px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,.2)';
+  t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.remove(),3500);
+}
+// Donnees globales (IsDoc): toutes les lignes
 async function safeLoad(tableName) {
   try {
     const d = await grist.docApi.fetchTable(tableName);
@@ -717,70 +723,169 @@ async function safeLoad(tableName) {
     return rows;
   } catch(e){console.warn('Table '+tableName+' non trouvee');return[];}
 }
-function showToast(msg,type='info'){
-  const c={info:'#3b82f6',success:'#10b981',error:'#ef4444',warning:'#f59e0b'};
-  const t=document.createElement('div');
-  t.style.cssText='position:fixed;bottom:20px;right:20px;padding:12px 20px;background:'+c[type]+
-    ';color:#fff;border-radius:8px;font-size:13px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,.2)';
-  t.textContent=msg;document.body.appendChild(t);setTimeout(()=>t.remove(),3500);
+// Donnees liees (IsDoc=false): lignes filtrees par la section liee (respecte linkSrcSectionRef)
+async function loadLinked() {
+  const d = await grist.fetchSelectedTable();     // retourne seulement les lignes filtrees
+  const n = d.id?.length||0; const rows=[];
+  for(let i=0;i<n;i++){const r={id:d.id[i]};Object.keys(d).forEach(k=>{if(k!=='id')r[k]=d[k][i];});rows.push(r);}
+  return rows;
 }
-let _state = { loading:true, error:null, data:[] };
+let _state = { loading:true, error:null, data:[], record:{} };
 async function loadData() {
   _state.data = await safeLoad('MaTable');
-  _state.loading = false;
-  render();
+  _state.loading = false; render();
 }
 function render() {
   const el = document.getElementById('app');
   if(_state.loading){el.innerHTML='<div class="text-gray-400 p-8 text-center">Chargement...</div>';return;}
   if(!_state.data.length){el.innerHTML='<div class="text-gray-400 text-center py-8">Aucune donnee</div>';return;}
   el.innerHTML = _state.data.map(r=>`
-    <div class="flex items-center p-3 border-b hover:bg-gray-50 cursor-pointer" onclick="select(${r.id})">
+    <div class="flex items-center p-3 border-b hover:bg-gray-50 cursor-pointer" onclick="selectRow(${r.id})">
       <span class="flex-1 font-medium">${r.Nom||r.id}</span>
     </div>`).join('');
 }
-grist.ready({requiredAccess:'read table'});
+grist.ready({requiredAccess:'full'});
 loadData();
 </script></body></html>
 
 ---
 TEMPLATE BASE - TYPE: html (UI independante, pas de donnees Grist)
 <!-- Pas de grist.ready() si aucune donnee Grist necessaire -->
-<!-- window.app disponible si isGristCoder -->
 <!DOCTYPE html><html><head><meta charset="UTF-8">
 <script src="https://cdn.tailwindcss.com"></script>
 </head><body>...</body></html>
 
 ---
+GRIST PLUGIN API - BRIDGE COMPLET (disponible dans tous les artefacts)
+=======================================================================
+IMPORTANT: grist.ready({requiredAccess:'full'}) doit etre appele avant tout usage de l API.
+           requiredAccess: 'read table' (lecture seule) | 'full' (lecture+ecriture)
+
+## LECTURE DONNEES
+# Toutes les lignes d une table (IsDoc=true, dashboard global)
+const d = await grist.docApi.fetchTable('MaTable');
+// d = {id:[1,2,3], Nom:['A','B','C'], CA:[100,200,300]}  -- format colonnes
+const rows = d.id.map((id,i) => Object.fromEntries(Object.keys(d).map(k=>[k,d[k][i]])));
+
+# Lignes filtrees par la liaison de section (IsDoc=false, widget lie a une grille)
+const d = await grist.fetchSelectedTable();
+// Respecte linkSrcSectionRef -> retourne seulement les lignes liees a la selection courante
+// CRITIQUE: utiliser fetchSelectedTable() et NON docApi.fetchTable() pour les widgets lies
+
+# Enregistrement selectionne (record courant)
+const r = window.__APP_STATE__?.record || {};  // injecte par le widget parent via onRecord
+// OU reactif via event:
+app.on('record', r => { _state.record = r; render(); });
+
+## ECRITURE DONNEES (selectedTable = table a laquelle le widget est lie)
+await grist.selectedTable.create({fields: {Nom:'Nouveau', CA:0}});      // cree un enregistrement
+await grist.selectedTable.update({id:42, fields: {CA: 999}});            // met a jour
+await grist.selectedTable.destroy([42, 43]);                             // supprime par ids
+await grist.selectedTable.upsert(                                        // cree ou met a jour
+  {require:{Nom:'Unique'}, fields:{CA:100}},
+  {onMany:'all', allowEmptyRequire:false}
+);
+await grist.selectedTable.fetch({filters:{Actif:[true]}});               // lecture avec filtre
+
+## ECOUTE EVENEMENTS
+grist.onRecord(cb)          // record selectionne change (cb: function(record, mappings))
+grist.onRecords(cb)         // liste de records change (cb: function(records, mappings))
+grist.onNewRecord(cb)       // nouvelle ligne vide cree -> cb({}) avec id=0
+grist.onOptions(cb)         // options du widget changent (widgetOptions JSON)
+
+## NAVIGATION / CURSEUR
+await grist.setCursorPos({rowId: 42});               // positionne le curseur sur une ligne
+await grist.setSelectedRows([42, 43]);               // selectionne plusieurs lignes
+
+## OPTIONS PERSISTANTES (stockees dans widgetOptions du customView)
+await grist.setOption('maCle', valeur);             // persist une valeur
+const val = await grist.getOption('maCle');          // lire
+await grist.setOptions({cle1:v1, cle2:v2});         // batch set
+const all = await grist.getOptions();               // lire tout
+await grist.clearOptions();                          // reset
+
+## ACTIONS GRIST DIRECTES
+await grist.docApi.applyUserActions([               // actions Grist bas niveau
+  ['AddRecord', 'MaTable', null, {Nom:'X'}],
+  ['UpdateRecord', 'MaTable', 42, {CA:500}],
+  ['RemoveRecord', 'MaTable', 42],
+]);
+
+---
+RECORD COURANT - DEUX MODES
+# Mode __APP_STATE__ (statique au chargement)
+const r = window.__APP_STATE__?.record || {};
+document.getElementById('nom').textContent = r.Nom || '(aucun)';
+
+# Mode reactif (re-render a chaque changement de selection)
+app.on('record', r => { _state.record = r; render(); });
+// app.on() est disponible car window.app est injecte par le widget parent
+
+---
 NAVIGATION INTER-ARTEFACTS
 function navigateTo(path) {
-  if (appContext.isGristCoder) appContext.app.navigate(path);
-  else showToast('Ouvrir "'+path+'" dans Grist','info');
+  if (isGristCoder) app.navigate(path);
+  else showToast('Ouvrir: '+path,'info');
 }
+// Exemples: app.navigate('/'), app.navigate('/clients'), app.navigate('/fiche')
 
-EVENEMENTS INTER-ARTEFACTS
-// Emettre
-appContext.app.emit('item-select', {id: 42, nom: 'Mairie'});
-// Ecouter
-appContext.app.on('item-select', ({id, nom}) => { filtrer(id); render(); });
-// Etat partage
-appContext.app.setState({currentItem: 42});
-const current = appContext.app.state.currentItem;
-// Pas en mode widget : ignorer les filtres
-if (!appContext.isGristCoder) { _filteredId = null; }
+EVENEMENTS INTER-ARTEFACTS (bus d evenements partage entre artefacts de la meme page)
+app.emit('client-select', {id: 42, nom: 'Mairie de Paris'});
+app.on('client-select', ({id, nom}) => { _filteredId = id; render(); });
+app.setState({currentClientId: 42});
+const cid = app.state.currentClientId;
 
 ---
 MANIFESTE APP - TYPE: app (JSON)
 {
   "name": "MonApp",
   "icon": "🏢",
-  "tables": ["Batiments", "Interventions", "Prestataires"],
+  "tables": ["Clients", "Contrats", "Prestataires"],
   "routes": [
-    {"path": "/",            "label": "Dashboard",   "icon": "📊", "artefact": "Dashboard"},
-    {"path": "/batiments",   "label": "Batiments",   "icon": "🏢", "artefact": "ListeBatiments"},
-    {"path": "/interventions","label": "Interventions","icon": "🔧","artefact": "Interventions"}
+    {"path": "/",         "label": "Dashboard",  "icon": "📊", "artefact": "Dashboard"},
+    {"path": "/clients",  "label": "Clients",    "icon": "👥", "artefact": "ListeClients"},
+    {"path": "/contrats", "label": "Contrats",   "icon": "📄", "artefact": "Contrats"}
   ]
 }
+
+---
+PATTERNS WIDGET LIE (IsDoc=false, linkSrcSectionRef defini)
+# Pattern 1: Fiche detail simple (onRecord via __APP_STATE__)
+function render() {
+  const r = window.__APP_STATE__?.record || {};
+  if (!r.id) { el.innerHTML = '<p class="text-gray-400">Selectionnez un enregistrement</p>'; return; }
+  el.innerHTML = `<h2 class="text-xl font-bold">${r.Nom}</h2><p>${r.Email||''}</p>`;
+}
+grist.ready({requiredAccess:'full'}); render();
+app.on('record', r => { render(); });  // re-render sur changement de selection
+
+# Pattern 2: Liste filtree par selection (fetchSelectedTable)
+async function reload() {
+  const d = await grist.fetchSelectedTable();
+  const rows = d.id.map((id,i)=>({id, Nom:d.Nom[i], Statut:d.Statut[i]}));
+  _state.rows = rows; render();
+}
+grist.ready({requiredAccess:'full'});
+grist.onRecords(() => reload());   // recharge quand la liste filtree change
+
+# Pattern 3: Widget avec ecriture (CRUD via selectedTable)
+async function addItem(nom) {
+  await grist.selectedTable.create({fields:{Nom:nom, Statut:'Actif'}});
+  await reload();
+}
+async function deleteItem(id) {
+  await grist.selectedTable.destroy([id]);
+  await reload();
+}
+
+# Pattern 4: Options persistantes (etat du widget entre sessions)
+let _view = 'list';
+grist.onOptions(opts => { _view = opts?.view || 'list'; render(); });
+async function toggleView() {
+  _view = _view === 'list' ? 'grid' : 'list';
+  await grist.setOption('view', _view); render();
+}
+grist.ready({requiredAccess:'full', allowSelectBy:true});
 
 ---
 WORKFLOW COMPLET PAR ARTEFACT
@@ -799,7 +904,8 @@ Tables Phase 1 : Batiments, Prestataires, CTR_Types
 Tables Phase 2 : Locaux(Ref:Batiments), Interventions(Ref:Batiments+Ref:Prestataires)
 Tables Phase 3 : visibleCol='Nom' sur toutes les Ref:
 Formules       : NbLocaux="len($locaux_Batiment)", Surface_totale="SUM($locaux_Batiment.Surface)"
-Artefacts      : Dashboard(html), ListeBatiments(grist), KanbanInterventions(grist), FicheDetail(grist)
+Artefacts      : Dashboard(html,IsDoc:true), ListeBatiments(grist), FicheBatiment(grist,IsDoc:false)
+                 KanbanInterventions(grist), FicheDetail(grist,IsDoc:false)
 Pages          : grist_view_create x4 -> document structure complet
 """.strip()
 
@@ -1109,20 +1215,53 @@ async def _read_resource(uid_key, mcp_sid, uri):
             ]
         except Exception:
             snapshot["artefacts"] = []
-        # Pages
+        # Pages + app graph (sections par vue)
         try:
-            pages_resp  = await grist_get(ctx, "tables/_grist_Pages/records")
-            views_resp  = await grist_get(ctx, "tables/_grist_Views/records")
-            views_map   = {r["id"]: r["fields"].get("name","") for r in views_resp.get("records",[])}
+            pages_resp    = await grist_get(ctx, "tables/_grist_Pages/records")
+            views_resp    = await grist_get(ctx, "tables/_grist_Views/records")
+            sections_resp = await grist_get(ctx, "tables/_grist_Views_section/records")
+            tables_meta   = await grist_get(ctx, "tables/_grist_Tables/records")
+            views_map     = {r["id"]: r["fields"].get("name","") for r in views_resp.get("records",[])}
+            table_ref_map = {r["id"]: r["fields"].get("tableId","") for r in tables_meta.get("records",[])}
+            type_map      = {"record": "grid", "single": "card", "custom": "custom", "chart": "chart"}
+
+            def _extract_artefact(options_str):
+                if not options_str: return None
+                try:
+                    cv = json.loads(json.loads(options_str).get("customView") or "null")
+                    if not cv: return None
+                    m = re.search(r'[?&]a=([^&]+)', cv.get("url",""))
+                    if m: return m.group(1)
+                    wo = cv.get("widgetOptions")
+                    if wo: return (json.loads(wo) if isinstance(wo,str) else wo).get("artefact")
+                except Exception: pass
+                return None
+
+            sections_by_view: dict = {}
+            for r in sections_resp.get("records", []):
+                f = r["fields"]
+                pid = f.get("parentId", 0)
+                if not pid: continue
+                sections_by_view.setdefault(pid, []).append({
+                    "id":         r["id"],
+                    "type":       type_map.get(f.get("parentKey",""), f.get("parentKey","")),
+                    "table":      table_ref_map.get(f.get("tableRef",0), ""),
+                    "artefact":   _extract_artefact(f.get("options","")),
+                    "linked_to":  f.get("linkSrcSectionRef") or None,
+                    "linked_col": f.get("linkTargetColRef") or None,
+                })
+
             snapshot["pages"] = [
                 {"page_id":  r["id"],
                  "view_ref": r["fields"].get("viewRef",0),
                  "name":     views_map.get(r["fields"].get("viewRef",0),""),
-                 "indent":   r["fields"].get("indentation",0)}
+                 "indent":   r["fields"].get("indentation",0),
+                 "sections": sections_by_view.get(r["fields"].get("viewRef",0), [])}
                 for r in pages_resp.get("records",[])
             ]
-        except Exception:
+        except Exception as e:
             snapshot["pages"] = []
+            snapshot["pages_error"] = str(e)
         return {"uri": uri, "mimeType": "application/json",
                 "text": json.dumps(snapshot, ensure_ascii=False, indent=2)}
 

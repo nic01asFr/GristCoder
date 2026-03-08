@@ -128,8 +128,23 @@ const GRIST_BRIDGE_SCRIPT =
       "getAccessToken:function(o){return call('getAccessToken',[o||{}]);}}," +
     "onRecords:function(cb){reg('onRecords',cb);}," +
     "onRecord:function(cb){reg('onRecord',cb);}," +
+    "onNewRecord:function(cb){reg('onNewRecord',cb);}," +
     "setCursorPos:function(p){return call('setCursorPos',[p]);}," +
-    "setSelectedRows:function(ids){return call('setSelectedRows',[ids]);}" +
+    "setSelectedRows:function(ids){return call('setSelectedRows',[ids]);}," +
+    "fetchSelectedTable:function(o){return call('fetchSelectedTable',[o||{}]);}," +
+    "fetchSelectedRecord:function(id,o){return call('fetchSelectedRecord',[id,o||{}]);}," +
+    "setOption:function(k,v){return call('setOption',[k,v]);}," +
+    "getOption:function(k){return call('getOption',[k]);}," +
+    "setOptions:function(o){return call('setOptions',[o]);}," +
+    "getOptions:function(){return call('getOptions',[]);}," +
+    "clearOptions:function(){return call('clearOptions',[]);}," +
+    "selectedTable:{" +
+      "fetch:function(f){return call('selectedTable.fetch',[f||{}]);}," +
+      "create:function(r){return call('selectedTable.create',[r]);}," +
+      "update:function(r){return call('selectedTable.update',[r]);}," +
+      "destroy:function(ids){return call('selectedTable.destroy',[ids]);}," +
+      "upsert:function(r,o){return call('selectedTable.upsert',[r,o||{}]);}" +
+    "}" +
   "};" +
   "var t=window.parent===window?window:window.parent;" +
   "t.postMessage({type:'grist-bridge-ready'},'*');" +
@@ -178,10 +193,24 @@ window.addEventListener('message', async function(e) {
       else if (action === 'getAccessToken') result = await grist.docApi.getAccessToken(args[0]||{});
       else if (action === 'setCursorPos')   grist.setCursorPos(args[0]);
       else if (action === 'setSelectedRows') grist.setSelectedRows(args[0]);
+      else if (action === 'fetchSelectedTable')   result = await grist.fetchSelectedTable(args[0]||{});
+      else if (action === 'fetchSelectedRecord')  result = await grist.fetchSelectedRecord(args[0], args[1]||{});
+      else if (action === 'setOption')    result = await grist.setOption(args[0], args[1]);
+      else if (action === 'getOption')    result = await grist.getOption(args[0]);
+      else if (action === 'setOptions')   result = await grist.setOptions(args[0]);
+      else if (action === 'getOptions')   result = await grist.getOptions();
+      else if (action === 'clearOptions') result = await grist.clearOptions();
+      else if (action === 'selectedTable.fetch')   result = await grist.selectedTable.fetch(args[0]||{});
+      else if (action === 'selectedTable.create')  result = await grist.selectedTable.create(args[0]);
+      else if (action === 'selectedTable.update')  result = await grist.selectedTable.update(args[0]);
+      else if (action === 'selectedTable.destroy') result = await grist.selectedTable.destroy(args[0]);
+      else if (action === 'selectedTable.upsert')  result = await grist.selectedTable.upsert(args[0], args[1]||{});
       else if (action === 'onRecords') {
         grist.onRecords(function(r,m){ src.postMessage({type:'grist-bridge-callback',callbackId:cid,args:[r,m]},'*'); });
       } else if (action === 'onRecord') {
         grist.onRecord(function(r,m){ src.postMessage({type:'grist-bridge-callback',callbackId:cid,args:[r,m]},'*'); });
+      } else if (action === 'onNewRecord') {
+        grist.onNewRecord(function(m){ src.postMessage({type:'grist-bridge-callback',callbackId:cid,args:[m]},'*'); });
       }
       src.postMessage({type:'grist-bridge-response',callbackId:cid,result:result},'*');
     } catch(err) {
