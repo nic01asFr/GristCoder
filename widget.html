@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8"><title>Grist Coder v5</title>
+<script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.6/ace.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.6/mode-html.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.6/mode-javascript.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.6/mode-markdown.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.6/mode-json.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ace/1.32.6/theme-one_dark.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#fff;--bg2:#f8fafc;--bg3:#f1f5f9;
+  --border:#e2e8f0;--text:#0f172a;--text2:#64748b;
+  --accent:#3b82f6;--success:#10b981;--error:#ef4444;--warn:#f59e0b;
+  --navy:#1e293b;
+}
+html,body{height:100%;overflow:hidden;font-family:system-ui,-apple-system,sans-serif;font-size:13px}
+body{display:flex;flex-direction:column}
+#topBar{height:40px;background:var(--navy);display:flex;align-items:center;gap:8px;padding:0 12px;flex-shrink:0}
+.vdiv{width:1px;height:20px;background:rgba(255,255,255,.12)}
+#artSelect{padding:3px 8px;border-radius:4px;border:1px solid rgba(255,255,255,.2);
+  background:rgba(255,255,255,.06);color:rgba(255,255,255,.85);font-size:11px;min-width:160px;max-width:260px}
+#artSelect option{background:#1e293b}
+.type-badge{padding:2px 7px;border-radius:10px;font-size:10px;font-weight:600;text-transform:uppercase;display:none}
+.tb-grist{background:#dcfce7;color:#166534}.tb-html{background:#fef3c7;color:#92400e}
+.tb-react{background:#dbeafe;color:#1e40af}.tb-app{background:#f3e8ff;color:#6b21a8}
+.tb-markdown{background:#fce7f3;color:#9d174d}.tb-default{background:var(--bg3);color:var(--text2)}
+#dot{width:8px;height:8px;border-radius:50%;background:var(--error);transition:background .3s}
+#dot.on{background:var(--success)}
+#tokenBadge{font-size:10px;font-family:monospace;background:rgba(255,255,255,.08);
+  border:1px solid rgba(255,255,255,.15);padding:2px 8px;border-radius:3px;
+  color:rgba(255,255,255,.7);cursor:pointer;display:none}
+#tokenBadge:hover{background:rgba(255,255,255,.15)}
+#appBody{flex:1;display:flex;overflow:hidden}
+#editorPane{flex:0 0 50%;display:flex;flex-direction:column;border-right:1px solid var(--border);min-width:180px}
+#splitter{width:5px;background:var(--border);cursor:col-resize;flex-shrink:0;transition:background .15s}
+#splitter:hover,#splitter.active{background:var(--accent)}
+#previewPane{flex:1;display:flex;flex-direction:column;min-width:120px;background:var(--bg2)}
+#editorBar{height:32px;background:var(--bg);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:6px;padding:0 10px;flex-shrink:0}
+#editorLabel{font-size:11px;color:var(--text2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#saveStatus{font-size:10px;color:var(--text2)}
+#aceEditor{flex:1}
+#previewBar{height:32px;background:var(--bg);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:6px;padding:0 10px;flex-shrink:0;font-size:11px;color:var(--text2)}
+#pdot{width:7px;height:7px;border-radius:50%;background:var(--success);flex-shrink:0}
+#pdot.loading{background:var(--warn);animation:pulse 1s infinite}
+#pdot.err{background:var(--error)}
+#renderFrame{flex:1;border:none;background:#fff}
+#statusBar{height:22px;background:var(--navy);border-top:1px solid rgba(255,255,255,.06);
+  display:flex;align-items:center;gap:16px;padding:0 12px;font-size:10px;
+  color:rgba(255,255,255,.4);flex-shrink:0}
+.vbtn{padding:3px 10px;border-radius:4px;border:1px solid rgba(255,255,255,.15);
+  background:transparent;color:rgba(255,255,255,.6);font-size:11px;cursor:pointer;transition:all .15s}
+.vbtn:hover{background:rgba(255,255,255,.08);color:#fff}
+.vbtn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.toast{position:fixed;bottom:20px;right:20px;padding:10px 18px;border-radius:6px;color:#fff;
+  font-size:12px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,.2);
+  animation:ti .2s ease;pointer-events:none}
+@keyframes ti{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+</style>
+</head>
+<body>
+<div id="topBar">
+  <button class="vbtn active" onclick="setView('split',this)">Split</button>
+  <button class="vbtn" onclick="setView('code',this)">Code</button>
+  <button class="vbtn" onclick="setView('preview',this)">Rendu</button>
+  <div class="vdiv"></div>
+  <select id="artSelect" onchange="onArtSelect()"><option value="">— aucun —</option></select>
+  <span id="typeBadge" class="type-badge"></span>
+  <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+    <div id="dot"></div>
+    <span id="tokenBadge" onclick="copyToken()" title="Copier token MCP"></span>
+  </div>
+</div>
+<div id="appBody">
+  <div id="editorPane">
+    <div id="editorBar">
+      <span id="editorLabel">Canvas</span>
+      <span id="saveStatus"></span>
+    </div>
+    <div id="aceEditor"></div>
+  </div>
+  <div id="splitter"></div>
+  <div id="previewPane">
+    <div id="previewBar">
+      <div id="pdot"></div>
+      <span id="previewLabel" style="flex:1">Rendu</span>
+    </div>
+    <iframe id="renderFrame" sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups"></iframe>
+  </div>
+</div>
+<div id="statusBar">
+  <span id="sbDoc">—</span>
+  <span id="sbArts">0 artefacts</span>
+  <span id="sbTables">0 tables</span>
+  <span id="sbCanvas">vide</span>
+</div>
+<script>
+// ── GRIST BRIDGE SCRIPT (injecte dans les iframes srcdoc) ──────────────────
+const GRIST_BRIDGE_SCRIPT =
+  "(function(){" +
+  "var _id=0,_p=new Map(),_cbs=new Map();" +
+  "window.addEventListener('message',function(e){" +
+    "var m=e.data;if(!m)return;" +
+    "if(m.type==='grist-bridge-response'){var p=_p.get(m.callbackId);" +
+      "if(p){_p.delete(m.callbackId);if(m.error)p.reject(new Error(m.error));else p.resolve(m.result);}}" +
+    "if(m.type==='grist-bridge-callback'){var cb=_cbs.get(m.callbackId);if(cb)cb.apply(null,m.args||[]);}" +
+  "});" +
+  "function call(a,args){return new Promise(function(res,rej){" +
+    "var id=++_id;_p.set(id,{resolve:res,reject:rej});" +
+    "var t=window.parent===window?window:window.parent;" +
+    "t.postMessage({type:'grist-bridge',action:a,args:args,callbackId:id},'*');" +
+    "setTimeout(function(){if(_p.has(id)){_p.delete(id);rej(new Error('Bridge timeout'));}},30000);" +
+  "})}" +
+  "function reg(a,cb){var id=++_id;_cbs.set(id,cb);" +
+    "var t=window.parent===window?window:window.parent;" +
+    "t.postMessage({type:'grist-bridge',action:a,callbackId:id},'*');}" +
+  "window.grist={" +
+    "ready:function(){return Promise.resolve();}," +
+    "docApi:{fetchTable:function(n){return call('fetchTable',[n]);}," +
+      "applyUserActions:function(a){return call('applyUserActions',[a]);}," +
+      "listTables:function(){return call('listTables',[]);}," +
+      "getAccessToken:function(o){return call('getAccessToken',[o||{}]);}}," +
+    "onRecords:function(cb){reg('onRecords',cb);}," +
+    "onRecord:function(cb){reg('onRecord',cb);}," +
+    "setCursorPos:function(p){return call('setCursorPos',[p]);}," +
+    "setSelectedRows:function(ids){return call('setSelectedRows',[ids]);}" +
+  "};" +
+  "var t=window.parent===window?window:window.parent;" +
+  "t.postMessage({type:'grist-bridge-ready'},'*');" +
+  "})();";
+
+// ── APP RUNTIME SCRIPT (injecte dans les iframes) ──────────────────────────
+const APP_RUNTIME_SCRIPT =
+  "(function(){" +
+  "var _s=Object.assign({},window.__APP_STATE__||{});var _ls={};" +
+  "window.app={" +
+    "navigate:function(p){window.parent.postMessage({type:'app-navigate',path:p},'*');}," +
+    "emit:function(ev,d){window.parent.postMessage({type:'app-event',event:ev,data:d},'*');}," +
+    "on:function(ev,cb){if(!_ls[ev])_ls[ev]=[];_ls[ev].push(cb);}," +
+    "setState:function(p){Object.assign(_s,p);window.parent.postMessage({type:'app-setState',state:p},'*');}," +
+    "get state(){return _s;}," +
+    "notify:function(m,t){window.parent.postMessage({type:'app-notification',msg:m,notifType:t||'info'},'*');}" +
+  "};" +
+  "window.addEventListener('message',function(e){" +
+    "var m=e.data;if(!m)return;" +
+    "if(m.type==='app-event-relay'&&_ls[m.event])_ls[m.event].forEach(function(cb){cb(m.data);});" +
+    "if(m.type==='app-state-update')Object.assign(_s,m.state);" +
+  "});" +
+  "if(window.__APP_ROUTE__)window.parent.postMessage({type:'app-init',route:window.__APP_ROUTE__},'*');" +
+  "})();";
+
+// ── prepareWidgetHTML ───────────────────────────────────────────────────────
+function prepareWidgetHTML(html, ctx) {
+  ctx = ctx || {};
+  var bridgeTag = '<script>' + GRIST_BRIDGE_SCRIPT + '<' + '/script>';
+  html = html.replace(/<script[^>]*grist-plugin-api\.js[^>]*><\/script>/gi, bridgeTag);
+  var init = '<script>window.__APP_STATE__=' + JSON.stringify(ctx.state || {}) +
+    ';window.__APP_ROUTE__="' + (ctx.route || '/') + '";' + APP_RUNTIME_SCRIPT + '<' + '/script>';
+  return html.includes('</head>') ? html.replace('</head>', init + '</head>') : init + html;
+}
+
+// ── GristBridgeParent ───────────────────────────────────────────────────────
+window.addEventListener('message', async function(e) {
+  var m = e.data; if (!m) return;
+  if (m.type === 'grist-bridge') {
+    var action = m.action, args = m.args||[], cid = m.callbackId, src = e.source;
+    try {
+      var result = null;
+      if (action === 'fetchTable')          result = await grist.docApi.fetchTable(args[0]);
+      else if (action === 'applyUserActions') result = await grist.docApi.applyUserActions(args[0]);
+      else if (action === 'listTables')     result = await grist.docApi.listTables();
+      else if (action === 'getAccessToken') result = await grist.docApi.getAccessToken(args[0]||{});
+      else if (action === 'setCursorPos')   grist.setCursorPos(args[0]);
+      else if (action === 'setSelectedRows') grist.setSelectedRows(args[0]);
+      else if (action === 'onRecords') {
+        grist.onRecords(function(r,m){ src.postMessage({type:'grist-bridge-callback',callbackId:cid,args:[r,m]},'*'); });
+      } else if (action === 'onRecord') {
+        grist.onRecord(function(r,m){ src.postMessage({type:'grist-bridge-callback',callbackId:cid,args:[r,m]},'*'); });
+      }
+      src.postMessage({type:'grist-bridge-response',callbackId:cid,result:result},'*');
+    } catch(err) {
+      src.postMessage({type:'grist-bridge-response',callbackId:cid,error:err.message},'*');
+    }
+  }
+  if (m.type === 'app-navigate') showToast('Navigate: ' + m.path, 'info');
+  if (m.type === 'app-event') {
+    var f = document.getElementById('renderFrame');
+    if (f && f.contentWindow && f.contentWindow !== e.source)
+      f.contentWindow.postMessage({type:'app-event-relay',event:m.event,data:m.data},'*');
+  }
+  if (m.type === 'app-setState') Object.assign(_sharedState, m.state);
+  if (m.type === 'app-notification') showToast(m.msg, m.notifType||'info');
+});
+
+// ── STATE ───────────────────────────────────────────────────────────────────
+const BASE = window.location.origin;
+var _registered=false, _registering=false, _token=null, _mcpId=1, _es=null, _refreshTimer=null;
+var _artefacts=[], _artefactsMap={}, _currentArt=null, _sharedState={};
+var _editor;
+
+// ── ACE EDITOR ──────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', function() {
+  _editor = ace.edit('aceEditor');
+  _editor.setTheme('ace/theme/one_dark');
+  _editor.setOptions({fontSize:'13px',tabSize:2,useSoftTabs:true,wrap:false,showPrintMargin:false});
+  _editor.on('change', debounce(autoPreview, 1800));
+  _editor.on('change', debounce(autoSave, 3000));
+  initSplitter();
+});
+
+function setEditorMode(type) {
+  var modes = {html:'html',grist:'html',react:'html',component:'html',
+               markdown:'markdown',app:'json',python:'python',sql:'sql'};
+  _editor.session.setMode('ace/mode/' + (modes[type] || 'html'));
+}
+
+// ── GRIST INIT + REGISTER ───────────────────────────────────────────────────
+grist.ready({ requiredAccess: 'full' });
+grist.on('message', async function(msg) {
+  window._gristMsg = msg;
+  if (!_registered) await doRegister(msg);
+});
+
+async function doRegister(msg) {
+  if (_registering) return; _registering = true;
+  try {
+    var tk = await grist.docApi.getAccessToken({readOnly: false});
+    var parts = (tk.baseUrl||'').split('/api/docs/');
+    if (parts.length !== 2) { showToast('baseUrl invalide','error'); return; }
+    var siteUrl = parts[0], docId = parts[1].split('/')[0];
+    var docTitle = (msg && msg.docTitle) || document.title || docId;
+    var userId = (msg && msg.userId) || null;
+    if (!userId) {
+      try {
+        var b64 = tk.token.split('.')[1];
+        if (b64) {
+          var pl = JSON.parse(atob(b64.replace(/-/g,'+').replace(/_/g,'/')));
+          var raw = pl.userId != null ? pl.userId : (pl.sub != null ? pl.sub : null);
+          userId = raw !== null ? Number(raw)||null : null;
+        }
+      } catch(_) {}
+    }
+    var res = await fetch(BASE+'/register', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({accessToken:tk.token,docId,docTitle,siteUrl,userId})});
+    var data = await res.json();
+    if (data.error) { showToast('Erreur: '+data.error,'error'); return; }
+    _registered = true; _token = data.token;
+    document.getElementById('dot').className = 'on';
+    var badge = document.getElementById('tokenBadge');
+    badge.textContent = _token; badge.style.display = 'inline-block';
+    document.getElementById('sbDoc').textContent = docTitle;
+    listenSSE();
+    await loadArtefacts();
+    if (_refreshTimer) clearTimeout(_refreshTimer);
+    var delay = Math.max((tk.ttlMsecs||3600000)*0.8, 60000);
+    _refreshTimer = setTimeout(async function() {
+      _registered = false;
+      if (window._gristMsg) await doRegister(window._gristMsg);
+    }, delay);
+  } catch(e) { showToast('Connexion: '+e.message,'error'); }
+  finally { _registering = false; }
+}
+
+// ── SSE ─────────────────────────────────────────────────────────────────────
+function listenSSE() {
+  if (!_token) return;
+  if (_es) { _es.close(); _es = null; }
+  _es = new EventSource(BASE+'/mcp?token='+encodeURIComponent(_token));
+  _es.onmessage = function(e) {
+    try {
+      var ev = JSON.parse(e.data);
+      if (ev.token === _token) {
+        if (ev.type === 'canvas_updated' || ev.type === 'canvas_patched') {
+          loadCanvasIntoEditor().then(renderCurrent);
+          document.getElementById('sbCanvas').textContent = ev.sha || 'updated';
+        }
+        if (ev.type === 'screenshot_request') captureScreenshot();
+      }
+    } catch(_) {}
+  };
+  _es.onerror = function() {
+    if (_es) { _es.close(); _es = null; }
+    _registered = false;
+    setTimeout(async function() { if (window._gristMsg) await doRegister(window._gristMsg); }, 3000);
+  };
+}
+
+// ── MCP TOOL CALL ────────────────────────────────────────────────────────────
+async function tool(name, args) {
+  if (!_token) throw new Error('Widget non connecte');
+  var r = await fetch(BASE+'/mcp', {method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+_token},
+    body: JSON.stringify({jsonrpc:'2.0',id:_mcpId++,method:'tools/call',
+                          params:{name:name,arguments:args||{}}})});
+  var d = await r.json();
+  if (d.error) throw new Error(d.error.message);
+  return JSON.parse(d.result.content[0].text);
+}
+
+async function loadCanvasIntoEditor() {
+  try {
+    var code = await tool('canvas_read');
+    if (_editor && typeof code === 'string' && code !== _editor.getValue()) {
+      var pos = _editor.getCursorPosition();
+      _editor.setValue(code, -1);
+      _editor.moveCursorToPosition(pos);
+    }
+  } catch(e) { console.warn('canvas_read:', e.message); }
+}
+
+// ── ARTEFACTS ────────────────────────────────────────────────────────────────
+async function initArtefactsTable() {
+  showToast('Initialisation table Artefacts…', 'info');
+  await grist.docApi.applyUserActions([['AddTable', 'Artefacts', [
+    {id:'Nom',          type:'Text'},
+    {id:'Type',         type:'Choice', widgetOptions:JSON.stringify({choices:['grist','html','react','app','markdown','python','sql','component']})},
+    {id:'Code',         type:'Text'},
+    {id:'Description',  type:'Text'},
+    {id:'Dependencies', type:'Text'},
+    {id:'IsDoc',        type:'Bool'},
+    {id:'Icon',         type:'Text'},
+    {id:'Output',       type:'Text'},
+    {id:'UpdatedAt',    type:'DateTime:Europe/Paris'},
+  ]]]);
+  showToast('Table Artefacts créée ✓', 'success');
+}
+
+async function loadArtefacts() {
+  var data;
+  try {
+    data = await grist.docApi.fetchTable('Artefacts');
+  } catch(e) {
+    try {
+      await initArtefactsTable();
+      data = await grist.docApi.fetchTable('Artefacts');
+    } catch(e2) {
+      document.getElementById('sbArts').textContent = '0 artefacts';
+      return;
+    }
+  }
+  var n = (data.id||[]).length;
+  _artefacts = []; _artefactsMap = {};
+  for (var i=0; i<n; i++) {
+    var art = {
+      id: data.id[i], Nom: (data.Nom||[])[i]||'', Type: (data.Type||[])[i]||'html',
+      Code: (data.Code||[])[i]||'', Icon: (data.Icon||[])[i]||'📄',
+      Description: (data.Description||[])[i]||'', IsDoc: !!(data.IsDoc||[])[i],
+    };
+    _artefacts.push(art);
+    if (art.Nom) _artefactsMap[art.Nom] = art;
+  }
+  renderArtSelect();
+  document.getElementById('sbArts').textContent = _artefacts.length + ' artefacts';
+  try {
+    var s = await tool('grist_schema');
+    document.getElementById('sbTables').textContent = (s.tables||[]).length + ' tables';
+  } catch(_) {}
+  if (_artefacts.length > 0 && !_currentArt) {
+    document.getElementById('artSelect').value = _artefacts[0].Nom;
+    await onArtSelect();
+  }
+}
+
+function renderArtSelect() {
+  var sel = document.getElementById('artSelect');
+  var cur = sel.value;
+  sel.innerHTML = '<option value="">— aucun —</option>' +
+    _artefacts.map(function(a) {
+      return '<option value="'+a.Nom+'">'+(a.Icon||'')+' '+a.Nom+' ('+a.Type+')</option>';
+    }).join('');
+  if (cur) sel.value = cur;
+}
+
+async function onArtSelect() {
+  var nom = document.getElementById('artSelect').value;
+  if (!nom) { _currentArt = null; setEditorHeader(null); return; }
+  var art = _artefactsMap[nom];
+  if (!art) return;
+  _currentArt = art;
+  _editor.setValue(art.Code || '', -1);
+  setEditorMode(art.Type);
+  setEditorHeader(art);
+  try { await tool('canvas_write', {code: art.Code || ''}); } catch(_) {}
+  renderArt(art);
+}
+
+function setEditorHeader(art) {
+  var label = document.getElementById('editorLabel');
+  var badge = document.getElementById('typeBadge');
+  if (!art) { label.textContent = 'Canvas'; badge.style.display = 'none'; return; }
+  label.textContent = art.Nom;
+  badge.textContent = art.Type;
+  badge.className = 'type-badge tb-' + (art.Type || 'default');
+  badge.style.display = 'inline-block';
+}
+
+// ── RENDER ───────────────────────────────────────────────────────────────────
+function renderArt(art) {
+  if (!art) return;
+  var type = art.Type || 'html', code = art.Code || '';
+  var frame = document.getElementById('renderFrame');
+  var pdot = document.getElementById('pdot');
+  pdot.className = 'loading';
+  document.getElementById('previewLabel').textContent = art.Nom;
+  if (['html','grist','react','component'].includes(type)) {
+    frame.srcdoc = prepareWidgetHTML(code, {state: _sharedState, route: '/'});
+  } else if (type === 'markdown') {
+    frame.srcdoc = '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
+      '<style>body{font-family:system-ui,sans-serif;padding:24px;max-width:800px;margin:0 auto;line-height:1.6;color:#1e293b}' +
+      'h1,h2,h3{margin-top:1.5em}code{background:#f1f5f9;padding:2px 6px;border-radius:3px}' +
+      'pre{background:#282c34;color:#abb2bf;padding:16px;border-radius:6px;overflow-x:auto}</style>' +
+      '</head><body><div id="c"></div>' +
+      '<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"><' + '/script>' +
+      '<script>document.getElementById("c").innerHTML=marked.parse(' + JSON.stringify(code) + ');<' + '/script>' +
+      '</body></html>';
+  } else if (type === 'svg') {
+    frame.srcdoc = '<!DOCTYPE html><html><body style="margin:0;background:#f8fafc;display:flex;align-items:center;justify-content:center;min-height:100vh">' + code + '</body></html>';
+  } else if (type === 'app') {
+    try {
+      var manifest = JSON.parse(code);
+      var routes = (manifest.routes||[]).map(function(r) {
+        return '<div style="padding:8px 16px;border-bottom:1px solid #e2e8f0">' +
+          (r.icon||'') + '&nbsp;<strong>' + r.label + '</strong>' +
+          '<span style="color:#94a3b8;font-size:11px;margin-left:8px">' + r.path + ' → ' + r.artefact + '</span></div>';
+      }).join('');
+      frame.srcdoc = '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
+        '<script src="https://cdn.tailwindcss.com"><' + '/script></head>' +
+        '<body class="bg-gray-50 min-h-screen p-8"><div class="max-w-lg mx-auto bg-white rounded-xl shadow p-6">' +
+        '<div class="text-4xl mb-2">' + (manifest.icon||'🖥️') + '</div>' +
+        '<h1 class="text-xl font-bold mb-1">' + (manifest.name||'App') + '</h1>' +
+        '<p class="text-sm text-gray-500 mb-4">Manifeste · ' + (manifest.routes||[]).length + ' routes</p>' +
+        '<div class="border rounded-lg overflow-hidden mb-4">' + routes + '</div>' +
+        '<p class="text-xs text-gray-400">Tables: ' + (manifest.tables||[]).join(', ') + '</p>' +
+        '</div></body></html>';
+    } catch(e) {
+      frame.srcdoc = '<!DOCTYPE html><html><body style="padding:20px;color:#ef4444;font-family:monospace">JSON invalide: ' + e.message + '</body></html>';
+    }
+  } else {
+    var escaped = code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    frame.srcdoc = '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
+      '<style>body{margin:0;background:#282c34;color:#abb2bf;font-family:monospace;font-size:12px}pre{padding:16px;white-space:pre-wrap}</style>' +
+      '</head><body><pre>' + escaped + '</pre></body></html>';
+  }
+  frame.onload = function() { pdot.className = ''; };
+  frame.onerror = function() { pdot.className = 'err'; };
+}
+
+function renderCurrent() {
+  var code = _editor ? _editor.getValue() : '';
+  renderArt(Object.assign({}, _currentArt || {Type:'html',Nom:'Canvas'}, {Code:code}));
+}
+function autoPreview() { renderCurrent(); }
+
+// ── SAVE ─────────────────────────────────────────────────────────────────────
+async function saveArt() {
+  if (!_currentArt) return;
+  var code = _editor ? _editor.getValue() : '';
+  if (code === _currentArt.Code) return;
+  var ss = document.getElementById('saveStatus');
+  if (ss) ss.textContent = 'saving…';
+  try {
+    await tool('grist_upsert', {table_id:'Artefacts', records:[{
+      require: {Nom: _currentArt.Nom},
+      fields:  {Code: code, UpdatedAt: Math.floor(Date.now()/1000)}
+    }]});
+    _currentArt.Code = code;
+    _artefactsMap[_currentArt.Nom].Code = code;
+    if (ss) ss.textContent = 'saved ✓';
+    setTimeout(function(){ if (ss) ss.textContent = ''; }, 2000);
+  } catch(e) { if (ss) ss.textContent = 'err'; }
+}
+function autoSave() { saveArt(); }
+
+// ── SCREENSHOT ───────────────────────────────────────────────────────────────
+async function captureScreenshot() {
+  var frame = document.getElementById('renderFrame');
+  try {
+    var fdoc = frame.contentDocument || (frame.contentWindow && frame.contentWindow.document);
+    if (!fdoc || !fdoc.body) return;
+    if (!frame.contentWindow.html2canvas) {
+      await new Promise(function(res, rej) {
+        var s = fdoc.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
+        s.onload = res; s.onerror = rej;
+        fdoc.head.appendChild(s);
+      });
+    }
+    await new Promise(function(r){ setTimeout(r, 600); });
+    var msgId = 'sc-' + Date.now();
+    var image = await new Promise(function(res) {
+      var timer = setTimeout(function(){ window.removeEventListener('message',h); res(''); }, 10000);
+      function h(e) {
+        if (e.data && e.data.type === 'screenshot-result' && e.data.id === msgId) {
+          clearTimeout(timer); window.removeEventListener('message', h); res(e.data.image);
+        }
+      }
+      window.addEventListener('message', h);
+      var s = fdoc.createElement('script');
+      s.textContent = '(function(){html2canvas(document.body,{useCORS:true,allowTaint:true,logging:false})' +
+        '.then(function(c){parent.postMessage({type:"screenshot-result",id:"' + msgId + '",image:c.toDataURL("image/png")},"*")})' +
+        '.catch(function(){parent.postMessage({type:"screenshot-result",id:"' + msgId + '",image:""},"*")});})();';
+      fdoc.body.appendChild(s);
+    });
+    if (!image) return;
+    await fetch(BASE+'/screenshot', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({token:_token, image:image})});
+  } catch(e) { console.warn('screenshot:', e.message); }
+}
+
+// ── LAYOUT ───────────────────────────────────────────────────────────────────
+function setView(mode, btn) {
+  document.querySelectorAll('.vbtn').forEach(function(b){b.classList.remove('active');});
+  if (btn) btn.classList.add('active');
+  var ep = document.getElementById('editorPane');
+  var sp = document.getElementById('splitter');
+  var pp = document.getElementById('previewPane');
+  if (mode === 'code') {
+    ep.style.cssText='flex:1;display:flex;flex-direction:column;';
+    sp.style.display='none'; pp.style.display='none';
+  } else if (mode === 'preview') {
+    ep.style.display='none'; sp.style.display='none';
+    pp.style.cssText='flex:1;display:flex;flex-direction:column;';
+  } else {
+    ep.style.cssText='flex:0 0 50%;display:flex;flex-direction:column;min-width:180px';
+    sp.style.display='block';
+    pp.style.cssText='flex:1;display:flex;flex-direction:column;min-width:120px';
+  }
+  if (_editor) _editor.resize();
+}
+
+function initSplitter() {
+  var sp = document.getElementById('splitter');
+  var dragging=false, startX=0, startW=0;
+  sp.addEventListener('mousedown', function(e) {
+    dragging=true; startX=e.clientX;
+    startW=document.getElementById('editorPane').offsetWidth;
+    sp.classList.add('active');
+    document.body.style.cursor='col-resize';
+    document.body.style.userSelect='none';
+  });
+  document.addEventListener('mousemove', function(e) {
+    if (!dragging) return;
+    var total = document.getElementById('appBody').offsetWidth;
+    var newW = Math.max(150, Math.min(startW + e.clientX - startX, total-150));
+    document.getElementById('editorPane').style.flex = '0 0 ' + newW + 'px';
+    if (_editor) _editor.resize();
+  });
+  document.addEventListener('mouseup', function() {
+    if (!dragging) return;
+    dragging=false; sp.classList.remove('active');
+    document.body.style.cursor=''; document.body.style.userSelect='';
+  });
+}
+
+// ── UTILS ────────────────────────────────────────────────────────────────────
+function copyToken() {
+  if (!_token) return;
+  navigator.clipboard.writeText(_token);
+  showToast('Token copié','success');
+}
+
+function showToast(msg, type) {
+  var colors={info:'#3b82f6',success:'#10b981',error:'#ef4444',warn:'#f59e0b',warning:'#f59e0b'};
+  var t = document.createElement('div');
+  t.className = 'toast';
+  t.style.background = colors[type] || colors.info;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(function(){t.remove();}, 3000);
+}
+
+function debounce(fn, delay) {
+  var timer;
+  return function() { clearTimeout(timer); timer = setTimeout(fn, delay); };
+}
+</script>
+</body>
+</html>
