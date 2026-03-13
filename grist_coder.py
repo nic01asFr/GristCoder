@@ -1,5 +1,5 @@
 """
-GRIST CODER · MCP Server v5.9 · streamable HTTP spec 2025-03-26
+GRIST CODER · MCP Server v5.11 · streamable HTTP spec 2025-03-26
 ────────────────────────────────────────────────────────────────
 Document Grist = codebase du projet.
 Widget = split vertical Ace editor | iframe preview.
@@ -102,7 +102,10 @@ PRINCIPES D ORCHESTRATION
   - Chaque outil a un moment optimal : lire _next des reponses pour savoir quoi appeler apres
   - Plusieurs cards simultanees = richesse : progress (build) + ctx-plan + feedback subagent
   - Ne jamais bloquer sans feedback : toujours une card progress visible pendant les ops longues
-  - subagent_call retourne du texte -> canvas_context_update(card_id="X") pour l afficher
+  - subagent_call : si sampling dispo -> reponse directe {role, response, structured?}
+                    si sampling absent -> {fallback_mode:True, system_prompt, task, instruction}
+                    Dans les deux cas : lire la reponse et agir (auto-exec si fallback_mode=True)
+                    Afficher via canvas_context_update(card_id="X") apres traitement
   - plan_update() en debut + fin de chaque phase : maintient la coherence de la source de verite
 
 OUTILS (28)
@@ -144,6 +147,10 @@ REGLES CRITIQUES
   TOUJOURS grist_apply(["UpdateRecord",...]) pour toutes les tables meta
   canvas_read() AVANT canvas_patch() — old_str doit etre exact et unique
   WAF grist.numerique.gouv.fr : artefacts lourds -> canvas_write/patch -> Save widget
+  canvas_write cree automatiquement l artefact si inexistant (lookup Grist interne).
+    Le type est auto-detecte depuis le contenu si art_type absent.
+    Si art_nom absent : nouvel artefact Draft_{sha6} cree.
+    Apres canvas_write : widget refresh + switch sur le bon artefact + saveArt() browser.
 """.strip()
 
 # ── SESSION CTX ───────────────────────────────────────────────────────────────
@@ -166,6 +173,7 @@ class SessionCtx:
         self.current_art_type= None
         self.wizard_responses: deque = deque(maxlen=20)
         self._wizard_events: dict[str, asyncio.Event] = {}  # keyed by step/card id
+        self._async_wizard_responses: dict[str, dict] = {}  # card_id -> réponse (mode async)
         self.project_plan: dict = {}   # plan de projet persistant : need, tables, artefacts, pages, status
         self.current_context: str = "qualifying"   # qualifying|assessing|designing|building|verifying|done
         self._active_wizard_cards: dict[str, dict] = {}  # card_id -> step dict (persist on SSE reconnect)
@@ -277,6 +285,23 @@ def _aq(ctx):
     return {"auth": ctx.access_token} if ctx.access_token else {}
 
 def _base(ctx): return f"{ctx.site_url}/api/docs/{ctx.doc_id}"
+
+def _detect_type(code: str) -> str:
+    """Auto-detect artefact type from code content."""
+    import re as _re
+    s = (code or "").strip()
+    if _re.match(r'<svg[\s>]', s, _re.I):                                        return "svg"
+    if _re.match(r'<!DOCTYPE html|<html', s, _re.I):                             return "html"
+    if _re.match(r'(graph |sequenceDiagram|classDiagram|flowchart |erDiagram|gantt\n|pie |journey)', s, _re.I): return "mermaid"
+    if "React.createElement" in s or "useState" in s or "useEffect" in s:        return "react"
+    if _re.match(r'SELECT\s', s, _re.I):                                          return "sql"
+    # Python before markdown: check first 15 lines for Python-specific constructs
+    first = "\n".join(s.split("\n")[:15])
+    if _re.search(r'(^|\n)(import |from \w+ import|def |class |print\(|[a-z_]+ = )', "\n" + first): return "python"
+    if s.startswith("#!"):                                                         return "python"
+    if s.startswith("```") or _re.match(r"#{1,6} \w", s) or (s.startswith("---") and "\n" in s): return "markdown"
+    if "<" in s and ">" in s:                                                     return "html"
+    return "html"
 
 async def grist_get(ctx, path):
     async with httpx.AsyncClient(timeout=15) as c:
@@ -426,6 +451,8 @@ TOOLS = [
     {"name": "session_info",
      "description": (
          "Resume leger de la session courante (tables, artefacts IsDoc, canvas actif). "
+         "Retourne wizard_responses si des cards async ont recu une reponse utilisateur — "
+         "verifier apres avoir lance des canvas_wizard(async=true). "
          "Utiliser context/{token} pour le snapshot complet avant construction ou verification."
      ),
      "inputSchema": {"type": "object", "properties": {}},
@@ -439,18 +466,19 @@ TOOLS = [
 
     {"name": "canvas_write",
      "description": (
-         "Reecrit integralement le canvas (artefact selectionne dans le widget). "
-         "Preferer canvas_patch pour modifications ciblees sur code existant. "
-         "Apres canvas_write : canvas_screenshot pour valider le rendu. "
-         "Pour sauvegarder dans Grist : grist_upsert sur table Artefacts (ou bouton Save du widget si WAF). "
-         "WAF grist.numerique.gouv.fr : payloads lourds avec <script> -> canvas_write/patch + Save widget."
+         "Reecrit integralement le canvas. "
+         "Cree automatiquement l artefact dans Grist si art_nom est inconnu (lookup interne). "
+         "Type auto-detecte depuis le contenu si art_type absent — pas besoin de canvas_type apres. "
+         "Si art_nom absent : cree un artefact Draft_{sha6} par defaut. "
+         "Apres : canvas_screenshot pour valider. "
+         "WAF grist.numerique.gouv.fr : le Code est sauvegarde par le widget via browser (bypass WAF auto)."
      ),
      "inputSchema": {"type": "object",
                      "properties": {
                          "code":     {"type": "string"},
-                         "art_id":   {"type": "integer", "description": "Id Grist de l artefact (optionnel, renseigne automatiquement par le widget)"},
-                         "art_nom":  {"type": "string",  "description": "Nom de l artefact courant"},
-                         "art_type": {"type": "string",  "description": "Type de l artefact courant"}},
+                         "art_nom":  {"type": "string",  "description": "Nom de l artefact cible (cree si inexistant)"},
+                         "art_type": {"type": "string",  "description": "Type explicite (html|react|grist|markdown|mermaid|python|sql|svg|app). Auto-detecte si absent."},
+                         "art_id":   {"type": "integer", "description": "Id Grist (optionnel, renseigne par widget)"}},
                      "required": ["code"]}},
 
     {"name": "canvas_patch",
@@ -497,6 +525,11 @@ TOOLS = [
          "  Non-bloquant si pas d interaction ; bloquant sinon. "
          "Types bloquants (input|choice|form|confirm|preview+interaction) : attendent la reponse. "
          "Types non-bloquants (progress|info sans actions|preview sans interaction) : retournent immediatement. "
+         "MODE ASYNC : step.async=true -> retourne immediatement {status:'async'}. "
+         "  RESERVER a : travail LLM genuinement parallele pendant que l utilisateur remplit un long formulaire. "
+         "  NE PAS utiliser pour collect->traiter->step suivant : preferer le mode BLOQUANT qui enchaîne "
+         "  naturellement. Quand async : session_info() -> wizard_responses[card_id], puis canvas_wizard_close(card_id). "
+         "TIMEOUT+DEFAULT : step.default={...} -> si timeout, retourne les valeurs par defaut et continue. "
          "Apres chaque etape interactive : plan_update() pour persister les decisions. "
          "Lire docs/wizard avant premiere utilisation."
      ),
@@ -512,8 +545,14 @@ TOOLS = [
                                  "confirm: content (markdown), actions=[{id,label,style?}]. "
                                  "progress: steps=[{id,label,status (done|active|pending|error)}]. "
                                  "info: content (texte), actions=[{id,label,style?}] optionnel. "
-                                 "input: textarea libre. placeholder?, submit_label?, context (texte contextuel)?, "
-                                 "suggestions=[str] (chips de suggestions rapides). Retourne {values:{text}}. "
+                                 "input: textarea libre. placeholder?, submit_label?, context?, "
+                                 "suggestions=[str]. Retourne {values:{text}}. "
+                                 "data-import: fetch API externe + selection table + insert Grist DIRECT (sans LLM). "
+                                 "Bloquant — retourne {imported:N,table:str} apres que l utilisateur a clique Importer. "
+                                 "source={api:str, params:[{id,label,placeholder?}], static_params:{}}. "
+                                 "columns=[{key,label}] — colonnes affichees dans la preview. "
+                                 "target={table:str, mapping:{GristCol:'json.path[0]'}}. "
+                                 "Mapping supporte chemins imbriques ex: 'centre.coordinates[1]'. "
                                  "timeout: int (defaut 300s, types interactifs seulement)."
                              ),
                              "required": ["id", "type", "title"]
@@ -600,18 +639,23 @@ TOOLS = [
     # Subagent
     {"name": "subagent_call",
      "description": (
-         "Delegue a un agent specialise via sampling MCP (necessite client supportant sampling). "
+         "Delegue a un agent specialise. Si sampling disponible (Claude Desktop) : via sampling/createMessage. "
+         "Sinon (Claude Code, etc.) : retourne fallback_mode=True avec system_prompt + task pour auto-execution. "
+         "Dans les deux cas le LLM principal produit ou reçoit une reponse structuree du role specialise. "
          "data-architect : QUALIFICATION — analyse le besoin, propose tables + relations optimales. "
          "ui-designer    : CONCEPTION — genere le plan artefacts UI adapte a la categorie d app. "
          "page-architect : CONSTRUCTION — propose layout pages Grist optimal (grilles, widgets, liens, scenarios). "
          "data-analyst   : CONSTRUCTION — analyse donnees existantes, genere donnees exemple. "
          "integrator     : INTEGRATION — propose schema webhooks + services externes. "
+         "ux-navigator   : APRES WIZARD — analyse la reponse user + etat doc, propose le step wizard suivant "
+         "le plus pertinent + les ressources a lire. Injecte automatiquement l etat complet du doc (tables, artefacts, pages, wizard_responses). "
+         "Retourne {next_step, resources_a_lire, reasoning}. "
          "assistant      : tout contexte — reponse libre ou explications a l utilisateur. "
-         "Retourne la reponse textuelle : l utiliser pour informer plan_update ou canvas_wizard."
+         "APRES : toujours canvas_context_update(card_id='subagent-X') pour afficher la reponse a l utilisateur."
      ),
      "inputSchema": {"type": "object", "properties": {
          "role":       {"type": "string",
-                        "enum": ["data-architect","ui-designer","page-architect","data-analyst","integrator","assistant"],
+                        "enum": ["data-architect","ui-designer","page-architect","data-analyst","integrator","ux-navigator","assistant"],
                         "description": "Profil specialise de l agent"},
          "task":       {"type": "string", "description": "Instruction precise pour l agent"},
          "context":    {"type": "string", "description": "Contexte supplementaire (schema, code, etc.)"},
@@ -623,14 +667,15 @@ TOOLS = [
      "description": (
          "Cree la table Artefacts (9 colonnes) si absente. Idempotent. "
          "Appeler en debut de phase CONSTRUCTION si grist_schema ne montre pas la table Artefacts. "
-         "(Le widget l appelle automatiquement au chargement.)"
+         "(Le widget l appelle automatiquement au chargement.) "
+         "APRES : canvas_write(code, art_nom, art_type) pour creer le premier artefact."
      ),
      "inputSchema": {"type": "object", "properties": {}},
      "annotations": {"idempotentHint": True}},
 
     # Grist lecture
     {"name": "grist_schema",
-     "description": "Schema du document : tables et colonnes avec types, formules, refs.",
+     "description": "Schema du document : tables et colonnes avec types, formules, refs. APRES : lire docs/artefacts avant canvas_write, ou examples/{domain} si domaine identifie.",
      "inputSchema": {"type": "object",
                      "properties": {
                          "table_id": {"type": "string", "description": "Si fourni, colonnes de cette table uniquement"}}},
@@ -706,7 +751,7 @@ TOOLS = [
      "annotations": {"readOnlyHint": True}},
 
     {"name": "grist_section_configure",
-     "description": "Configure un widget custom existant : URL + artefact display mode + lien optionnel vers une section source. Evite de generer manuellement le JSON options/customView.",
+     "description": "Reconfigure un widget custom EXISTANT : change l artefact affiche ou le lien de section. INUTILE apres grist_view_create(artefact=...) — celui-ci configure deja tout. Cas d usage : changer l artefact sur une page deja creee, ou reconfigurer une section issue de grist_view_add_widget.",
      "inputSchema": {"type": "object",
                      "properties": {
                          "section_ref":      {"type": "integer", "description": "ID de la section custom a configurer (depuis grist_views_list)"},
@@ -727,10 +772,10 @@ TOOLS = [
 
     {"name": "grist_view_create",
      "description": (
-         "CONSTRUCTION PHASE 3 — cree une page Grist (grille + widget custom lies). "
-         "Pattern : table principal en grille gauche + artefact fiche en widget custom droit. "
-         "Avec artefact= : configure automatiquement le widget en display mode. "
-         "Apres creation : grist_view_add_widget si besoin d un 2e widget sur la meme page."
+         "CONSTRUCTION PHASE 3 — cree une page Grist complete (grille + widget custom lies). "
+         "Avec artefact= : URL, display mode, liaison grille<->widget et layout sont configures automatiquement. "
+         "NE PAS appeler grist_section_configure apres — tout est deja fait. "
+         "Apres : grist_view_add_widget si besoin d un 2e widget sur la meme page."
      ),
      "inputSchema": {"type": "object",
                      "properties": {
@@ -2017,7 +2062,29 @@ canvas_wizard({"id":"delivery","type":"info","title":"App prete",
 # Sans actions : non-bloquant, dismissable avec x
 # Avec actions : bloquant
 
-7. preview — interface live dans le canvas + interaction contextuelle
+7. data-import — fetch API externe + selection + insert Grist DIRECT (sans LLM dans la boucle)
+Principe : le widget fetche l API, affiche un tableau selectionnable, et insere les lignes choisies
+directement via grist.docApi.applyUserActions (BulkAddRecord). Le LLM recoit juste {imported:N}.
+IDEAL pour : donnees geo (communes, departements), SIRENE/entreprises, DVF, tout dataset externe volumineux.
+
+canvas_wizard({"id":"import-geo","type":"data-import","title":"Importer des communes",
+  "source": {
+    "api": "https://geo.api.gouv.fr/communes",
+    "params": [{"id":"codeDepartement","label":"Département"},{"id":"nom","label":"Nom"}],
+    "static_params": {"fields":"nom,code,codeDepartement,population,centre","limit":200}
+  },
+  "columns": [{"key":"nom","label":"Nom"},{"key":"code","label":"Code"},
+              {"key":"codeDepartement","label":"Dép."},{"key":"population","label":"Population"}],
+  "target": {
+    "table": "Communes",
+    "mapping": {"Nom":"nom","Code":"code","CodeDept":"codeDepartement",
+                "Population":"population","Lat":"centre.coordinates[1]","Lon":"centre.coordinates[0]"}
+  }
+})
+Reponse: {"step_id":"import-geo","type":"data-import","values":{"action":"import","imported":87,"table":"Communes"}}
+Note: target.table doit exister (creer avec grist_apply avant si besoin). Mapping supporte chemins imbriques (a.b[0]).
+
+7b. preview — interface live dans le canvas + interaction contextuelle
 Principe : l iframe EST l interface complete. Le composant gere tout en interne.
 L agent fournit le code HTML/React du composant -> il s execute dans l iframe -> l utilisateur
 interagit directement -> wizard.submit(values) retourne les donnees structurees a l agent.
@@ -3170,6 +3237,33 @@ async def _read_resource(uid_key, mcp_sid, uri):
                              "present": sorted(plan_pages & actual_pages),
                              "extra":   sorted(actual_pages - plan_pages)},
             }
+        # Suggestions basees sur l etat reel du doc
+        suggestions = []
+        arts = snapshot.get("artefacts", [])
+        pages = snapshot.get("pages", [])
+        tables = snapshot.get("tables", [])
+        art_names = {a["nom"].lower() for a in arts}
+        page_names = {p["name"].lower() for p in pages if p.get("name")}
+        has_dashboard = any("dashboard" in n for n in art_names | page_names)
+        has_pages = bool(pages)
+        has_artefacts = bool(arts)
+        non_empty_tables = [t for t in tables if t.lower() not in ("artefacts",)]
+        if not has_dashboard and non_empty_tables:
+            suggestions.append("no_dashboard: creer un artefact Dashboard (vue globale) — canvas_write + grist_view_create")
+        if not has_artefacts and non_empty_tables:
+            suggestions.append("no_artefacts: aucun artefact — artefact_init() puis canvas_write()")
+        if not has_pages and non_empty_tables:
+            suggestions.append("no_pages: aucune page Grist — grist_view_create() pour chaque table principale")
+        if non_empty_tables and has_artefacts and not has_pages:
+            suggestions.append("artefacts_sans_pages: artefacts crees mais pas de page Grist — grist_view_create()")
+        if snapshot.get("_delta", {}).get("artefacts", {}).get("missing"):
+            missing = snapshot["_delta"]["artefacts"]["missing"]
+            suggestions.append(f"plan_missing_artefacts: {missing} — canvas_write pour chacun")
+        if snapshot.get("_delta", {}).get("tables", {}).get("missing"):
+            missing = snapshot["_delta"]["tables"]["missing"]
+            suggestions.append(f"plan_missing_tables: {missing} — grist_apply([AddTable, ...])")
+        if suggestions:
+            snapshot["_suggestions"] = suggestions
         return {"uri": uri, "mimeType": "application/json",
                 "text": json.dumps(snapshot, ensure_ascii=False, indent=2)}
 
@@ -3252,7 +3346,8 @@ async def call_tool(uid_key, mcp_sid, name, args):
         if not ctx: return {"error": f"Token inconnu : {args['token']}"}
         _active_tokens[mcp_sid] = ctx.token
         ctx.touch()
-        return {"ok": True, "selected": ctx.meta()}
+        return {"ok": True, "selected": ctx.meta(),
+                "_next": "session_info pour snapshot complet, ou plan/{token} si reprise d un projet existant."}
 
     token = _active_tokens.get(mcp_sid)
     ctx   = registry.resolve(uid_key, token)
@@ -3280,6 +3375,13 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 info["hint"] = f"Lire grist-coder://context/{ctx.token} pour snapshot complet"
             except Exception:
                 info["artefacts_count"] = 0
+        # Réponses wizard async en attente
+        if ctx._async_wizard_responses:
+            info["wizard_responses"] = dict(ctx._async_wizard_responses)
+            info["_next"] = (
+                "wizard_responses disponibles — traiter les reponses, "
+                "puis canvas_wizard_close(card_id=...) pour fermer chaque card traitee."
+            )
         return info
 
     # ── Canvas
@@ -3287,19 +3389,54 @@ async def call_tool(uid_key, mcp_sid, name, args):
         return ctx.canvas or "# canvas vide\n"
 
     if name == "canvas_write":
-        ctx.canvas = args["code"]
-        if args.get("art_id"):  ctx.current_art_id   = int(args["art_id"])
-        if args.get("art_nom"): ctx.current_art_nom  = args["art_nom"]
-        if args.get("art_type"):ctx.current_art_type = args["art_type"]
-        sha = hashlib.sha1(ctx.canvas.encode()).hexdigest()[:8]
+        code     = args["code"]
+        sha      = hashlib.sha1(code.encode()).hexdigest()[:8]
+        art_nom  = args.get("art_nom") or ctx.current_art_nom or f"Draft_{sha}"
+        art_type = args.get("art_type") or _detect_type(code)
+        art_id   = int(args["art_id"]) if args.get("art_id") else ctx.current_art_id
+        is_new   = False
+
+        # Lookup or create artefact in Grist — use SQL POST (no URL-encoding issues)
+        explicit_type = bool(args.get("art_type"))  # true only if LLM/widget explicitly set it
+        if ctx.doc_id and ctx.site_url:
+            try:
+                sql_resp = await grist_post(ctx, "sql",
+                    {"sql": "SELECT id, Type FROM Artefacts WHERE Nom = ?", "args": [art_nom]})
+                recs = sql_resp.get("records", [])
+                if recs:
+                    art_id   = recs[0]["fields"]["id"]
+                    old_type = recs[0]["fields"].get("Type", "html")
+                    # Only patch type if caller explicitly provided it — never from auto-detect
+                    if explicit_type and old_type != art_type:
+                        await grist_patch(ctx, "tables/Artefacts/records",
+                                          {"records": [{"id": art_id, "fields": {"Type": art_type}}]})
+                    else:
+                        art_type = old_type  # keep existing type untouched
+                else:
+                    # New artefact: create with auto-detected or explicit type
+                    created = await grist_post(ctx, "tables/Artefacts/records",
+                                               {"records": [{"fields": {"Nom": art_nom, "Type": art_type, "Code": ""}}]})
+                    art_id  = created["records"][0]["id"]
+                    is_new  = True
+            except Exception as _e:
+                pass  # Grist unavailable — widget will handle save
+
+        ctx.canvas           = code
+        ctx.current_art_id   = art_id
+        ctx.current_art_nom  = art_nom
+        ctx.current_art_type = art_type
         ctx.history.appendleft({"ts": time.time(), "sha": sha, "op": "write"})
-        ev = {"type": "canvas_updated", "token": ctx.token, "sha": sha}
-        if ctx.current_art_nom: ev["art_nom"]  = ctx.current_art_nom
-        if ctx.current_art_id:  ev["art_id"]   = ctx.current_art_id
-        if ctx.current_art_type:ev["art_type"]  = ctx.current_art_type
+        ev = {"type": "canvas_updated", "token": ctx.token, "sha": sha,
+              "art_nom": art_nom, "art_type": art_type}
+        if art_id: ev["art_id"] = art_id
+        if is_new: ev["is_new"] = True
         _push(uid_key, ev)
         _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
-        return {"ok": True, "sha": sha}
+        _next = "canvas_screenshot pour valider le rendu."
+        if is_new:
+            _next = "canvas_screenshot pour valider, puis grist_view_create pour creer la page associee."
+        return {"ok": True, "sha": sha, "art_nom": art_nom, "art_type": art_type,
+                "art_id": art_id, "created": is_new, "_next": _next}
 
     if name == "canvas_patch":
         old, new = args["old_str"], args["new_str"]
@@ -3355,19 +3492,29 @@ async def call_tool(uid_key, mcp_sid, name, args):
     if name == "canvas_wizard":
         step = args.get("step", {})
         step_type = step.get("type", "info")
-        interactive = step_type in ("choice", "form", "confirm", "input", "preview") or (
+        interactive = step_type in ("choice", "form", "confirm", "input", "preview", "data-import") or (
             step_type == "info" and (
                 step.get("actions") or step.get("choices") or
                 step.get("fields") or step.get("input")
             )
         )
-        timeout = float(step.get("timeout", 300))
-        step_id = step.get("id") or uuid.uuid4().hex[:8]
+        is_async = bool(step.get("async"))
+        timeout  = float(step.get("timeout", 300))
+        default  = step.get("default")  # valeur par défaut si timeout
+        step_id  = step.get("id") or uuid.uuid4().hex[:8]
         ev = {"type": "wizard_step", "token": ctx.token, "step": step}
-        ctx._active_wizard_cards[step_id] = ev  # persist for SSE reconnect
+        ctx._active_wizard_cards[step_id] = {**ev, "_is_async": is_async}
         _push(uid_key, ev)
-        if not interactive:
-            return {"ok": True, "status": "displayed", "step_id": step_id}
+        # Mode non-bloquant : non-interactif OU async explicite
+        if not interactive or is_async:
+            result = {"ok": True, "status": "async" if is_async else "displayed", "step_id": step_id}
+            if is_async:
+                result["_next"] = (
+                    "Card affichee — LLM libre de continuer d autres appels. "
+                    "Appeler session_info pour lire wizard_responses quand l utilisateur repond."
+                )
+            return result
+        # Mode bloquant standard
         event = asyncio.Event()
         ctx._wizard_events[step_id] = event
         try:
@@ -3375,6 +3522,10 @@ async def call_tool(uid_key, mcp_sid, name, args):
             resp = ctx.wizard_responses[0] if ctx.wizard_responses else None
             return resp or {"status": "no_response", "step_id": step_id}
         except asyncio.TimeoutError:
+            if default is not None:
+                return {"status": "timeout_default", "step_id": step_id,
+                        "values": default, "source": "default",
+                        "hint": "Timeout — valeur par defaut appliquee, continuer."}
             return {"status": "timeout", "step_id": step_id,
                     "hint": "L utilisateur n a pas repondu dans le delai imparti."}
         finally:
@@ -3385,8 +3536,10 @@ async def call_tool(uid_key, mcp_sid, name, args):
         card_id = args.get("card_id")
         if card_id:
             ctx._active_wizard_cards.pop(card_id, None)
+            ctx._async_wizard_responses.pop(card_id, None)
         else:
             ctx._active_wizard_cards.clear()
+            ctx._async_wizard_responses.clear()
         _push(uid_key, {"type": "wizard_close", "token": ctx.token,
                         **({"card_id": card_id} if card_id else {})})
         return {"ok": True}
@@ -3554,54 +3707,117 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 "Tu es un assistant IA expert en developpement d applications Grist. "
                 "Tu reponds de maniere concise et actionnable."
             ),
+            "ux-navigator": (
+                "Tu es un compositeur d experience utilisateur (UX Navigator) pour applications Grist. "
+                "Tu analyses la situation courante du document et la reponse utilisateur recente "
+                "pour proposer le step wizard suivant le plus pertinent.\n\n"
+                "WIZARD STEP TYPES DISPONIBLES :\n"
+                "- input       : collecte texte libre (suggestions=chips rapides)\n"
+                "- choice      : selection parmi options visuelles (choices=[{id,icon,label,desc}])\n"
+                "- form        : formulaire structure (fields=[{id,type,label,required,options}])\n"
+                "- confirm     : validation markdown + boutons (content, actions=[{id,label,style}])\n"
+                "- progress    : liste avancement non-bloquante\n"
+                "- data-import : fetch API externe + apercu + import Grist direct\n"
+                "- preview     : iframe live du code + actions contextuelles\n\n"
+                "RESSOURCES COMPOSANTS DISPONIBLES (a recommander selon le contexte) :\n"
+                "- grist-coder://docs/services-geo  : Leaflet, BAN API geocoding, OSM — cartes interactives\n"
+                "- grist-coder://docs/services-data : SIRENE, DVF, data.gouv — import donnees publiques\n"
+                "- grist-coder://docs/services-ai   : patterns IA (sync, webhook async, bridge, subagent)\n"
+                "- grist-coder://docs/artefacts     : templates HTML/React/Grist, composants standard\n"
+                "- grist-coder://docs/wizard        : reference step types + exemples complets\n"
+                "- grist-coder://playbook/kanban    : layout kanban drag-drop\n"
+                "- grist-coder://playbook/calendar  : FullCalendar CDN\n"
+                "- grist-coder://examples/{domain}  : patterns metier (crm/rh/stock/projets/immobilier/restaurant/formation/association)\n\n"
+                "LOGIQUE DE CHOIX :\n"
+                "- Colonnes adresse/lat/lng detectees -> proposer vue carte (docs/services-geo)\n"
+                "- Donnees a importer depuis API externe -> data-import + docs/services-data\n"
+                "- Tables sans artefacts -> choice entre types de vues (dashboard/fiche/liste)\n"
+                "- Artefacts sans pages -> confirm creation de page\n"
+                "- Besoin metier identifie -> orienter vers examples/{domain} ou playbook adapte\n"
+                "- Reponse utilisateur ouvre une nouvelle piste -> enchaîner avec le step logique suivant\n\n"
+                "FORMAT DE REPONSE JSON STRICT :\n"
+                '{"next_step": {<step canvas_wizard complet, pret a passer directement>}, '
+                '"resources_a_lire": ["grist-coder://..."], '
+                '"reasoning": "pourquoi ce choix en 1-2 phrases"}'
+            ),
         }
         system = ROLE_PROMPTS.get(role, ROLE_PROMPTS["assistant"])
         if ctx.doc_title:
             system += f"\n\nDocument courant : {ctx.doc_title}"
+        # ux-navigator : injection automatique de l etat complet du doc
+        if role == "ux-navigator":
+            nav_state = {
+                "tables":           list(ctx.project_plan.get("tables", [])) or "(non charge)",
+                "artefacts":        [a.get("nom") for a in (ctx.project_plan.get("artefacts") or [])],
+                "pages":            list(ctx.project_plan.get("pages", [])) or "(non charge)",
+                "plan_status":      ctx.project_plan.get("status", "qualifying"),
+                "wizard_responses": dict(ctx._async_wizard_responses) if ctx._async_wizard_responses else {},
+                "active_cards":     list(ctx._active_wizard_cards.keys()),
+            }
+            system += f"\n\nETAT ACTUEL DU DOCUMENT :\n{json.dumps(nav_state, ensure_ascii=False, indent=2)}"
         if context:
-            system += f"\n\nContexte fourni :\n{context}"
+            system += f"\n\nContexte supplementaire :\n{context}"
         msgs = [{"role": "user", "content": {"type": "text", "text": task}}]
-        try:
-            text = await _do_sample(uid_key, msgs, system, max_tok)
-            result = {"role": role, "response": text}
-            # Essayer de parser le JSON structuré pour data-architect et ui-designer
-            if role in ("data-architect", "ui-designer", "page-architect"):
-                try:
-                    m = re.search(r'\{[\s\S]*\}', text)
-                    if m:
-                        result["structured"] = json.loads(m.group(0))
-                except Exception:
-                    pass
-            return result
-        except Exception as e:
-            return {"error": str(e),
-                    "hint": "Verifier que le client MCP supporte sampling (Claude Desktop OK)"}
+        caps = _client_capabilities.get(uid_key, {})
+        sampling_ok = "sampling" in caps and uid_key in _mcp_client_sids
+        if sampling_ok:
+            try:
+                text = await _do_sample(uid_key, msgs, system, max_tok)
+                result = {"role": role, "response": text}
+                if role in ("data-architect", "ui-designer", "page-architect", "ux-navigator"):
+                    try:
+                        m = re.search(r'\{[\s\S]*\}', text)
+                        if m:
+                            result["structured"] = json.loads(m.group(0))
+                    except Exception:
+                        pass
+                return result
+            except Exception as e:
+                pass  # Fallback si sampling échoue en cours de route
+        # ── Fallback : pas de sampling → retourner contexte pour auto-exécution par le LLM
+        return {
+            "fallback_mode": True,
+            "role": role,
+            "system_prompt": system,
+            "task": task,
+            "instruction": (
+                f"Sampling non disponible sur ce client MCP. "
+                f"Executer la tache ci-dessous directement en adoptant le role '{role}'. "
+                f"Utiliser system_prompt comme contexte et retourner la reponse structuree attendue."
+            )
+        }
 
     # ── Artefact
     if name == "artefact_init":
+        _next_init = "canvas_write(code, art_nom, art_type) pour creer le premier artefact."
         try:
             tables_data = await grist_get(ctx, "tables")
             if "Artefacts" in [t["id"] for t in tables_data.get("tables", [])]:
                 cols = await grist_get(ctx, "tables/Artefacts/columns")
                 return {"ok": True, "status": "exists",
-                        "columns": [c["id"] for c in cols.get("columns", [])]}
+                        "columns": [c["id"] for c in cols.get("columns", [])],
+                        "_next": _next_init}
         except Exception:
             pass
         try:
             await grist_post(ctx, "tables", ARTEFACTS_TABLE_DEF)
             return {"ok": True, "status": "created",
                     "columns": ["Nom","Type","Code","Description","Dependencies",
-                                "IsDoc","Output","UpdatedAt"]}
+                                "IsDoc","Output","UpdatedAt"],
+                    "_next": _next_init}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
     # ── Grist lecture
     if name == "grist_schema":
         table_id = args.get("table_id")
+        _next_schema = "lire docs/artefacts avant canvas_write, ou examples/{domain} si domaine identifie."
         if table_id:
             cols = await grist_get(ctx, f"tables/{table_id}/columns")
-            return {"table_id": table_id, "columns": cols.get("columns", [])}
-        return await grist_get(ctx, "tables")
+            return {"table_id": table_id, "columns": cols.get("columns", []), "_next": _next_schema}
+        result = await grist_get(ctx, "tables")
+        result["_next"] = _next_schema
+        return result
 
     if name == "grist_records":
         lim  = int(args.get("limit", 50))
@@ -3883,11 +4099,14 @@ async def call_tool(uid_key, mcp_sid, name, args):
             await grist_apply(ctx, [["UpdateRecord", "_grist_Views", view_ref, update_fields]])
 
             _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
+            _next = ("grist_view_add_widget si besoin d un 2e widget. "
+                     "PAS de grist_section_configure — page entierement configuree.")
             return {
                 "ok": True, "view_ref": view_ref, "page_name": page_name,
                 "grid_section": grid_ref, "widget_section": custom_ref,
                 "widget_url": widget_url,
-                "hint": f"Page '{page_name}' creee : grille {table_id} + widget custom lies."
+                "hint": f"Page '{page_name}' creee : grille {table_id} + widget custom lies.",
+                "_next": _next,
             }
         except Exception as e:
             return {"error": str(e)}
@@ -3902,7 +4121,7 @@ async def dispatch(uid_key, mcp_sid, method, params):
         _client_capabilities[uid_key] = params.get("capabilities", {})
         return {
             "protocolVersion": MCP_VER,
-            "serverInfo": {"name": "grist-coder", "version": "5.9.1",
+            "serverInfo": {"name": "grist-coder", "version": "5.11",
                            "instructions": SERVER_INSTRUCTIONS},
             "capabilities": {
                 "tools":     {"listChanged": True},
@@ -3921,7 +4140,11 @@ async def dispatch(uid_key, mcp_sid, method, params):
         if name == "canvas_screenshot" and isinstance(result, dict) and result.get("ok") and "_image_b64" in result:
             return {"content": [
                 {"type": "image", "data": result["_image_b64"], "mimeType": result.get("mime","image/jpeg")},
-                {"type": "text",  "text": "Capture du panneau de rendu."},
+                {"type": "text",  "text": json.dumps({
+                    "ok": True,
+                    "_next": "Rendu correct → grist_view_create pour publier la page si pas encore fait. "
+                             "Correction necessaire → canvas_patch pour ajuster."
+                }, ensure_ascii=False)},
             ]}
         return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}]}
     if method == "prompts/list":
@@ -4135,6 +4358,62 @@ async def register(request: Request):
             "gristUserId": grist_user_id}
 
 
+@app.post("/run")
+async def run_python(request: Request):
+    """Execute Python canvas with Grist tables injected as context."""
+    body    = await request.json()
+    token   = body.get("token", "")
+    record  = body.get("record") or {}
+
+    uid_key = _token_to_uid.get(token)
+    if not uid_key:
+        return JSONResponse({"error": "token inconnu"}, status_code=401)
+    ctx = registry.resolve(uid_key, token)
+    if not ctx:
+        return JSONResponse({"error": "session introuvable"}, status_code=404)
+
+    code = ctx.canvas
+    if not code or not code.strip():
+        return JSONResponse({"stdout": "", "stderr": "Canvas vide — sélectionner un artefact Python.",
+                             "returncode": 1, "elapsed": 0})
+
+    # Fetch all tables fresh from Grist (max 2000 rows each)
+    tables: dict = {}
+    try:
+        schema_resp = await grist_get(ctx, "tables")
+        for tbl in (schema_resp.get("tables") or []):
+            tid = tbl["id"]
+            try:
+                data = await grist_get(ctx, f"tables/{tid}/records?limit=2000")
+                tables[tid] = [{"id": r["id"], **r["fields"]} for r in data.get("records", [])]
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    import io, contextlib, time as _time
+    out_buf = io.StringIO()
+    err_buf = io.StringIO()
+    ns = {"tables": tables, "record": record, "rec": record}
+    t0 = _time.time()
+    rc = 0
+    try:
+        with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
+            exec(compile(code, "<artefact>", "exec"), ns)
+    except Exception:
+        import traceback as _tb
+        err_buf.write(_tb.format_exc())
+        rc = 1
+
+    elapsed = round(_time.time() - t0, 3)
+    return JSONResponse({
+        "stdout":     out_buf.getvalue()[-6000:],
+        "stderr":     err_buf.getvalue()[-2000:],
+        "returncode": rc,
+        "elapsed":    elapsed,
+    })
+
+
 @app.post("/screenshot")
 async def screenshot(request: Request):
     data  = await request.json()
@@ -4157,12 +4436,16 @@ async def wizard_response(token: str, request: Request):
     if not ctx:
         return JSONResponse({"error": "session introuvable"}, status_code=404)
     body = await request.json()
-    ctx.wizard_responses.appendleft({**body, "ts": time.time()})
+    response = {**body, "ts": time.time()}
+    ctx.wizard_responses.appendleft(response)
     step_id = body.get("step_id")
+    # Si card async : stocker la réponse par card_id pour polling via session_info
+    if step_id and ctx._active_wizard_cards.get(step_id, {}).get("_is_async"):
+        ctx._async_wizard_responses[step_id] = response
+    # Débloquer l'event si existant (mode bloquant)
     if step_id and step_id in ctx._wizard_events:
         ctx._wizard_events[step_id].set()
     else:
-        # Fallback : déclencher tous les events en attente
         for ev in list(ctx._wizard_events.values()):
             ev.set()
     return {"ok": True}
@@ -4217,7 +4500,7 @@ async def webhook_receive(doc_id: str, request: Request):
 @app.get("/health")
 async def health():
     total = sum(len(u["sessions"]) for u in registry._users.values())
-    return {"ok": True, "version": "5.9.1", "mcp_protocol": MCP_VER,
+    return {"ok": True, "version": "5.11", "mcp_protocol": MCP_VER,
             "sessions": total, "users": len(registry._users),
             "tools": len(TOOLS), "prompts": len(PROMPTS),
             "resources": {"static": len(STATIC_RESOURCES), "templates": len(RESOURCE_TEMPLATES)},

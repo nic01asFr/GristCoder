@@ -57,7 +57,7 @@ body{display:flex;flex-direction:column}
 #editorPane.open{min-width:160px}
 #aceEditor{flex:1;min-height:0;overflow:hidden}
 #renderFrame{flex:1;border:none;background:#fff;min-height:0}
-#editorEmpty{position:absolute;inset:0;display:flex;flex-direction:column;
+#editorEmpty{position:absolute;inset:0;z-index:10;display:flex;flex-direction:column;
   align-items:center;justify-content:center;gap:10px;pointer-events:none;
   color:rgba(255,255,255,.25);font-size:.78rem;letter-spacing:.02em}
 #editorPane{position:relative}
@@ -197,6 +197,19 @@ textarea.wz-input{resize:vertical;min-height:62px;line-height:1.5}
   background:#f8fafc;position:relative;flex-shrink:0}
 .wz-preview-wrap iframe{width:100%;display:block;border:none;background:#f8fafc}
 .wz-preview-sep{height:1px;background:var(--border);margin:10px 0 6px}
+/* ── WIZARD DATA-IMPORT ───────────────────────────────────────────────── */
+.wz-di-bar{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.wz-di-bar .wz-input{flex:1;min-width:80px}
+.wz-di-status{font-size:.74rem;color:var(--text2);min-height:16px}
+.wz-di-status.ok{color:#10b981}.wz-di-status.err{color:var(--error)}
+.wz-di-prog{height:3px;background:var(--border);border-radius:2px;overflow:hidden;margin:2px 0}
+.wz-di-prog-fill{height:100%;background:#3e5de7;border-radius:2px;transition:width .3s}
+.wz-di-table-wrap{overflow:auto;max-height:220px;border:1px solid var(--border);border-radius:7px}
+.wz-di-table{width:100%;border-collapse:collapse;font-size:.74rem}
+.wz-di-table thead th{position:sticky;top:0;background:#f1f5f9;padding:6px 8px;text-align:left;font-weight:600;color:var(--text2);white-space:nowrap}
+.wz-di-table tbody td{padding:5px 8px;border-top:1px solid #f1f5f9;white-space:nowrap;max-width:140px;overflow:hidden;text-overflow:ellipsis}
+.wz-di-table tbody tr:hover{background:#f8fafc}
+.wz-di-tag{display:inline-block;background:#eff6ff;color:#3e5de7;border-radius:4px;padding:1px 5px;font-size:.68rem}
 </style>
 </head>
 <body>
@@ -304,6 +317,18 @@ const APP_RUNTIME_SCRIPT =
     "var m=e.data;if(!m)return;" +
     "if(m.type==='app-event-relay'&&_ls[m.event])_ls[m.event].forEach(function(cb){cb(m.data);});" +
     "if(m.type==='app-state-update')Object.assign(_s,m.state);" +
+    "if(m.type==='take-screenshot'){" +
+      "function _doCapture(){" +
+        "window.html2canvas(document.body||document.documentElement," +
+          "{useCORS:true,allowTaint:true,logging:false,backgroundColor:'#ffffff',scale:0.75})" +
+        ".then(function(c){window.parent.postMessage({type:'screenshot-data',dataUrl:c.toDataURL('image/jpeg',0.82)},'*');})" +
+        ".catch(function(err){window.parent.postMessage({type:'screenshot-data',dataUrl:null,error:err.message},'*');});}" +
+      "if(window.html2canvas){_doCapture();}else{" +
+        "var _s2=document.createElement('script');" +
+        "_s2.src='https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';" +
+        "_s2.onload=_doCapture;" +
+        "_s2.onerror=function(){window.parent.postMessage({type:'screenshot-data',dataUrl:null,error:'h2c load fail'},'*');};" +
+        "document.head.appendChild(_s2);}}" +
   "});" +
   "if(window.__APP_ROUTE__)window.parent.postMessage({type:'app-init',route:window.__APP_ROUTE__},'*');" +
   "})();";
@@ -391,6 +416,30 @@ window.addEventListener('message', async function(e) {
   if (m.type === 'app-setState') Object.assign(_sharedState, m.state);
   if (m.type === 'app-notification') showToast(m.msg, m.notifType||'info');
 
+  // ── Python console ─────────────────────────────────────────────────────────
+  if (m.type === 'python-run' && _currentArt && _currentArt.Type === 'python') {
+    var pyFrame = document.getElementById('renderFrame');
+    if (!pyFrame || !pyFrame.contentWindow) return;
+    try {
+      var pyRes = await fetch(BASE + '/run', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({token: _token, record: _sharedState.record || {}})
+      });
+      var pyData = await pyRes.json();
+      pyFrame.contentWindow.postMessage({type: 'python-result', data: pyData}, '*');
+    } catch(pyErr) {
+      pyFrame.contentWindow.postMessage({type: 'python-result', data: {
+        stdout: '', stderr: String(pyErr), returncode: 1, elapsed: 0}}, '*');
+    }
+  }
+  if (m.type === 'python-ready') {
+    var pyFrame2 = document.getElementById('renderFrame');
+    if (pyFrame2 && pyFrame2.contentWindow && _gristSchema) {
+      pyFrame2.contentWindow.postMessage({type: 'python-schema', tables: _gristSchema.tables || []}, '*');
+    }
+  }
+
   // ── Wizard preview bridge ──────────────────────────────────────────────────
   if (m.type === 'wizard-fill' && m.fields) {
     // Pré-remplit les champs du formulaire dans la card preview
@@ -422,8 +471,11 @@ const _DISPLAY_ART = new URLSearchParams(window.location.search).get('a') || '';
 const _DISPLAY_MODE = !!_DISPLAY_ART;
 var _registered=false, _registering=false, _token=null, _mcpId=1, _es=null, _refreshTimer=null;
 var _artefacts=[], _artefactsMap={}, _currentArt=null, _sharedState={};
+var _artefactsLoaded=false; // true après loadArtefacts() — bloque onRecord auto-select avant init
 var _editor, _panelOpen=false;
 var _bridgeOnRecordRelays=[], _lastRecords=null;
+var _lastServerCanvas=null; // Guard: prevent autoSave on server-pushed setValue
+var _gristSchema=null;      // Last schema from grist_schema tool (tables + columns)
 
 // ── ACE EDITOR ──────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', function() {
@@ -438,6 +490,7 @@ window.addEventListener('DOMContentLoaded', function() {
   _editor.on('change', debounce(autoPreview, 1800));
   _editor.on('change', debounce(autoSave, 3000));
   initSplitter();
+  renderEmpty(); // état initial avant que Grist charge les artefacts
 });
 
 function detectType(code) {
@@ -483,7 +536,8 @@ grist.onRecord(function(record) {
     if (_currentArt) renderArt(_currentArt);
   } else {
     // IDE mode: auto-select artefact if linked to Artefacts table (record has Nom field)
-    if (record.Nom && _artefactsMap[record.Nom]) {
+    // Ignorer avant loadArtefacts() pour démarrer sur la page vide
+    if (_artefactsLoaded && record.Nom && _artefactsMap[record.Nom]) {
       var sel = document.getElementById('artSelect');
       if (sel && sel.value !== record.Nom) { sel.value = record.Nom; onArtSelect(); }
     }
@@ -562,18 +616,36 @@ function listenSSE() {
       var ev = JSON.parse(e.data);
       if (ev.token === _token) {
         if (ev.type === 'canvas_updated' || ev.type === 'canvas_patched') {
-          // Focus temporaire : si l'event cible un artefact précis, auto-switch sans friction
-          if (ev.art_nom && _artefactsMap[ev.art_nom]) {
-            var sel = document.getElementById('artSelect');
-            if (sel && sel.value !== ev.art_nom) {
-              sel.value = ev.art_nom;
-              _currentArt = _artefactsMap[ev.art_nom];
-              if (ev.art_type) setEditorMode(ev.art_type);
+          var _evData = ev; // capture for async closure
+          var _applyCanvasUpdate = function() {
+            var _evArtKnown = !_evData.art_nom;
+            if (_evData.art_nom && _artefactsMap[_evData.art_nom]) {
+              _evArtKnown = true;
+              var sel = document.getElementById('artSelect');
+              if (sel && sel.value !== _evData.art_nom) {
+                sel.value = _evData.art_nom;
+                _currentArt = _artefactsMap[_evData.art_nom];
+              }
+              // Sync type on existing artefact if server changed it
+              if (_evData.art_type && _currentArt) {
+                _currentArt.Type = _evData.art_type;
+                _artefactsMap[_evData.art_nom].Type = _evData.art_type;
+                setEditorMode(_evData.art_type);
+              }
               if (!_panelOpen) openPanel();
             }
+            loadCanvasIntoEditor().then(function(){
+              if (_evArtKnown) saveArt();
+              return renderCurrent();
+            });
+            document.getElementById('sbCanvas').textContent = _evData.sha || 'updated';
+          };
+          // If artefact was just created server-side (is_new) or unknown: refresh list first
+          if (_evData.art_nom && (!_artefactsMap[_evData.art_nom] || _evData.is_new)) {
+            loadArtefacts().then(_applyCanvasUpdate);
+          } else {
+            _applyCanvasUpdate();
           }
-          loadCanvasIntoEditor().then(function(){ saveArt(); return renderCurrent(); });
-          document.getElementById('sbCanvas').textContent = ev.sha || 'updated';
         }
         if (ev.type === 'type_changed' && _currentArt) {
           _currentArt.Type = ev.artType;
@@ -613,6 +685,7 @@ async function loadCanvasIntoEditor() {
   try {
     var code = await tool('canvas_read');
     if (_editor && typeof code === 'string' && code !== _editor.getValue()) {
+      _lastServerCanvas = code; // Mark as server-origin — autoSave will skip this content
       var pos = _editor.getCursorPosition();
       _editor.setValue(code, -1);
       _editor.moveCursorToPosition(pos);
@@ -664,15 +737,17 @@ async function loadArtefacts() {
   document.getElementById('sbArts').textContent = _artefacts.length + ' artefacts';
   try {
     var s = await tool('grist_schema');
+    _gristSchema = s;
     document.getElementById('sbTables').textContent = (s.tables||[]).length + ' tables';
   } catch(_) {}
-  var autoNom = _DISPLAY_MODE ? _DISPLAY_ART : (_artefacts.length > 0 ? _artefacts[0].Nom : '');
+  var autoNom = _DISPLAY_MODE ? _DISPLAY_ART : '';
   if (autoNom && !_currentArt) {
     document.getElementById('artSelect').value = autoNom;
-    await onArtSelect();
+    await onArtSelect(true); // initOnly — pas de canvas_write au démarrage
   } else if (!_currentArt) {
     renderEmpty();
   }
+  _artefactsLoaded = true; // onRecord auto-select actif seulement après init
 }
 
 var TYPE_ICONS = {html:'🌐',react:'⚛',grist:'🧮',app:'📦',markdown:'📄',mermaid:'🔀',python:'🐍',sql:'⚡',svg:'📐'};
@@ -688,9 +763,16 @@ function renderArtSelect() {
   if (cur) sel.value = cur;
 }
 
-async function onArtSelect() {
+// initOnly=true : affiche l'artefact sans syncer le canvas serveur (chargement initial)
+async function onArtSelect(initOnly) {
   var nom = document.getElementById('artSelect').value;
-  if (!nom) { _currentArt = null; setEditorHeader(null); renderEmpty(); return; }
+  if (!nom) {
+    _currentArt = null;
+    setEditorHeader(null);
+    if (_editor) { _lastServerCanvas = ''; _editor.setValue('', -1); }
+    renderEmpty();
+    return;
+  }
   var art = _artefactsMap[nom];
   if (!art) return;
   _currentArt = art;
@@ -699,7 +781,11 @@ async function onArtSelect() {
     _editor.setValue(art.Code || '', -1);
     setEditorMode(art.Type);
     setEditorHeader(art);
-    try { await tool('canvas_write', {code: art.Code || '', art_id: art.id, art_nom: art.Nom, art_type: art.Type}); } catch(_) {}
+    // Ne pas syncer le canvas serveur lors de l'auto-sélection initiale :
+    // le canvas est un espace de travail explicite, pas le reflet du dropdown
+    if (!initOnly) {
+      try { await tool('canvas_write', {code: art.Code || '', art_id: art.id, art_nom: art.Nom, art_type: art.Type}); } catch(_) {}
+    }
   }
   renderArt(art);
 }
@@ -759,7 +845,7 @@ function renderArt(art) {
   var frame = document.getElementById('renderFrame');
   // Bridge Grist disponible pour tous les types iframe (interaction tables/données)
   var ctx = {state: _sharedState, route: '/'};
-  if (['html','grist','react'].includes(type)) {
+  if (['html','grist','react','app'].includes(type)) {
     frame.srcdoc = prepareWidgetHTML(code, ctx);
   } else if (type === 'markdown') {
     var mdHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
@@ -799,18 +885,104 @@ function renderArt(art) {
   } else if (type === 'svg') {
     var svgHtml = '<!DOCTYPE html><html><body style="margin:0;background:#f8fafc;display:flex;align-items:center;justify-content:center;min-height:100vh">' + code + '</body></html>';
     frame.srcdoc = prepareWidgetHTML(svgHtml, ctx);
+  } else if (type === 'python') {
+    // Python console — output + tables sidebar via postMessage with parent
+    var pyHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
+      '<style>' +
+      '*{box-sizing:border-box;margin:0;padding:0}' +
+      'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#fff;height:100vh;display:flex;flex-direction:column;font-size:13px}' +
+      '#sb{height:36px;border-bottom:1px solid #e8edf3;display:flex;align-items:center;padding:0 12px;gap:8px;flex-shrink:0}' +
+      '.dot{width:7px;height:7px;border-radius:50%;background:#ddd;flex-shrink:0}' +
+      '.dot.ok{background:#34a853}.dot.err{background:#d32f2f}.dot.run{background:#fbbc04;animation:bl .7s infinite}' +
+      '@keyframes bl{0%,100%{opacity:1}50%{opacity:.2}}' +
+      '#st{font-size:11px;color:#bbb;flex:1}' +
+      '#runBtn{background:#3e5de7;color:#fff;border:none;border-radius:5px;padding:4px 14px;font-size:12px;font-weight:600;cursor:pointer}' +
+      '#runBtn:hover{background:#2845c1}#runBtn:disabled{background:#b0bcf5;cursor:default}' +
+      '#main{flex:1;display:flex;overflow:hidden}' +
+      '#out{flex:1;overflow-y:auto;padding:10px 14px;font-family:"Fira Code",Consolas,monospace;font-size:12.5px;line-height:1.8;border-right:1px solid #eef0f8}' +
+      'span.om{color:#ccc;font-size:11px;display:block;margin-bottom:4px}' +
+      'span.os{color:#333;display:block;white-space:pre-wrap;word-break:break-all}' +
+      'span.oh{color:#3e5de7;font-weight:600;display:block;white-space:pre-wrap}' +
+      'span.oe{color:#d32f2f;display:block;white-space:pre-wrap}' +
+      'span.ox{color:#ccc;font-style:italic;font-size:12px;padding:24px 0;text-align:center;display:block}' +
+      '#sch{width:155px;flex-shrink:0;overflow-y:auto;background:#fafbfd;display:flex;flex-direction:column}' +
+      '#scLbl{padding:6px 10px 4px;font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:#3e5de7;flex-shrink:0;border-bottom:1px solid #eef0f8}' +
+      '#scList{flex:1;overflow-y:auto;padding:3px 0}' +
+      '.th{padding:4px 10px;font-size:12px;font-weight:600;color:#444;cursor:pointer;display:flex;align-items:center;gap:5px;border-radius:4px;margin:1px 3px;user-select:none}' +
+      '.th:hover{color:#3e5de7;background:#eef2ff}.th.open{color:#3e5de7}' +
+      '.ch{color:#bbb;font-size:10px;transition:transform .12s;display:inline-block}' +
+      '.th.open .ch{transform:rotate(90deg);color:#3e5de7}' +
+      '.tc{display:none;padding:2px 10px 4px 22px}' +
+      '.th.open+.tc{display:block}' +
+      '.cr{font-size:10.5px;font-family:monospace;line-height:1.85;display:flex;gap:4px}' +
+      '.ct{color:#bbb;min-width:22px;font-size:9.5px}.cn{color:#3e5de7}' +
+      '#hint{padding:6px 10px;font-size:10px;color:#bbb;border-top:1px solid #eef0f8;line-height:1.5;flex-shrink:0}' +
+      '#hint code{font-family:monospace;color:#3e5de7}' +
+      '</style></head><body>' +
+      '<div id="sb">' +
+      '<div class="dot" id="dot"></div>' +
+      '<span id="st">Prêt — cliquer Exécuter</span>' +
+      '<button id="runBtn" onclick="doRun()">▶ Exécuter</button>' +
+      '</div>' +
+      '<div id="main">' +
+      '<div id="out"><span class="ox">Cliquer Exécuter pour lancer le script avec les données Grist.</span></div>' +
+      '<div id="sch">' +
+      '<div id="scLbl">Tables</div>' +
+      '<div id="scList"></div>' +
+      '<div id="hint"><code>tables["Nom"]</code><br>liste de dicts</div>' +
+      '</div>' +
+      '</div>' +
+      '<scri' + 'pt>' +
+      'function doRun(){' +
+      'document.getElementById("runBtn").disabled=true;document.getElementById("runBtn").textContent="⏳";' +
+      'document.getElementById("dot").className="dot run";document.getElementById("st").textContent="Exécution…";' +
+      'window.parent.postMessage({type:"python-run"},"*");}' +
+      'document.getElementById("scList").addEventListener("click",function(e){' +
+      'var h=e.target.closest(".th");if(h)h.classList.toggle("open");});' +
+      'window.addEventListener("message",function(e){' +
+      'if(!e.data)return;' +
+      'if(e.data.type==="python-result"){' +
+      'var d=e.data.data,btn=document.getElementById("runBtn"),dot=document.getElementById("dot"),st=document.getElementById("st");' +
+      'btn.disabled=false;btn.textContent="▶ Exécuter";' +
+      'dot.className="dot "+(d.returncode===0?"ok":"err");' +
+      'st.textContent=(d.returncode===0?"✓ ":"✗ ")+d.elapsed+"s · exit "+d.returncode;' +
+      'var out=document.getElementById("out"),h="<span class=\'om\'>$ python artefact</span>";' +
+      'if(d.stdout)d.stdout.split("\\n").forEach(function(l){' +
+      'var esc=l.replace(/&/g,"&amp;").replace(/</g,"&lt;");' +
+      'h+="<span class=\'"+ (/^[=\\-#*>]{2,}/.test(l)?"oh":"os") +"\'>" +esc+ "</span>";});' +
+      'if(d.stderr)d.stderr.split("\\n").filter(Boolean).forEach(function(l){' +
+      'h+="<span class=\'oe\'>"+l.replace(/&/g,"&amp;").replace(/</g,"&lt;")+"</span>";});' +
+      'if(!d.stdout&&!d.stderr)h+="<span class=\'ox\'>(pas de sortie)</span>";' +
+      'out.innerHTML=h;out.scrollTop=out.scrollHeight;}' +
+      'if(e.data.type==="python-schema"){' +
+      'var tbls=e.data.tables||[],list=document.getElementById("scList");' +
+      'list.innerHTML=tbls.map(function(t){' +
+      'var cols=(t.columns||[]).map(function(c){return "<div class=\'cr\'><span class=\'ct\'>"+c.type.slice(0,4)+"</span><span class=\'cn\'>"+c.id+"</span></div>";}).join("");' +
+      'return "<div class=\'th\'><span class=\'ch\'>›</span>📋 "+t.id+"</div><div class=\'tc\'>"+cols+"</div>";}).join("");}' +
+      '});' +
+      'window.parent.postMessage({type:"python-ready"},"*");' +
+      '<' + '/script></body></html>';
+    frame.srcdoc = prepareWidgetHTML(pyHtml, ctx);
   } else {
-    // python, sql, app → raw code, pas d'interaction iframe
+    // sql → code avec syntax highlighting via highlight.js
     var escaped = code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    frame.srcdoc = '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
-      '<style>body{margin:0;background:#1e293b;color:#e2e8f0;font-family:monospace;font-size:12px}pre{padding:16px;white-space:pre-wrap;line-height:1.6}</style>' +
-      '</head><body><pre>' + escaped + '</pre></body></html>';
+    var codeHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
+      '<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11/styles/github.min.css">' +
+      '<style>body{margin:0;background:#ffffff;font-family:monospace;font-size:12.5px;line-height:1.65}' +
+      'pre{margin:0;padding:18px 20px;overflow-x:auto}.hljs{background:transparent}</style>' +
+      '</head><body>' +
+      '<pre><code class="language-sql">' + escaped + '</code></pre>' +
+      '<script src="https://cdn.jsdelivr.net/npm/highlight.js@11/highlight.min.js"><' + '/script>' +
+      '<script>hljs.highlightAll();<' + '/script>' +
+      '</body></html>';
+    frame.srcdoc = prepareWidgetHTML(codeHtml, ctx);
   }
 }
 
 function renderCurrent() {
+  if (!_currentArt) return;
   var code = _editor ? _editor.getValue() : '';
-  renderArt(Object.assign({}, _currentArt || {Type:'html',Nom:'Canvas'}, {Code:code}));
+  renderArt(Object.assign({}, _currentArt, {Code:code}));
 }
 function autoPreview() { renderCurrent(); }
 
@@ -832,32 +1004,36 @@ async function saveArt() {
     setTimeout(function(){ if (ss) ss.textContent = ''; }, 2000);
   } catch(e) { if (ss) ss.textContent = 'err'; console.error('saveArt:', e); }
 }
-function autoSave() { saveArt(); }
+function autoSave() {
+  // Skip if content was just set from server (not a user edit)
+  var cur = _editor ? _editor.getValue() : '';
+  if (_lastServerCanvas !== null && cur === _lastServerCanvas) return;
+  saveArt();
+}
 
 // ── SCREENSHOT ───────────────────────────────────────────────────────────────
 async function captureScreenshot() {
   try {
-    // Load html2canvas into the widget (not the iframe) to capture previewPane + overlay
-    if (!window.html2canvas) {
-      await new Promise(function(res, rej) {
-        var s = document.createElement('script');
-        s.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
-        s.onload = res; s.onerror = rej;
-        document.head.appendChild(s);
-      });
-    }
-    await new Promise(function(r){ setTimeout(r, 300); });
-    var pane = document.getElementById('previewPane');
-    if (!pane) return;
-    var canvas = await window.html2canvas(pane, {
-      useCORS: true, allowTaint: true, logging: false,
-      backgroundColor: '#f8fafc', scale: 0.75
+    var frame = document.getElementById('renderFrame');
+    if (!frame || !frame.contentWindow) return;
+    // L'iframe se capture elle-même (html2canvas dans l'iframe = accès DOM complet)
+    var dataUrl = await new Promise(function(resolve, reject) {
+      var timer = setTimeout(function() { reject(new Error('timeout 12s')); }, 12000);
+      function handler(e) {
+        if (e.data && e.data.type === 'screenshot-data') {
+          window.removeEventListener('message', handler);
+          clearTimeout(timer);
+          if (e.data.dataUrl) resolve(e.data.dataUrl);
+          else reject(new Error(e.data.error || 'capture failed'));
+        }
+      }
+      window.addEventListener('message', handler);
+      frame.contentWindow.postMessage({type: 'take-screenshot'}, '*');
     });
-    var image = canvas.toDataURL('image/jpeg', 0.82);
-    if (!image) return;
+    if (!dataUrl) return;
     await fetch(BASE+'/screenshot', {method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({token:_token, image:image})});
+      body: JSON.stringify({token:_token, image:dataUrl})});
   } catch(e) { console.warn('screenshot:', e.message); }
 }
 
@@ -944,6 +1120,7 @@ function debounce(fn, delay) {
 // ── WIZARD MULTI-CARD ─────────────────────────────────────────────────────────
 var _wzCards = {};       // id → {step, token}
 var _wzOrder = [];       // card display order (non-blocking first, blocking last)
+var _wzDiState = {};     // data-import state: cid → {step, data:[], selected:Set}
 
 function _ctxToCard(panel, token) {
   if (!panel || (!panel.title && !(panel.sections||[]).length)) {
@@ -1076,7 +1253,8 @@ function _wzRenderBody(step, cid) {
     case 'progress':return _wzProgress(step);
     case 'info':    return _wzInfo(step, c);
     case 'input':   return _wzInput(step, c);
-    case 'preview': return _wzPreview(step, c);
+    case 'preview':      return _wzPreview(step, c);
+    case 'data-import':  return _wzDataImport(step, c);
     default:        return '<pre style="font-size:.72rem;color:var(--text2)">'+_wzEsc(JSON.stringify(step,null,2))+'</pre>';
   }
 }
@@ -1297,6 +1475,156 @@ function wzSubmitInput(event, cid) {
 function wzSuggestion(cid, text) {
   var ta = document.getElementById('wz-req-ta-'+cid);
   if (ta) { ta.value = text; ta.focus(); }
+}
+
+// ── DATA-IMPORT ────────────────────────────────────────────────────────────
+function _wzGet(obj, path) {
+  // Accès chemin imbriqué : "centre.coordinates[1]" → obj.centre.coordinates[1]
+  return (path||'').split(/[\.\[\]]+/).filter(Boolean).reduce(function(o,k){
+    return o != null ? o[isNaN(k)?k:+k] : undefined;
+  }, obj);
+}
+
+function _wzDataImport(step, cid) {
+  _wzDiState[cid] = {step: step, data: [], selected: new Set()};
+  var src = step.source || {};
+  var html = '<div class="wz-di-bar">';
+  (src.params||[]).forEach(function(p) {
+    html += '<input class="wz-input" id="wzdi-p-'+cid+'-'+_wzEsc(p.id)+'" placeholder="'+_wzEsc(p.label||p.id)+'" onkeydown="if(event.key===\'Enter\')wzDiSearch(\''+cid+'\')" style="flex:1;min-width:80px">';
+  });
+  html += '<button class="wz-btn primary" onclick="wzDiSearch(\''+cid+'\')">Rechercher</button></div>';
+  html += '<div class="wz-di-prog" id="wzdi-prog-'+cid+'" style="display:none"><div class="wz-di-prog-fill" id="wzdi-progf-'+cid+'" style="width:0%"></div></div>';
+  html += '<div class="wz-di-status" id="wzdi-st-'+cid+'"></div>';
+  html += '<div class="wz-di-table-wrap" id="wzdi-tw-'+cid+'" style="display:none">';
+  html += '<table class="wz-di-table"><thead><tr>';
+  html += '<th><input type="checkbox" id="wzdi-chkall-'+cid+'" onchange="wzDiToggleAll(\''+cid+'\',this.checked)"></th>';
+  (step.columns||[]).forEach(function(col) {
+    html += '<th>'+_wzEsc(col.label||col.key)+'</th>';
+  });
+  html += '</tr></thead><tbody id="wzdi-tb-'+cid+'"></tbody></table></div>';
+  html += '<div class="wz-actions" id="wzdi-act-'+cid+'" style="display:none">';
+  html += '<button class="wz-btn secondary" onclick="wzDiToggleAll(\''+cid+'\',true)">Tout</button>';
+  html += '<button class="wz-btn secondary" onclick="wzDiToggleAll(\''+cid+'\',false)">Aucun</button>';
+  html += '<button class="wz-btn primary" id="wzdi-ibtn-'+cid+'" onclick="wzDiImport(\''+cid+'\')">Importer <span id="wzdi-cnt-'+cid+'">0</span> lignes</button>';
+  html += '</div>';
+  return html;
+}
+
+async function wzDiSearch(cid) {
+  var st = _wzDiState[cid]; if (!st) return;
+  var src = st.step.source || {};
+  var params = {};
+  (src.params||[]).forEach(function(p) {
+    var el = document.getElementById('wzdi-p-'+cid+'-'+p.id);
+    if (el && el.value.trim()) params[p.id] = el.value.trim();
+  });
+  Object.assign(params, src.static_params||{});
+  // Substitution de template {param_id} dans l'URL
+  var url = src.api;
+  var usedInTemplate = {};
+  Object.keys(params).forEach(function(k) {
+    if (url.indexOf('{'+k+'}') >= 0) { url = url.replace('{'+k+'}', encodeURIComponent(params[k])); usedInTemplate[k] = true; }
+  });
+  // Paramètres non utilisés dans le template → ajoutés en query string
+  var extra = {};
+  Object.keys(params).forEach(function(k) { if (!usedInTemplate[k]) extra[k] = params[k]; });
+  if (Object.keys(extra).length > 0) url += (url.indexOf('?') >= 0 ? '&' : '?') + new URLSearchParams(extra).toString();
+  _wzDiSetStatus(cid, 'Recherche…', '');
+  _wzDiSetProg(cid, 10, true);
+  try {
+    var r = await fetch(url);
+    if (!r.ok) throw new Error('HTTP '+r.status);
+    var items = await r.json();
+    _wzDiSetProg(cid, 80);
+    st.data = items;
+    st.selected = new Set(items.map(function(_,i){return i;}));
+    _wzDiRenderTable(cid);
+    _wzDiSetProg(cid, 100);
+    _wzDiSetStatus(cid, items.length+' résultat(s)', 'ok');
+    setTimeout(function(){_wzDiSetProg(cid,0,false);}, 600);
+  } catch(e) {
+    _wzDiSetStatus(cid, 'Erreur : '+e.message, 'err');
+    _wzDiSetProg(cid, 0, false);
+  }
+}
+
+function _wzDiRenderTable(cid) {
+  var st = _wzDiState[cid]; if (!st) return;
+  var tbody = document.getElementById('wzdi-tb-'+cid);
+  if (!tbody) return;
+  var cols = st.step.columns||[];
+  tbody.innerHTML = '';
+  st.data.forEach(function(row, i) {
+    var tr = document.createElement('tr');
+    var cells = '<td><input type="checkbox" '+(st.selected.has(i)?'checked':'')+' onchange="wzDiToggleRow(\''+cid+'\','+i+',this.checked)"></td>';
+    cols.forEach(function(col) {
+      var val = _wzGet(row, col.key);
+      if (val == null) val = '—';
+      var disp = (typeof val === 'number') ? val.toLocaleString('fr-FR') : String(val);
+      cells += '<td title="'+_wzEsc(disp)+'">'+_wzEsc(disp)+'</td>';
+    });
+    tr.innerHTML = cells;
+    tbody.appendChild(tr);
+  });
+  document.getElementById('wzdi-tw-'+cid).style.display = '';
+  document.getElementById('wzdi-act-'+cid).style.display = '';
+  _wzDiUpdateCount(cid);
+}
+
+function wzDiToggleRow(cid, i, checked) {
+  var st = _wzDiState[cid]; if (!st) return;
+  if (checked) st.selected.add(i); else st.selected.delete(i);
+  _wzDiUpdateCount(cid);
+}
+function wzDiToggleAll(cid, checked) {
+  var st = _wzDiState[cid]; if (!st) return;
+  st.selected = checked ? new Set(st.data.map(function(_,i){return i;})) : new Set();
+  var tbody = document.getElementById('wzdi-tb-'+cid);
+  if (tbody) tbody.querySelectorAll('input[type=checkbox]').forEach(function(cb){cb.checked=checked;});
+  var ca = document.getElementById('wzdi-chkall-'+cid); if (ca) ca.checked = checked;
+  _wzDiUpdateCount(cid);
+}
+function _wzDiUpdateCount(cid) {
+  var st = _wzDiState[cid]; if (!st) return;
+  var n = st.selected.size;
+  var cnt = document.getElementById('wzdi-cnt-'+cid); if (cnt) cnt.textContent = n;
+  var btn = document.getElementById('wzdi-ibtn-'+cid); if (btn) btn.disabled = n===0;
+}
+
+async function wzDiImport(cid) {
+  var st = _wzDiState[cid]; if (!st) return;
+  var tgt = st.step.target||{}; var tbl = tgt.table; var map = tgt.mapping||{};
+  var rows = Array.from(st.selected).map(function(i){return st.data[i];});
+  if (!rows.length || !tbl) return;
+  _wzDiSetStatus(cid, 'Import de '+rows.length+' lignes…', '');
+  _wzDiSetProg(cid, 20, true);
+  document.getElementById('wzdi-ibtn-'+cid).disabled = true;
+  try {
+    var fields = {};
+    Object.keys(map).forEach(function(col) {
+      fields[col] = rows.map(function(r){ return _wzGet(r, map[col]) ?? null; });
+    });
+    await grist.docApi.applyUserActions([['BulkAddRecord', tbl, rows.map(function(){return null;}), fields]]);
+    _wzDiSetProg(cid, 100);
+    _wzDiSetStatus(cid, '✓ '+rows.length+' lignes importées dans '+tbl, 'ok');
+    setTimeout(function(){_wzDiSetProg(cid,0,false);}, 800);
+    wzPost(cid, 'import', {imported: rows.length, table: tbl});
+  } catch(e) {
+    _wzDiSetStatus(cid, 'Erreur import : '+e.message, 'err');
+    _wzDiSetProg(cid, 0, false);
+    document.getElementById('wzdi-ibtn-'+cid).disabled = false;
+  }
+}
+
+function _wzDiSetStatus(cid, msg, cls) {
+  var el = document.getElementById('wzdi-st-'+cid);
+  if (el) { el.textContent = msg; el.className = 'wz-di-status'+(cls?' '+cls:''); }
+}
+function _wzDiSetProg(cid, pct, show) {
+  var bar = document.getElementById('wzdi-prog-'+cid);
+  var fill = document.getElementById('wzdi-progf-'+cid);
+  if (bar && show !== undefined) bar.style.display = show ? '' : 'none';
+  if (fill) fill.style.width = pct+'%';
 }
 
 function _wzPreview(step, cid) {
