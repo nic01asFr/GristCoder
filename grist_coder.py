@@ -104,8 +104,8 @@ PRINCIPES D ORCHESTRATION
   - Ne jamais bloquer sans feedback : toujours une card progress visible pendant les ops longues
   - subagent_call : si sampling dispo -> reponse directe {role, response, structured?}
                     si sampling absent -> {fallback_mode:True, system_prompt, task, instruction}
-                    Dans les deux cas : lire la reponse et agir (auto-exec si fallback_mode=True)
-                    Afficher via canvas_context_update(card_id="X") apres traitement
+                    fallback : suspendre role orchestrateur -> executer en role specialise -> reprendre orchestrateur
+                    Dans les deux cas : traiter le resultat puis canvas_context_update(card_id="X")
   - plan_update() en debut + fin de chaque phase : maintient la coherence de la source de verite
 
 BOUCLE POST-WIZARD (apres chaque reponse interactive bloquante)
@@ -3855,9 +3855,12 @@ async def call_tool(uid_key, mcp_sid, name, args):
             "system_prompt": system,
             "task": task,
             "instruction": (
-                f"Sampling non disponible sur ce client MCP. "
-                f"Executer la tache ci-dessous directement en adoptant le role '{role}'. "
-                f"Utiliser system_prompt comme contexte et retourner la reponse structuree attendue."
+                f"ENTRER EN MODE ROLE : '{role}'. "
+                f"1. Suspendre le role d orchestrateur. "
+                f"2. Adopter integralement l identite, les competences et la perspective decrites dans system_prompt. "
+                f"3. Executer la tache (champ 'task') en restant strictement dans ce role — pas de meta-commentaire, pas de reference au LLM principal. "
+                f"4. Produire la reponse structuree attendue pour ce role (JSON si structured=True, texte sinon). "
+                f"5. FIN DU ROLE '{role}' — reprendre le role d orchestrateur et continuer le flux principal avec le resultat obtenu."
             )
         }
 

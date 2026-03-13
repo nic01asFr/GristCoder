@@ -135,22 +135,23 @@ textarea.wz-input{resize:vertical;min-height:62px;line-height:1.5}
 .wz-toggle input:checked+.wz-toggle-track::after{left:17px}
 .wz-toggle-label{font-size:.8rem;color:var(--text)}
 /* confirm */
-.wz-confirm-content{background:#fff;border-radius:8px;padding:12px 14px;
-  font-size:.8rem;color:var(--text);line-height:1.65;overflow-y:auto;max-height:240px;
-  border:1px solid var(--border)}
+.wz-confirm-content{font-size:.8rem;color:var(--text);line-height:1.65;overflow-y:auto;max-height:280px}
 .wz-confirm-content h1{font-size:1em;font-weight:700;margin:.7em 0 .25em}
 .wz-confirm-content h2{font-size:.9em;font-weight:700;margin:.6em 0 .2em}
 .wz-confirm-content h3{font-size:.82em;font-weight:700;margin:.5em 0 .15em}
 .wz-confirm-content li{margin:.15em 0 .15em 1.1em;list-style:disc}
 .wz-confirm-content p{margin:.3em 0}
-.wz-confirm-content code{background:#e2e8f0;padding:1px 5px;border-radius:4px;font-size:.88em}
+.wz-confirm-content code{background:#e2e8f0;padding:1px 5px;border-radius:4px;font-size:.88em;font-family:monospace}
 .wz-confirm-content strong{font-weight:700}
+.wz-md-table{border-collapse:collapse;width:100%;margin:.5em 0;font-size:.78rem}
+.wz-md-table th{background:#f1f5f9;font-weight:600;text-align:left;padding:5px 10px;border:1px solid #e2e8f0}
+.wz-md-table td{padding:4px 10px;border:1px solid #e2e8f0;color:var(--text)}
 /* progress */
 .wz-progress{display:flex;flex-direction:column;gap:7px;width:100%}
 .wz-progress-step{display:flex;align-items:center;gap:10px;font-size:.8rem;
   padding:8px 12px;border-radius:7px}
 .wz-progress-step.done{color:#10b981;background:rgba(16,185,129,.07)}
-.wz-progress-step.active{color:#3e5de7;background:#eef2ff;font-weight:600}
+.wz-progress-step.active{color:#3e5de7;background:#eef2ff;font-weight:600;border-left:3px solid #3e5de7;padding-left:9px}
 .wz-progress-step.error{color:var(--error);background:rgba(239,68,68,.05)}
 .wz-progress-step.pending{color:var(--text2)}
 .wz-step-icon{width:18px;flex-shrink:0;text-align:center;font-weight:700;font-size:.82rem}
@@ -181,7 +182,7 @@ textarea.wz-input{resize:vertical;min-height:62px;line-height:1.5}
 .ctx-section.success{background:rgba(16,185,129,.07);color:#059669}
 .ctx-section.info{background:rgba(59,130,246,.07);color:#2563eb}
 .ctx-section.warn{background:rgba(245,158,11,.08);color:#d97706}
-.ctx-section.code{background:#1e293b;color:#e2e8f0;font-family:monospace;font-size:.7rem}
+.ctx-section.code{background:#f1f5f9;color:#334155;font-family:monospace;font-size:.72rem;border:1px solid #e2e8f0}
 .ctx-label{font-weight:600;flex-shrink:0;white-space:nowrap;color:inherit;opacity:.8}
 .ctx-content{color:inherit;line-height:1.45}
 /* ── WIZARD INPUT ─────────────────────────────────────────────────────── */
@@ -1241,18 +1242,41 @@ function _wzEsc(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 function _wzMd(md) {
-  // Mini-markdown pour confirm content : headings, listes, gras, code
-  var lines = _wzEsc(md).split('\n'), html = [];
-  lines.forEach(function(l) {
+  // Mini-markdown : headings, listes, tables, gras, italic, code
+  var lines = _wzEsc(md).split('\n'), html = [], inTable = false;
+  function flushTable() {
+    if (inTable) { html.push('</tbody></table>'); inTable = false; }
+  }
+  lines.forEach(function(l, i) {
+    var trimmed = l.trim();
+    // Table row detection: starts and ends with |
+    if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
+      var cells = trimmed.slice(1,-1).split('|').map(function(c){return c.trim();});
+      // Separator row (---|---|---) → skip, used to open thead
+      if (cells.every(function(c){return /^[-:]+$/.test(c);})) return;
+      if (!inTable) {
+        // Check if next line is a separator → first row is header
+        var nextTrimmed = (lines[i+1]||'').trim();
+        var isHeader = nextTrimmed.startsWith('|') && nextTrimmed.slice(1,-1).split('|').every(function(c){return /^[-:\s]+$/.test(c);});
+        html.push('<table class="wz-md-table"><thead><tr>'+cells.map(function(c){return '<th>'+c+'</th>';}).join('')+'</tr></thead><tbody>');
+        inTable = true;
+        if (isHeader) return; // first row rendered as header
+      }
+      html.push('<tr>'+cells.map(function(c){return '<td>'+c+'</td>';}).join('')+'</tr>');
+      return;
+    }
+    flushTable();
     if      (l.startsWith('### ')) html.push('<h3>'+l.slice(4)+'</h3>');
     else if (l.startsWith('## '))  html.push('<h2>'+l.slice(3)+'</h2>');
     else if (l.startsWith('# '))   html.push('<h1>'+l.slice(2)+'</h1>');
     else if (l.startsWith('- '))   html.push('<li>'+l.slice(2)+'</li>');
-    else if (l.trim()==='')        html.push('');
+    else if (trimmed==='')         html.push('');
     else                           html.push('<p>'+l+'</p>');
   });
+  flushTable();
   return html.join('\n')
     .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g,'<em>$1</em>')
     .replace(/`(.+?)`/g,'<code>$1</code>');
 }
 
