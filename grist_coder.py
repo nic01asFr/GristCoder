@@ -39,7 +39,7 @@ MISSION
 
 SURFACE UTILISATEUR — WIZARD MULTI-CARD
   L overlay wizard est une surface unifiee : plusieurs cards coexistent, chacune independante.
-  - plan_update() -> card ctx-plan (plan courant, progres, actions)
+  - plan_update() -> card ctx-plan-progress (plan courant + phases + metadata)
   - canvas_wizard(id=...) -> card nommee (interaction, info, progres)
   - canvas_context_update(card_id=...) -> card nommee libre (feedback, resume subagent, etat)
   - canvas_wizard_close(card_id=...) -> ferme une card specifique ; sans arg = ferme tout
@@ -94,19 +94,30 @@ CYCLE GUIDE — 4 PHASES
   REPRISE DE SESSION (plan existant)
     1. plan/{token} -> lire plan + status + _next_step
     2. context/{token} -> etat reel actuel du doc
-    3. plan_update() non-bloquant -> restaure la card ctx-plan
+    3. plan_update() non-bloquant -> restaure la card ctx-plan-progress
     4. canvas_wizard(type="confirm", id="resume") -> "Reprendre ?" ou "Modifier le plan ?"
     5. Continuer depuis le status precedent
 
 PRINCIPES D ORCHESTRATION
   - Chaque outil a un moment optimal : lire _next des reponses pour savoir quoi appeler apres
-  - Plusieurs cards simultanees = richesse : progress (build) + ctx-plan + feedback subagent
+  - Plusieurs cards simultanees = richesse : ctx-plan-progress (plan) + progress (build) + feedback subagent
   - Ne jamais bloquer sans feedback : toujours une card progress visible pendant les ops longues
   - subagent_call : si sampling dispo -> reponse directe {role, response, structured?}
                     si sampling absent -> {fallback_mode:True, system_prompt, task, instruction}
                     Dans les deux cas : lire la reponse et agir (auto-exec si fallback_mode=True)
                     Afficher via canvas_context_update(card_id="X") apres traitement
   - plan_update() en debut + fin de chaque phase : maintient la coherence de la source de verite
+
+BOUCLE POST-WIZARD (apres chaque reponse interactive bloquante)
+  La reponse wizard contient toujours : _ux_context, _ux_task, _next
+  1. Traiter la reponse (valider, patcher, noter)
+  2a. Si transition de phase evidente -> plan_update(status=...) -> progress card auto-mise a jour
+  2b. Sinon -> subagent_call(role='ux-navigator', task=_ux_task)
+      -> retourne {next_step, resources_a_lire, reasoning}
+      -> lire resources_a_lire si pertinent
+      -> canvas_wizard(step=next_step) pour enchainer naturellement
+  3. Le wizard ne se ferme que sur plan_update(status='done') ou choix explicite utilisateur
+  Objectif : le LLM ne laisse jamais l overlay vide apres une reponse — il enchaine toujours.
 
 OUTILS (28)
   Plan     : plan_update              <- META-CONTROLE : persiste + _next_resources par phase
@@ -116,7 +127,12 @@ OUTILS (28)
   Wizard   : canvas_wizard (id requis, choice|form|confirm|progress|info|input)
              canvas_wizard_close (card_id? -> ferme une card ; absent -> ferme tout)
   Context  : canvas_context_update (card_id? -> card nommee libre dans l overlay)
-  Subagent : subagent_call            <- analyse specialisee ; afficher via canvas_context_update
+  Subagent : subagent_call(role=...)  <- roles: data-architect|ui-designer|page-architect|
+                                          data-analyst|integrator|assistant
+             subagent_call(role='ux-navigator', task=_ux_task)
+                                       <- POST-WIZARD : compose le step wizard suivant.
+                                          Auto-injecte etat doc + ressources disponibles.
+                                          Retourne {next_step, resources_a_lire, reasoning}.
   Artefact : artefact_init
   Grist R  : grist_schema, grist_records, grist_sql
   Grist W  : grist_records_add, grist_records_patch, grist_upsert
@@ -604,7 +620,7 @@ TOOLS = [
      "description": (
          "Affiche une card contextuelle libre dans l overlay wizard — complementaire a plan_update. "
          "card_id fourni -> card independante et nommee (peut coexister avec d autres cards). "
-         "Absent -> met a jour la card ctx-plan (meme surface que plan_update). "
+         "Absent -> met a jour la card ctx-plan via context_update (distinct de plan_update). "
          "Cas d usage : feedback d etape, resume subagent, etat processus externe, note temporaire. "
          "Sans actions ni input : non bloquant, reste visible. "
          "Avec actions=[{label,value,style?}] ou input='placeholder' : bloquant — attend reponse. "
@@ -612,7 +628,7 @@ TOOLS = [
          "sections[].style : default|success|info|warn|code"
      ),
      "inputSchema": {"type": "object", "properties": {
-         "card_id":  {"type": "string", "description": "ID unique de la card (ex: 'arch-analysis', 'build-feedback'). Absent = card ctx-plan."},
+         "card_id":  {"type": "string", "description": "ID unique de la card (ex: 'arch-analysis', 'build-feedback'). Absent = context_update sans card nommee."},
          "title":    {"type": "string", "description": "Titre de la card"},
          "sections": {"type": "array", "items": {"type": "object", "properties": {
              "label":   {"type": "string"},
@@ -1985,7 +2001,7 @@ Le LLM pousse des cards -> le widget les affiche -> l utilisateur repond -> le L
 SURFACES DISPONIBLES
 --------------------
 canvas_wizard(step)              -> card interactive ou informative (id requis dans step)
-plan_update(...)                 -> card ctx-plan (plan courant, progress, actions optionnelles)
+plan_update(...)                 -> card ctx-plan-progress (plan + phases + metadata, source unique)
 canvas_context_update(card_id=X) -> card libre nommee (sections/progress, non-bloquante par defaut)
 canvas_wizard_close(card_id=X)   -> ferme UNE card specifique (les autres restent)
 canvas_wizard_close()            -> ferme TOUT l overlay (fin de session uniquement)
@@ -2191,7 +2207,7 @@ PATTERNS MULTI-CARD RECOMMANDES
 --------------------------------
 
 A. BUILD (phase 3) — 3 cards simultanees
-   plan_update(status="building")               -> ctx-plan visible en permanence
+   plan_update(status="building")               -> ctx-plan-progress visible en permanence
    canvas_wizard(id="build-progress", progress) -> progression active
    canvas_context_update(card_id="arch-note")   -> note architecturale dismissable
    -> Pendant la construction : update "build-progress" a chaque etape
@@ -2202,7 +2218,7 @@ B. QUALIFICATION (phase 1)
    subagent_call(role="data-architect")         -> analyse
    canvas_context_update(card_id="arch-result") -> affiche le JSON structure
    canvas_wizard(id="confirm-category", choice) -> bloquant, confirme categorie
-   plan_update(need=..., status="designing")    -> ctx-plan mis a jour
+   plan_update(need=..., status="designing")    -> ctx-plan-progress mis a jour
 
 C. ENRICHISSEMENT DONNEES (preview + Grist)
    canvas_wizard(id="geo-picker", preview, bridge=true)  -> composant geocodage
@@ -2210,7 +2226,7 @@ C. ENRICHISSEMENT DONNEES (preview + Grist)
 
 D. LIVRAISON (phase 4)
    canvas_wizard(id="delivery", confirm)  -> resume + validation user
-   plan_update(status="done")             -> ctx-plan -> "App livree 100%"
+   plan_update(status="done")             -> ctx-plan-progress -> "App livree 100%"
    canvas_wizard_close()                  -> ferme tout (SEULEMENT en fin de session)
 
 REGLES
@@ -3312,6 +3328,36 @@ def _resources_list(uid_key):
 
 # ── TOOL CALL ─────────────────────────────────────────────────────────────────
 
+_UX_RESOURCES_BY_PHASE = {
+    "qualifying": ["docs/qualification", "docs/wizard"],
+    "assessing":  ["docs/schema", "docs/wizard"],
+    "designing":  ["docs/schema", "docs/artefacts", "docs/wizard"],
+    "building":   ["docs/artefacts", "docs/wizard", "docs/formulas"],
+    "verifying":  ["docs/wizard"],
+    "done":       [],
+}
+
+def _enrich_wizard_response(resp: dict, step_id: str, step_type: str, ctx) -> None:
+    """Injecte _ux_context + _ux_task + _next dans toute réponse wizard bloquante."""
+    plan        = ctx.project_plan
+    status      = plan.get("status", "qualifying")
+    values_str  = json.dumps(resp.get("values", {}), ensure_ascii=False)
+    resp["_ux_context"] = {
+        "plan_status":          status,
+        "active_cards":         list(ctx._active_wizard_cards.keys()),
+        "resources_contextuels": _UX_RESOURCES_BY_PHASE.get(status, ["docs/wizard"]),
+    }
+    resp["_ux_task"] = (
+        f"L utilisateur a repondu au step '{step_id}' (type:{step_type}) : {values_str}. "
+        f"Plan status: {status}. Besoin: {plan.get('need', 'non qualifie')}. "
+        f"Propose le step wizard suivant le plus pertinent pour continuer le flux naturellement."
+    )
+    resp["_next"] = (
+        "Traiter la reponse. Puis : "
+        "si transition de phase logique -> plan_update(status=...) ; "
+        "sinon -> subagent_call(role='ux-navigator', task=_ux_task) pour composer le step suivant."
+    )
+
 _active_tokens: dict[str, str] = {}
 
 async def call_tool(uid_key, mcp_sid, name, args):
@@ -3526,13 +3572,15 @@ async def call_tool(uid_key, mcp_sid, name, args):
         ctx._wizard_events[step_id] = event
         try:
             await asyncio.wait_for(event.wait(), timeout=timeout)
-            resp = ctx.wizard_responses[0] if ctx.wizard_responses else None
-            return resp or {"status": "no_response", "step_id": step_id}
+            resp = dict(ctx.wizard_responses[0]) if ctx.wizard_responses else {"status": "no_response", "step_id": step_id}
+            _enrich_wizard_response(resp, step_id, step_type, ctx)
+            return resp
         except asyncio.TimeoutError:
             if default is not None:
-                return {"status": "timeout_default", "step_id": step_id,
-                        "values": default, "source": "default",
-                        "hint": "Timeout — valeur par defaut appliquee, continuer."}
+                resp = {"status": "timeout_default", "step_id": step_id,
+                        "values": default, "source": "default"}
+                _enrich_wizard_response(resp, step_id, step_type, ctx)
+                return resp
             return {"status": "timeout", "step_id": step_id,
                     "hint": "L utilisateur n a pas repondu dans le delai imparti."}
         finally:
@@ -3568,35 +3616,54 @@ async def call_tool(uid_key, mcp_sid, name, args):
             "done":        ("App livree",                "success", 100),
         }
         label, style, progress = STATUS_META.get(status, ("En cours", "default", 20))
-        sections = [{"label": "Phase", "content": label, "style": style}]
+        # Build plan metadata sections for the progress card
+        meta_sections = [{"label": "Phase", "content": label, "style": style}]
         if plan.get("need"):
-            sections.append({"label": "Besoin", "content": plan["need"][:90], "style": "default"})
+            meta_sections.append({"label": "Besoin", "content": plan["need"][:90], "style": "default"})
         tables = plan.get("tables", [])
         if tables:
             names = ", ".join(t.get("name", t) if isinstance(t, dict) else t for t in tables[:6])
-            sections.append({"label": "Tables", "content": names, "style": "code"})
+            meta_sections.append({"label": "Tables", "content": names, "style": "code"})
         arts = plan.get("artefacts", [])
         if arts:
             names = ", ".join(a.get("name", a) if isinstance(a, dict) else a for a in arts[:5])
-            sections.append({"label": "Artefacts", "content": names, "style": "code"})
+            meta_sections.append({"label": "Artefacts", "content": names, "style": "code"})
         if plan.get("notes"):
-            sections.append({"label": "Note", "content": plan["notes"][:80], "style": "default"})
-        panel = {
-            "title": f"Plan · {ctx.doc_title}",
-            "sections": sections,
-            "progress": progress,
-        }
-        if args.get("actions"):   panel["actions"] = args["actions"]
-        if args.get("input"):     panel["input"]   = args["input"]
-        _push(uid_key, {"type": "context_update", "token": ctx.token, "panel": panel})
+            meta_sections.append({"label": "Note", "content": plan["notes"][:80], "style": "default"})
         _notify_resource(uid_key, f"grist-coder://plan/{ctx.token}")
+        # Auto-push/update progress card dans le wizard overlay (single source of truth)
+        PHASES = [
+            ("qualifying", "Qualification du besoin"),
+            ("assessing",  "Exploration du document"),
+            ("designing",  "Conception de l app"),
+            ("building",   "Construction"),
+            ("verifying",  "Verification finale"),
+            ("done",       "Livre"),
+        ]
+        phase_order = [p[0] for p in PHASES]
+        cur_idx = phase_order.index(status) if status in phase_order else 0
+        prog_steps = [
+            {"id": ph, "label": lbl,
+             "status": "done" if i < cur_idx else ("active" if i == cur_idx else "pending")}
+            for i, (ph, lbl) in enumerate(PHASES)
+        ]
+        prog_step = {"id": "ctx-plan-progress", "type": "progress",
+                     "title": f"Plan \u00b7 {ctx.doc_title}", "steps": prog_steps,
+                     "sections": meta_sections, "progress": progress}
+        interactive = bool(args.get("actions") or args.get("input"))
+        if args.get("actions"): prog_step["actions"] = args["actions"]
+        if args.get("input"):   prog_step["input"]   = args["input"]
+        prog_ev = {"type": "wizard_step", "token": ctx.token, "step": prog_step}
+        ctx._active_wizard_cards["ctx-plan-progress"] = {**prog_ev, "_is_async": True}
+        _push(uid_key, prog_ev)
         # Update context and notify tools/list change if status changed
         prev_context = ctx.current_context
         ctx.current_context = status if status in CONTEXT_TOOLS else "qualifying"
         if ctx.current_context != prev_context:
+            _push(uid_key, {"type": "context_changed", "token": ctx.token,
+                            "context": ctx.current_context})
             _push(uid_key, {"type": "mcp_notification",
                             "method": "notifications/tools/list_changed", "params": {}})
-        interactive = bool(args.get("actions") or args.get("input"))
         _next_resources = {
             "qualifying":  ["docs/qualification", "docs/wizard"],
             "assessing":   [f"context/{ctx.token}", "docs/schema"],
@@ -3611,7 +3678,7 @@ async def call_tool(uid_key, mcp_sid, name, args):
                     "_next": f"Lire : {', '.join(_next_resources)}" if _next_resources else "Plan termine."}
         timeout = float(args.get("timeout", 300))
         event = asyncio.Event()
-        ctx._wizard_events["ctx-plan"] = event
+        ctx._wizard_events["ctx-plan-progress"] = event
         try:
             await asyncio.wait_for(event.wait(), timeout=timeout)
             resp = ctx.wizard_responses[0] if ctx.wizard_responses else None
@@ -3619,7 +3686,7 @@ async def call_tool(uid_key, mcp_sid, name, args):
         except asyncio.TimeoutError:
             return {"status": "timeout"}
         finally:
-            ctx._wizard_events.pop("ctx-plan", None)
+            ctx._wizard_events.pop("ctx-plan-progress", None)
 
     # ── Context panel
     if name == "canvas_context_update":

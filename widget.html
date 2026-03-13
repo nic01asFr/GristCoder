@@ -472,6 +472,7 @@ const _DISPLAY_MODE = !!_DISPLAY_ART;
 var _registered=false, _registering=false, _token=null, _mcpId=1, _es=null, _refreshTimer=null;
 var _artefacts=[], _artefactsMap={}, _currentArt=null, _sharedState={};
 var _artefactsLoaded=false; // true après loadArtefacts() — bloque onRecord auto-select avant init
+var _currentContext='qualifying'; // phase courante poussée par plan_update via context_changed SSE
 var _editor, _panelOpen=false;
 var _bridgeOnRecordRelays=[], _lastRecords=null;
 var _lastServerCanvas=null; // Guard: prevent autoSave on server-pushed setValue
@@ -658,6 +659,10 @@ function listenSSE() {
         if (ev.type === 'wizard_step')    showWizardCard(ev.step, ev.token);
         if (ev.type === 'wizard_close')   { if(ev.card_id) closeWizardCard(ev.card_id); else closeWizard(); }
         if (ev.type === 'context_update') _ctxToCard(ev.panel, ev.token);
+        if (ev.type === 'context_changed') {
+          _currentContext = ev.context || 'qualifying';
+          if (!_currentArt) renderEmpty(); // rafraîchit la home view si visible
+        }
       }
     } catch(_) {}
   };
@@ -823,9 +828,16 @@ function renderEmpty() {
     '<div class="hero-label">Coder</div>' +
     '</div>' +
     (n > 0
-      ? '<div class="hint">'+n+' artefact'+(n>1?'s':'')+' disponible'+(n>1?'s':'')+' · sélectionne pour voir le rendu</div>' +
+      ? '<div class="hint">'+n+' artefact'+(n>1?'s':'')+' · sélectionne pour voir le rendu</div>' +
         '<div class="tiles">'+tiles+'</div>'
-      : '<div class="hint">Aucun artefact<br>demande à Claude d\'en créer un</div>'
+      : '<div class="hint">'+({
+          qualifying: 'Décris ton projet à Claude pour commencer',
+          assessing:  'Claude explore le document…',
+          designing:  'Conception en cours…',
+          building:   'Construction en cours — suis l\'avancement dans le panneau',
+          verifying:  'Vérification finale en cours…',
+          done:       'Application livrée ✓'
+        }[_currentContext] || 'Aucun artefact — demande à Claude d\'en créer un')+'</div>'
     ) +
     '</div>' +
     '<script>window.addEventListener("message",function(e){if(e.data&&e.data.type==="art-select")window.parent.postMessage(e.data,"*");});<'+'/script>' +
@@ -1220,7 +1232,8 @@ function _wzIsBlocking(step) {
   var t = step.type;
   return t==='choice'||t==='form'||t==='confirm'||t==='input'||t==='preview'
     ||(t==='plan'&&((step.actions||[]).length>0||!!step.input))
-    ||(t==='info'&&(step.actions||[]).length>0);
+    ||(t==='info'&&(step.actions||[]).length>0)
+    ||(t==='progress'&&((step.actions||[]).length>0||!!step.input));
 }
 
 // ── WIZARD ────────────────────────────────────────────────────────────────────
@@ -1408,7 +1421,21 @@ function _wzConfirm(step, cid) {
 
 function _wzProgress(step) {
   var icons = {done:'✓', active:'→', pending:'·', error:'✗'};
-  var html = '<div class="wz-progress">';
+  var html = '';
+  if (typeof step.progress === 'number')
+    html += '<div class="ctx-progress"><div class="ctx-progress-fill" style="width:'
+      +Math.max(0,Math.min(100,step.progress))+'%"></div></div>';
+  if ((step.sections||[]).length) {
+    html += '<div class="ctx-sections">';
+    step.sections.forEach(function(s) {
+      var st = s.style||'default';
+      html += '<div class="ctx-section '+st+'">';
+      if (s.label) html += '<span class="ctx-label">'+_wzEsc(s.label)+'</span>';
+      html += '<span class="ctx-content">'+_wzEsc(s.content||'')+'</span></div>';
+    });
+    html += '</div>';
+  }
+  html += '<div class="wz-progress">';
   (step.steps||[]).forEach(function(s) {
     var st = s.status||'pending';
     html += '<div class="wz-progress-step '+st+'">'
@@ -1416,6 +1443,17 @@ function _wzProgress(step) {
       + '<span>'+_wzEsc(s.label)+'</span></div>';
   });
   html += '</div>';
+  if (step.input) {
+    html += '<textarea id="wz-ta-'+_wzEsc(step.id||'')+'" class="wz-input wz-request-ta" placeholder="'+_wzEsc(step.input)+'" style="margin-top:10px"></textarea>';
+    html += '<div class="wz-actions"><button class="wz-btn primary" onclick="wzPlanInput(\''+_wzEsc(step.id||'')+'\')">Envoyer</button></div>';
+  }
+  if ((step.actions||[]).length) {
+    html += '<div class="wz-actions">';
+    step.actions.forEach(function(a) {
+      html += '<button class="wz-btn '+(a.style||'secondary')+'" onclick="wzPost(\''+_wzEsc(step.id||'')+'\',\'action\',{value:\''+_wzEsc(a.value||a.label)+'\'})">'+_wzEsc(a.label)+'</button>';
+    });
+    html += '</div>';
+  }
   return html;
 }
 
@@ -1672,15 +1710,39 @@ function _wzPreview(step, cid) {
     else if (hasFields) html += _wzForm(step, cid);
     else if (hasInput) html += _wzInput(step, cid);
     if (hasActions && !hasChoices && !hasFields && !hasInput) {
-      html += '<div class="wz-actions">';
+      html += '<div class="wz-actions" id="wzact-'+cid+'">';
       step.actions.forEach(function(a) {
-        html += '<button class="wz-btn '+(a.style||'secondary')+'" onclick="wzPost(\''+_wzEsc(cid)+'\',\'action\',{value:\''+_wzEsc(a.value||a.id||a.label)+'\'})">'
-          + _wzEsc(a.label) + '</button>';
+        var aId = _wzEsc(a.value||a.id||a.label);
+        if (a.input_on) {
+          var ph = _wzEsc(a.placeholder||'Votre commentaire…');
+          html += '<button class="wz-btn '+(a.style||'secondary')+'" onclick="wzRevealInput(\''+_wzEsc(cid)+'\',\''+aId+'\',\''+ph+'\')">'
+            + _wzEsc(a.label) + '</button>';
+        } else {
+          html += '<button class="wz-btn '+(a.style||'secondary')+'" onclick="wzPost(\''+_wzEsc(cid)+'\',\'action\',{value:\''+aId+'\'})">'
+            + _wzEsc(a.label) + '</button>';
+        }
       });
       html += '</div>';
     }
   }
   return html;
+}
+
+function wzRevealInput(cid, actionId, placeholder) {
+  var wrap = document.getElementById('wzact-'+cid);
+  if (!wrap) return;
+  wrap.innerHTML =
+    '<textarea id="wzrev-'+cid+'" rows="3" placeholder="'+placeholder+'" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #cbd5e1;border-radius:8px;font-family:inherit;font-size:.83rem;resize:vertical;background:#f8fafc;color:#1e293b"></textarea>'
+    + '<div style="display:flex;gap:8px;margin-top:8px">'
+    + '<button class="wz-btn primary" onclick="wzRevealSubmit(\''+cid+'\',\''+actionId+'\')">Envoyer</button>'
+    + '<button class="wz-btn secondary" onclick="wzPost(\''+cid+'\',\'action\',{value:\''+actionId+'\'})">Sans commentaire</button>'
+    + '</div>';
+  setTimeout(function(){ var t=document.getElementById('wzrev-'+cid); if(t) t.focus(); }, 50);
+}
+function wzRevealSubmit(cid, actionId) {
+  var t = document.getElementById('wzrev-'+cid);
+  var comment = t ? t.value.trim() : '';
+  wzPost(cid, 'action', {value: actionId, comment: comment});
 }
 
 async function wzPost(cid, type, values) {
