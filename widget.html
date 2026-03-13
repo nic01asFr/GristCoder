@@ -1209,6 +1209,10 @@ function _wzRebuild() {
   // re-append exiting cards so their animation finishes
   Object.values(exiting).forEach(function(h){ html += h; });
   ov.innerHTML = html;
+  // Direct srcdoc assignment for mermaid iframes (avoids HTML attribute escaping issues)
+  ov.querySelectorAll('iframe[data-srcdoc-b64]').forEach(function(fr) {
+    try { fr.srcdoc = decodeURIComponent(escape(atob(fr.getAttribute('data-srcdoc-b64')))); } catch(e) {}
+  });
 }
 
 function _wzBuildCard(id, step) {
@@ -1706,6 +1710,17 @@ function _wzPreview(step, cid) {
   var srcdoc;
   if (!code) {
     srcdoc = '<!DOCTYPE html><html><body style="margin:0;display:flex;align-items:center;justify-content:center;height:100%;background:#f8fafc;color:#94a3b8;font-family:Inter,sans-serif;font-size:.8rem">Aucun code fourni</body></html>';
+  } else if (ctype === 'mermaid') {
+    var _mmdHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8">'
+      + '<style>body{margin:0;background:#f8fafc;padding:20px;box-sizing:border-box}'
+      + '.mermaid{background:#fff;border-radius:8px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,.08)}'
+      + '</style></head><body>'
+      + '<div class="mermaid">'+code+'</div>'
+      + '<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js" onload="mermaid.initialize({startOnLoad:false,theme:\'neutral\'});mermaid.run()"><\/script>'
+      + '</body></html>';
+    // Use base64 data attr + post-process srcdoc assignment to avoid attribute escaping issues
+    srcdoc = 'data:mmd:' + btoa(unescape(encodeURIComponent(_mmdHtml)));
+    if (!step.height) height = 420;
   } else if (ctype === 'html' || ctype === 'react' || ctype === 'grist') {
     srcdoc = useBridge ? _injectWzScript(prepareWidgetHTML(code, {state: _sharedState, route: '/'}))
                        : _injectWzScript(code);
@@ -1717,8 +1732,12 @@ function _wzPreview(step, cid) {
     srcdoc = _injectWzScript(useBridge ? prepareWidgetHTML(wrap, {state:_sharedState}) : wrap);
   }
 
+  var _isMmd = srcdoc.indexOf('data:mmd:') === 0;
+  var _iframeAttr = _isMmd
+    ? 'data-srcdoc-b64="' + srcdoc.slice(9) + '"'
+    : 'srcdoc="' + _wzEsc(srcdoc) + '"';
   var html = '<div class="wz-preview-wrap">'
-    + '<iframe srcdoc="' + _wzEsc(srcdoc) + '" sandbox="allow-scripts allow-same-origin allow-forms"'
+    + '<iframe ' + _iframeAttr + ' sandbox="allow-scripts allow-same-origin allow-forms"'
     + ' style="height:' + height + 'px" title="Aperçu composant"></iframe>'
     + '</div>';
 

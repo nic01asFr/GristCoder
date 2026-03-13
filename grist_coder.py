@@ -536,7 +536,8 @@ TOOLS = [
          "progress : CONSTRUCTION — montre l avancement (tables->artefacts->pages). "
          "info : INFORMATION — message contextuel avec actions optionnelles. "
          "preview : VALIDATION COMPOSANT — iframe live du code + interaction contextuelle en dessous. "
-         "  code (str), code_type (html|react|svg, defaut html), bridge (bool, defaut true), height (px). "
+         "  code (str), code_type (html|react|svg|mermaid, defaut html), bridge (bool, defaut true), height (px). "
+         "  source='schema' : auto-genere erDiagram mermaid depuis le schema Grist (transparent, pas besoin de code). "
          "  Interaction : actions=[{id,label,style}] | choices=[...] | fields=[...] | input=placeholder. "
          "  Non-bloquant si pas d interaction ; bloquant sinon. "
          "Types bloquants (input|choice|form|confirm|preview+interaction) : attendent la reponse. "
@@ -3055,6 +3056,11 @@ RESOURCE_TEMPLATES = [
      "name":         "Project Plan",
      "description":  "Plan de projet persistant : besoin qualifie, tables, artefacts, pages, status de construction. Lire en debut de session pour reprendre. Mis a jour par plan_update.",
      "mimeType":     "application/json"},
+
+    {"uriTemplate":  "grist-coder://schema-diagram/{token}",
+     "name":         "Schema Diagram",
+     "description":  "erDiagram mermaid auto-generé depuis le schema Grist courant. Tables + colonnes + relations (Ref:). Passer directement comme code dans canvas_wizard(type=preview, code_type=mermaid) ou utiliser source='schema' pour auto-generation transparente.",
+     "mimeType":     "text/plain"},
 ]
 
 # ── RESOURCE READ ─────────────────────────────────────────────────────────────
@@ -3132,6 +3138,13 @@ async def _read_resource(uid_key, mcp_sid, uri):
             available = " | ".join(PLAYBOOKS.keys())
             content = f"Scenario inconnu : '{scenario}'\nDisponibles : {available}"
         return {"uri": uri, "mimeType": "text/plain", "text": content}
+
+    if uri.startswith("grist-coder://schema-diagram/"):
+        token = uri.split("/")[-1]
+        ctx = registry.resolve(uid_key, token)
+        if not ctx: raise ValueError(f"Session inconnue : {token}")
+        schema = await _fetch_schema(ctx)
+        return {"uri": uri, "mimeType": "text/plain", "text": _schema_to_mermaid(schema)}
 
     if uri.startswith("grist-coder://context/"):
         token = uri.split("/")[-1]
@@ -3360,6 +3373,57 @@ def _enrich_wizard_response(resp: dict, step_id: str, step_type: str, ctx) -> No
 
 _active_tokens: dict[str, str] = {}
 
+# ── Mermaid schema helpers ────────────────────────────────────────────────────
+
+async def _fetch_schema(ctx) -> dict:
+    """Retourne {table_id: [{id, type, label?}]} depuis l'API Grist."""
+    tables_resp = await grist_get(ctx, "tables")
+    table_ids = [t["id"] for t in tables_resp.get("tables", [])
+                 if not t["id"].startswith("_grist_")]
+    async def _cols(tid):
+        try:
+            resp = await grist_get(ctx, f"tables/{tid}/columns")
+            return tid, [
+                {"id": c["id"], "type": c["fields"].get("type",""),
+                 "label": c["fields"].get("label","") or None}
+                for c in resp.get("columns", [])
+                if not c["id"].startswith("gristHelper_")
+            ]
+        except Exception:
+            return tid, []
+    return dict(await asyncio.gather(*[_cols(t) for t in table_ids]))
+
+def _schema_to_mermaid(schema: dict) -> str:
+    """Génère un erDiagram mermaid depuis un schema {table: [{id, type, label?}]}."""
+    TYPE_MAP = {
+        "Text": "string", "Numeric": "float", "Int": "int", "Bool": "boolean",
+        "Date": "date", "DateTime": "datetime", "Choice": "string",
+        "ChoiceList": "string", "Attachments": "blob",
+    }
+    lines = ["erDiagram"]
+    relations = []
+    for table, cols in schema.items():
+        if table == "Artefacts": continue  # table interne
+        entity_lines = []
+        for c in cols:
+            ctype = c.get("type", "Text")
+            if ctype.startswith("Ref:") or ctype.startswith("RefList:"):
+                is_list = ctype.startswith("RefList:")
+                target = ctype.split(":", 1)[1]
+                entity_lines.append(f"    int {c['id']} FK")
+                card = "}o--o{" if is_list else "}o--||"
+                relations.append(f"  {table} {card} {target} : \"{c['id']}\"")
+            else:
+                base = ctype.split(":")[0]
+                md_type = TYPE_MAP.get(base, "string")
+                entity_lines.append(f"    {md_type} {c['id']}")
+        if entity_lines:
+            lines.append(f"  {table} {{")
+            lines.extend(entity_lines)
+            lines.append("  }")
+    lines.extend(relations)
+    return "\n".join(lines)
+
 async def call_tool(uid_key, mcp_sid, name, args):
     if name == "sessions_list":
         s = registry.list_sessions(uid_key)
@@ -3544,6 +3608,19 @@ async def call_tool(uid_key, mcp_sid, name, args):
     # ── Wizard
     if name == "canvas_wizard":
         step = args.get("step", {})
+        # Auto-génération mermaid depuis le schema Grist si source="schema"
+        if step.get("source") == "schema" and not step.get("code"):
+            try:
+                schema = await _fetch_schema(ctx)
+                step = dict(step)
+                step["code"]      = _schema_to_mermaid(schema)
+                step["code_type"] = "mermaid"
+                step.setdefault("type", "preview")
+                step.setdefault("height", 420)
+            except Exception as e:
+                step = dict(step)
+                step.setdefault("type", "info")
+                step["content"] = f"Erreur génération schema : {e}"
         step_type = step.get("type", "info")
         interactive = step_type in ("choice", "form", "confirm", "input", "preview", "data-import") or (
             step_type == "info" and (
