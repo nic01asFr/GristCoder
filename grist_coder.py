@@ -173,7 +173,7 @@ class SessionCtx:
         self.current_art_type= None
         self.wizard_responses: deque = deque(maxlen=20)
         self._wizard_events: dict[str, asyncio.Event] = {}  # keyed by step/card id
-        self._async_wizard_responses: dict[str, dict] = {}  # card_id -> réponse (mode async)
+        self._async_wizard_responses: dict[str, dict] = {}  # card_id -> dernière réponse (mode async)
         self.project_plan: dict = {}   # plan de projet persistant : need, tables, artefacts, pages, status
         self.current_context: str = "qualifying"   # qualifying|assessing|designing|building|verifying|done
         self._active_wizard_cards: dict[str, dict] = {}  # card_id -> step dict (persist on SSE reconnect)
@@ -3375,6 +3375,13 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 info["hint"] = f"Lire grist-coder://context/{ctx.token} pour snapshot complet"
             except Exception:
                 info["artefacts_count"] = 0
+        # Cards actives dans le canvas (visibles par l'utilisateur)
+        if ctx._active_wizard_cards:
+            info["active_cards"] = [
+                {"id": cid, "type": ev.get("step", {}).get("type","?"),
+                 "async": ev.get("_is_async", False)}
+                for cid, ev in ctx._active_wizard_cards.items()
+            ]
         # Réponses wizard async en attente
         if ctx._async_wizard_responses:
             info["wizard_responses"] = dict(ctx._async_wizard_responses)
