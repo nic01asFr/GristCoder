@@ -264,15 +264,21 @@ _token_to_uid: dict[str, str] = {}
 _screenshot_waiters: dict[str, asyncio.Future] = {}
 _client_capabilities: dict[str, dict] = {}   # uid_key -> capabilities déclarées par le client MCP
 _mcp_client_sids: dict[str, str] = {}        # uid_key -> sid SSE du client MCP (Claude Desktop)
+_display_sids: set[str] = set()              # sids des widgets en display mode (?a=...) — pas de replay wizard
 _sampling_waiters: dict[str, asyncio.Future] = {}  # smp_id -> Future pour sampling/createMessage
 
 # ── SSE ───────────────────────────────────────────────────────────────────────
 
 _queues: dict[str, asyncio.Queue] = {}
 
+_WIZARD_EVENT_TYPES = {"wizard_step", "wizard_close", "context_update"}
+
 def _push(uid_key, event):
     event["_user"] = uid_key
-    for q in _queues.values():
+    is_wizard_event = event.get("type") in _WIZARD_EVENT_TYPES
+    for sid, q in _queues.items():
+        if is_wizard_event and sid in _display_sids:
+            continue  # Ne pas envoyer les events wizard aux widgets en display mode
         try: q.put_nowait(event)
         except asyncio.QueueFull: pass
 
@@ -537,7 +543,7 @@ TOOLS = [
          "info : INFORMATION — message contextuel avec actions optionnelles. "
          "preview : VALIDATION COMPOSANT — iframe live du code + interaction contextuelle en dessous. "
          "  code (str), code_type (html|react|svg|mermaid, defaut html), bridge (bool, defaut true), height (px). "
-         "  source='schema' : auto-genere erDiagram mermaid depuis le schema Grist (transparent, pas besoin de code). "
+         "  source='schema'|'doc-map'|'doc-overview' : auto-genere diagramme(s) depuis le schema/structure Grist (transparent). "
          "  Interaction : actions=[{id,label,style}] | choices=[...] | fields=[...] | input=placeholder. "
          "  Non-bloquant si pas d interaction ; bloquant sinon. "
          "Types bloquants (input|choice|form|confirm|preview+interaction) : attendent la reponse. "
@@ -3393,6 +3399,183 @@ async def _fetch_schema(ctx) -> dict:
             return tid, []
     return dict(await asyncio.gather(*[_cols(t) for t in table_ids]))
 
+async def _fetch_doc_structure(ctx) -> dict:
+    """Retourne {views, sections} depuis les meta-tables Grist."""
+    views_resp, sections_resp, tables_resp = await asyncio.gather(
+        grist_get(ctx, "tables/_grist_Views/records"),
+        grist_get(ctx, "tables/_grist_Views_section/records"),
+        grist_get(ctx, "tables/_grist_Tables/records"),
+    )
+    table_map = {r["id"]: r["fields"].get("tableId", "") for r in tables_resp.get("records", [])}
+    views = [{"id": r["id"], "name": r["fields"].get("name", f"Page {r['id']}")}
+             for r in views_resp.get("records", [])
+             if not r["fields"].get("name", "").startswith("_")]
+    view_ids = {v["id"] for v in views}
+    sections = []
+    for r in sections_resp.get("records", []):
+        f = r["fields"]
+        view_id  = f.get("parentId", 0)
+        table_id = table_map.get(f.get("tableRef", 0), "")
+        if not view_id or not table_id or table_id.startswith("_grist_"): continue
+        if view_id not in view_ids: continue  # skip hidden/raw views
+        link_ref = f.get("linkSrcSectionRef", 0)
+        sections.append({"id": r["id"], "viewId": view_id, "tableId": table_id,
+                          "type": f.get("parentKey", "record"),
+                          "title": f.get("title") or "",
+                          "linkSrcId": link_ref if link_ref else None})
+    return {"views": views, "sections": sections}
+
+
+def _doc_map_to_mermaid(structure: dict, schema: dict) -> str:
+    """graph LR complet : pages + sections + tables + FK."""
+    SEC_TYPE = {"record": "grid", "detail": "card", "single": "card",
+                "chart": "chart", "form": "form", "custom": "widget", "custom.api": "widget"}
+    def _safe(s): return re.sub(r"[^A-Za-z0-9_]", "_", s)
+    lines = ["graph LR"]
+    lines.append("  subgraph DB[Tables]")
+    for tid in schema:
+        if tid == "Artefacts": continue
+        lines.append(f'    T_{_safe(tid)}["{tid}"]')
+    lines.append("  end")
+    lines.append("")
+    for v in structure["views"]:
+        vid = v["id"]; vname = v["name"].replace('"', "'")
+        secs = [s for s in structure["sections"] if s["viewId"] == vid]
+        if not secs: continue
+        lines.append(f'  subgraph PG{vid}["{vname}"]')
+        for s in secs:
+            stype = SEC_TYPE.get(s.get("type", "record"), "grid")
+            label = (s.get("title") or s.get("tableId", "?")).replace('"', "'")
+            lines.append(f'    S{s["id"]}["{label} - {stype}"]')
+        lines.append("  end")
+        lines.append("")
+    for s in structure["sections"]:
+        tid = s.get("tableId")
+        if tid and tid != "Artefacts":
+            lines.append(f'  S{s["id"]} -.->|data| T_{_safe(tid)}')
+    sec_ids = {s["id"] for s in structure["sections"]}
+    for s in structure["sections"]:
+        lsrc = s.get("linkSrcId")
+        if lsrc and lsrc in sec_ids:
+            lines.append(f'  S{lsrc} -->|filter| S{s["id"]}')
+    for table, cols in schema.items():
+        if table == "Artefacts": continue
+        for c in cols:
+            ctype = c.get("type", "")
+            if ctype.startswith("Ref:") or ctype.startswith("RefList:"):
+                target = ctype.split(":", 1)[1]
+                if target in schema and target != "Artefacts":
+                    lines.append(f'  T_{_safe(table)} -->|"{c["id"]}"| T_{_safe(target)}')
+    return chr(10).join(lines)
+
+
+def _pages_to_mermaid(structure: dict) -> str:
+    """graph TD des pages et sections uniquement."""
+    SEC_TYPE = {"record": "grid", "detail": "card", "single": "card",
+                "chart": "chart", "form": "form", "custom": "widget", "custom.api": "widget"}
+    sec_ids = {s["id"] for s in structure["sections"]}
+    lines = ["graph TD"]
+    for v in structure["views"]:
+        vid = v["id"]; vname = v["name"].replace('"', "'")
+        secs = [s for s in structure["sections"] if s["viewId"] == vid]
+        if not secs: continue
+        lines.append(f'  subgraph PG{vid}["{vname}"]')
+        for s in secs:
+            stype = SEC_TYPE.get(s.get("type", "record"), "grid")
+            label = (s.get("title") or s.get("tableId", "?")).replace('"', "'")
+            lines.append(f'    S{s["id"]}["{label} - {stype}"]')
+        lines.append("  end")
+    for s in structure["sections"]:
+        lsrc = s.get("linkSrcId")
+        if lsrc and lsrc in sec_ids:
+            lines.append(f'  S{lsrc} -->|filter| S{s["id"]}')
+    return chr(10).join(lines)
+
+
+def _flow_to_mermaid(structure: dict, schema: dict) -> str:
+    """graph LR sections -> tables + FK uniquement."""
+    SEC_TYPE = {"record": "grid", "detail": "card", "single": "card",
+                "chart": "chart", "form": "form", "custom": "widget", "custom.api": "widget"}
+    def _s(x): return re.sub(r"[^A-Za-z0-9_]", "_", x)
+    lines = ["graph LR", "  subgraph DB[Tables]"]
+    for tid in schema:
+        if tid == "Artefacts": continue
+        lines.append(f'    T_{_s(tid)}["{tid}"]')
+    lines.append("  end")
+    lines.append("")
+    for v in structure["views"]:
+        vid = v["id"]; vname = v["name"].replace('"', "'")
+        secs = [s for s in structure["sections"]
+                if s["viewId"] == vid and s.get("tableId") != "Artefacts"]
+        if not secs: continue
+        lines.append(f'  subgraph PG{vid}["{vname}"]')
+        for s in secs:
+            stype = SEC_TYPE.get(s.get("type", "record"), "grid")
+            label = (s.get("title") or s.get("tableId", "?")).replace('"', "'")
+            lines.append(f'    S{s["id"]}["{label} - {stype}"]')
+        lines.append("  end")
+        lines.append("")
+    for s in structure["sections"]:
+        tid = s.get("tableId")
+        if tid and tid != "Artefacts":
+            lines.append(f'  S{s["id"]} -.->|data| T_{_s(tid)}')
+    for table, cols in schema.items():
+        if table == "Artefacts": continue
+        for c in cols:
+            ctype = c.get("type", "")
+            if ctype.startswith("Ref:") or ctype.startswith("RefList:"):
+                target = ctype.split(":", 1)[1]
+                if target in schema and target != "Artefacts":
+                    lines.append(f'  T_{_s(table)} -->|"{c["id"]}"| T_{_s(target)}')
+    return chr(10).join(lines)
+
+
+def _build_doc_overview_html(schema: dict, structure: dict) -> str:
+    """HTML 3 onglets : Etat des donnees / Pages & Vues / Flux donnees."""
+    import base64 as _b64
+    def _enc(s): return _b64.b64encode(s.encode('utf-8')).decode('ascii')
+    d0 = _enc(_schema_to_mermaid(schema))
+    d1 = _enc(_pages_to_mermaid(structure))
+    d2 = _enc(_flow_to_mermaid(structure, schema))
+    CDN = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"
+    sc  = '</s' + 'cript>'
+    return (
+        '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>'
+        '*{box-sizing:border-box;margin:0;padding:0}'
+        'body{font-family:Inter,system-ui,sans-serif;background:#f8fafc;height:100vh;display:flex;flex-direction:column;overflow:hidden}'
+        '.tabs{display:flex;border-bottom:1px solid #e2e8f0;background:#fff;padding:0 12px;flex-shrink:0;gap:4px}'
+        '.tab{padding:9px 14px;font-size:.78rem;color:#64748b;cursor:pointer;border-bottom:2px solid transparent;transition:all .15s;user-select:none}'
+        '.tab.active{color:#3e5de7;border-bottom-color:#3e5de7;font-weight:600}'
+        '.tab:hover:not(.active){color:#334155}'
+        '.panel{display:none;flex:1;overflow:auto;padding:16px}'
+        '.panel.active{display:block}'
+        '.mermaid{background:#fff;border-radius:8px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,.06);overflow:auto}''.mermaid svg{max-width:none!important;height:auto}'
+        '</style>'
+        '<script>'
+        'var _D={"0":"' + d0 + '","1":"' + d1 + '","2":"' + d2 + '"};'
+        'var _R={};'
+        'function _dec(s){try{return decodeURIComponent(escape(atob(s)));}catch(e){return atob(s);}}'
+        'function show(i){'
+        '  document.querySelectorAll(".tab").forEach(function(t,j){t.classList.toggle("active",i===j)});'
+        '  document.querySelectorAll(".panel").forEach(function(p,j){p.classList.toggle("active",i===j)});'
+        '  var el=document.getElementById("d"+i);'
+        '  if(!_R[i]){el.textContent=_dec(_D[""+i]);if(typeof mermaid!=="undefined"){mermaid.run({nodes:[el]});_R[i]=1;}}'
+        '}'
+        + sc +
+        '</head><body>'
+        '<div class="tabs">'
+        '<div class="tab active" onclick="show(0)">\u00c9tat des donn\u00e9es</div>'
+        '<div class="tab" onclick="show(1)">Pages &amp; Vues</div>'
+        '<div class="tab" onclick="show(2)">Flux donn\u00e9es</div>'
+        '</div>'
+        '<div id="p0" class="panel active"><div id="d0" class="mermaid"></div></div>'
+        '<div id="p1" class="panel"><div id="d1" class="mermaid"></div></div>'
+        '<div id="p2" class="panel"><div id="d2" class="mermaid"></div></div>'
+        f'<script src="{CDN}" onload="mermaid.initialize({{startOnLoad:false,theme:\'neutral\'}});show(0);">' + sc +
+        '</body></html>'
+    )
+
+
 def _schema_to_mermaid(schema: dict) -> str:
     """Génère un erDiagram mermaid depuis un schema {table: [{id, type, label?}]}."""
     TYPE_MAP = {
@@ -3608,19 +3791,31 @@ async def call_tool(uid_key, mcp_sid, name, args):
     # ── Wizard
     if name == "canvas_wizard":
         step = args.get("step", {})
-        # Auto-génération mermaid depuis le schema Grist si source="schema"
-        if step.get("source") == "schema" and not step.get("code"):
+        # Auto-génération depuis le schema/structure Grist si source= défini
+        source = step.get("source")
+        if source in ("schema", "doc-map", "doc-overview") and not step.get("code"):
             try:
-                schema = await _fetch_schema(ctx)
+                schema    = await _fetch_schema(ctx)
+                structure = await _fetch_doc_structure(ctx)
                 step = dict(step)
-                step["code"]      = _schema_to_mermaid(schema)
-                step["code_type"] = "mermaid"
+                if source == "doc-overview":
+                    step["code"]      = _build_doc_overview_html(schema, structure)
+                    step["code_type"] = "html"
+                    step["bridge"]    = False
+                    step.setdefault("height", 520)
+                elif source == "doc-map":
+                    step["code"]      = _doc_map_to_mermaid(structure, schema)
+                    step["code_type"] = "mermaid"
+                    step.setdefault("height", 460)
+                else:
+                    step["code"]      = _schema_to_mermaid(schema)
+                    step["code_type"] = "mermaid"
+                    step.setdefault("height", 420)
                 step.setdefault("type", "preview")
-                step.setdefault("height", 420)
             except Exception as e:
                 step = dict(step)
                 step.setdefault("type", "info")
-                step["content"] = f"Erreur génération schema : {e}"
+                step["content"] = f"Erreur génération {source} : {e}"
         step_type = step.get("type", "info")
         interactive = step_type in ("choice", "form", "confirm", "input", "preview", "data-import") or (
             step_type == "info" and (
@@ -4432,15 +4627,19 @@ async def mcp_sse(request: Request,
     if not uid_key:
         return Response("Authorization requis", status_code=401)
     sid = mcp_session_id or str(uuid.uuid4())
+    is_display = request.query_params.get("display") == "1"
     _queues[sid] = asyncio.Queue(maxsize=64)
+    if is_display:
+        _display_sids.add(sid)
     if is_mcp_client:
         _mcp_client_sids[uid_key] = sid  # Track pour sampling
-    # Re-push active wizard cards on reconnect (SSE restore)
-    ctx_for_replay = registry.resolve(uid_key, None)
-    if ctx_for_replay and ctx_for_replay._active_wizard_cards:
-        for card_ev in ctx_for_replay._active_wizard_cards.values():
-            try: _queues[sid].put_nowait({**card_ev, "_user": uid_key})
-            except asyncio.QueueFull: pass
+    # Re-push active wizard cards on reconnect (SSE restore) — sauf pour display mode
+    if not is_display:
+        ctx_for_replay = registry.resolve(uid_key, None)
+        if ctx_for_replay and ctx_for_replay._active_wizard_cards:
+            for card_ev in ctx_for_replay._active_wizard_cards.values():
+                try: _queues[sid].put_nowait({**card_ev, "_user": uid_key})
+                except asyncio.QueueFull: pass
     async def stream():
         try:
             while True:
@@ -4458,6 +4657,7 @@ async def mcp_sse(request: Request,
                     yield ": ping\n\n"
         finally:
             _queues.pop(sid, None)
+            _display_sids.discard(sid)
             # Nettoyer le sid MCP client si c'était lui
             if is_mcp_client and _mcp_client_sids.get(uid_key) == sid:
                 _mcp_client_sids.pop(uid_key, None)

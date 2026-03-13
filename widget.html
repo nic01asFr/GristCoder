@@ -612,7 +612,8 @@ async function doRegister(msg) {
 function listenSSE() {
   if (!_token) return;
   if (_es) { _es.close(); _es = null; }
-  _es = new EventSource(BASE+'/mcp?token='+encodeURIComponent(_token));
+  var _sseUrl = BASE+'/mcp?token='+encodeURIComponent(_token)+(_DISPLAY_MODE?'&display=1':'');
+  _es = new EventSource(_sseUrl);
   _es.onmessage = function(e) {
     try {
       var ev = JSON.parse(e.data);
@@ -1723,7 +1724,7 @@ function _wzPreview(step, cid) {
     if (!step.height) height = 420;
   } else if (ctype === 'html' || ctype === 'react' || ctype === 'grist') {
     srcdoc = useBridge ? _injectWzScript(prepareWidgetHTML(code, {state: _sharedState, route: '/'}))
-                       : _injectWzScript(code);
+                       : code;
   } else if (ctype === 'svg') {
     var svgHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{margin:0;display:flex;align-items:center;justify-content:center;background:#f8fafc;min-height:100%}</style></head><body>' + code + '</body></html>';
     srcdoc = _injectWzScript(useBridge ? prepareWidgetHTML(svgHtml, {state:_sharedState}) : svgHtml);
@@ -1732,12 +1733,12 @@ function _wzPreview(step, cid) {
     srcdoc = _injectWzScript(useBridge ? prepareWidgetHTML(wrap, {state:_sharedState}) : wrap);
   }
 
-  var _isMmd = srcdoc.indexOf('data:mmd:') === 0;
-  var _iframeAttr = _isMmd
-    ? 'data-srcdoc-b64="' + srcdoc.slice(9) + '"'
-    : 'srcdoc="' + _wzEsc(srcdoc) + '"';
+  // Always use base64 + direct srcdoc assignment (avoids all HTML attribute escaping issues)
+  var _b64srcdoc = (srcdoc.indexOf('data:mmd:') === 0)
+    ? srcdoc.slice(9)
+    : btoa(unescape(encodeURIComponent(srcdoc)));
   var html = '<div class="wz-preview-wrap">'
-    + '<iframe ' + _iframeAttr + ' sandbox="allow-scripts allow-same-origin allow-forms"'
+    + '<iframe data-srcdoc-b64="' + _b64srcdoc + '" sandbox="allow-scripts allow-same-origin allow-forms"'
     + ' style="height:' + height + 'px" title="Aperçu composant"></iframe>'
     + '</div>';
 
