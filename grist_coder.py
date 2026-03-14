@@ -975,9 +975,13 @@ def _prompt_messages(name, args):
             "5. Audit : manques par couche (Donnees/UI/Logique/Integrations) ?\n"
             "6. canvas_context_update(card_id='audit') -> afficher le bilan\n"
             "7. canvas_wizard(type='choice', id='evol-direction') -> proposer 3-5 axes d evolution\n"
-            "8. plan_update(status='designing') -> plan enrichissement valide\n"
-            "9. Enrichir : nouvelles tables (grist_apply), artefacts (canvas_write+upsert), pages, webhooks\n"
-            "10. plan_update(status='done') + canvas_wizard_close()"
+            "8. canvas_wizard(type='input', id='evol-commentaires', title='Commentaires & contraintes',\n"
+            "   placeholder='Ex: ne pas toucher a la table Clients, privilege le mobile, budget reduit...',\n"
+            "   context='Optionnel — ajoute des contraintes ou suggestions libres avant construction.',\n"
+            "   submit_label='Continuer') -> collecter remarques libres (reponse peut etre vide)\n"
+            "9. plan_update(status='designing') -> plan enrichissement valide (integrer les commentaires)\n"
+            "10. Enrichir : nouvelles tables (grist_apply), artefacts (canvas_write+upsert), pages, webhooks\n"
+            "11. plan_update(status='done') + canvas_wizard_close()"
         )}}]
     return [{"role": "user", "content": {"type": "text", "text": f"Prompt '{name}' inconnu."}}]
 
