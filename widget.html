@@ -73,8 +73,44 @@ body{display:flex;flex-direction:column}
 @keyframes ti{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 /* ── WIZARD MULTI-CARD ──────────────────────────────────────────────── */
 #wizardOverlay{position:absolute;inset:0;z-index:50;background:var(--bg2);
-  flex-direction:column;overflow-y:auto;gap:10px;padding:14px 12px;
-  animation:ti .18s ease;scroll-behavior:smooth}
+  flex-direction:column;overflow:hidden;
+  animation:ti .18s ease}
+/* thread layout */
+#wz-chips{display:flex;flex-wrap:wrap;gap:5px;padding:7px 12px;
+  border-bottom:1px solid var(--border);flex-shrink:0;background:var(--bg2);min-height:0}
+.wz-chip{display:flex;align-items:center;gap:4px;padding:3px 10px;border-radius:20px;
+  border:1px solid var(--border);background:#fff;font-size:.72rem;color:var(--text2);
+  font-family:inherit;cursor:default;transition:all .12s}
+.wz-chip.active{border-color:#3e5de7;color:#3e5de7;background:#eef2ff}
+#wz-thread{flex:1;overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;
+  gap:10px;min-height:0;scroll-behavior:smooth}
+#wz-chat-section{flex-shrink:0;border-top:1px solid var(--border);background:var(--bg2);display:none}
+#wz-chat-section.active{display:block}
+#wz-msgs{max-height:140px;overflow-y:auto;padding:6px 12px;display:flex;
+  flex-direction:column;gap:4px}
+.wz-msg{display:flex;gap:6px;align-items:flex-end;animation:ti .15s ease}
+.wz-msg.user{flex-direction:row-reverse}
+.wz-msg-avatar{width:20px;height:20px;border-radius:50%;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;font-size:.62rem;font-weight:700}
+.wz-msg.user .wz-msg-avatar{background:#3e5de7;color:#fff}
+.wz-msg.assistant .wz-msg-avatar{background:#e2e8f0;color:var(--text2)}
+.wz-msg-bubble{max-width:82%;padding:6px 10px;border-radius:10px;font-size:.78rem;
+  line-height:1.5;word-break:break-word}
+.wz-msg.user .wz-msg-bubble{background:#3e5de7;color:#fff;border-bottom-right-radius:3px}
+.wz-msg.assistant .wz-msg-bubble{background:#fff;color:var(--text);
+  border:1px solid var(--border);border-bottom-left-radius:3px}
+#wz-chat-bar{display:flex;gap:7px;align-items:flex-end;padding:8px 12px}
+#wz-chat-input{flex:1;padding:7px 10px;border-radius:8px;border:1px solid var(--border);
+  font-size:.8rem;font-family:inherit;color:var(--text);background:#fff;
+  outline:none;resize:none;line-height:1.45;max-height:90px;overflow-y:auto;
+  transition:border-color .12s}
+#wz-chat-input:focus{border-color:#3e5de7;box-shadow:0 0 0 3px rgba(62,93,231,.07)}
+#wz-chat-input:disabled{opacity:.45;cursor:not-allowed}
+#wz-chat-send{width:32px;height:32px;flex-shrink:0;background:#3e5de7;color:#fff;
+  border:none;border-radius:8px;cursor:pointer;font-size:1rem;
+  display:flex;align-items:center;justify-content:center;transition:all .12s}
+#wz-chat-send:hover:not(:disabled){background:#2845c1}
+#wz-chat-send:disabled{opacity:.4;cursor:not-allowed}
 /* card container */
 .wz-card{background:#fff;border-radius:10px;border:1px solid var(--border);
   box-shadow:0 1px 5px rgba(0,0,0,.05);overflow:hidden;flex-shrink:0;
@@ -334,12 +370,41 @@ const APP_RUNTIME_SCRIPT =
   "if(window.__APP_ROUTE__)window.parent.postMessage({type:'app-init',route:window.__APP_ROUTE__},'*');" +
   "})();";
 
+// ── prepareReactHTML ─────────────────────────────────────────────────────────
+// Wraps JSX code (with export default) in a full HTML page with React + Babel.
+function prepareReactHTML(code, ctx) {
+  // Extract default export name: "export default function Foo" or "export default Foo"
+  var defMatch = code.match(/export\s+default\s+(?:function\s+|class\s+)?(\w+)/);
+  var compName = defMatch ? defMatch[1] : null;
+  var reactCode = code
+    .replace(/export\s+default\s+function\s+(\w+)/, 'function $1')
+    .replace(/export\s+default\s+class\s+(\w+)/, 'class $1')
+    .replace(/export\s+default\s+(\w+)\s*;?\s*$/, '');
+  if (compName) {
+    reactCode += '\nReactDOM.createRoot(document.getElementById("root")).render(React.createElement(' + compName + '));';
+  }
+  var html = '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
+    '<style>*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;background:#f4f6fb}</style>' +
+    '<script src="https://unpkg.com/react@18/umd/react.development.js"><' + '/script>' +
+    '<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"><' + '/script>' +
+    '<script src="https://unpkg.com/@babel/standalone/babel.min.js"><' + '/script>' +
+    '</head><body><div id="root"></div>' +
+    '<script type="text/babel">' + reactCode + '<' + '/script>' +
+    '</body></html>';
+  return prepareWidgetHTML(html, ctx);
+}
+
 // ── prepareWidgetHTML ───────────────────────────────────────────────────────
 function prepareWidgetHTML(html, ctx) {
   ctx = ctx || {};
   var bridgeTag = '<script>' + GRIST_BRIDGE_SCRIPT + '<' + '/script>';
   html = html.replace(/<script[^>]*grist-plugin-api\.js[^>]*><\/script>/gi, '');
-  var init = bridgeTag + '<script>window.__APP_STATE__=' + JSON.stringify(ctx.state || {}) +
+  // Strip large/unsafe fields from state.record — artefacts don't need their own Code in __APP_STATE__
+  var _st = ctx.state || {};
+  var _rec = _st.record ? Object.assign({}, _st.record) : null;
+  if (_rec) { delete _rec.Code; delete _rec.Dependencies; delete _rec.Output; }
+  var stateClean = Object.assign({}, _st, _rec ? {record: _rec} : {});
+  var init = bridgeTag + '<script>window.__APP_STATE__=' + JSON.stringify(stateClean) +
     ';window.__APP_ROUTE__="' + (ctx.route || '/') + '";' + APP_RUNTIME_SCRIPT + '<' + '/script>';
   return html.includes('</head>') ? html.replace('</head>', init + '</head>') : init + html;
 }
@@ -436,9 +501,18 @@ window.addEventListener('message', async function(e) {
   }
   if (m.type === 'python-ready') {
     var pyFrame2 = document.getElementById('renderFrame');
-    if (pyFrame2 && pyFrame2.contentWindow && _gristSchema) {
-      pyFrame2.contentWindow.postMessage({type: 'python-schema', tables: _gristSchema.tables || []}, '*');
+    if (pyFrame2 && pyFrame2.contentWindow) {
+      // Send schema immediately if available, else fetch it first
+      var schemaTables = _gristSchema ? (_gristSchema.tables || []) : [];
+      if (!schemaTables.length) {
+        try { var s = await tool('grist_schema'); _gristSchema = s; schemaTables = s.tables || []; } catch(_) {}
+      }
+      pyFrame2.contentWindow.postMessage({type: 'python-schema', tables: schemaTables}, '*');
     }
+  }
+  if (m.type === 'python-insert' && _editor) {
+    _editor.insert(m.text || '');
+    _editor.focus();
   }
 
   // ── Wizard preview bridge ──────────────────────────────────────────────────
@@ -661,8 +735,10 @@ function listenSSE() {
         if (ev.type === 'wizard_step')    showWizardCard(ev.step, ev.token);
         if (ev.type === 'wizard_close')   { if(ev.card_id) closeWizardCard(ev.card_id); else closeWizard(); }
         if (ev.type === 'context_update') _ctxToCard(ev.panel, ev.token);
+        if (ev.type === 'chat_message')   appendChatMsg(ev.role||'assistant', ev.content||'');
         if (ev.type === 'context_changed') {
           _currentContext = ev.context || 'qualifying';
+          updatePlanChip(_currentContext);
           if (!_currentArt) renderEmpty(); // rafraîchit la home view si visible
         }
       }
@@ -859,7 +935,9 @@ function renderArt(art) {
   var frame = document.getElementById('renderFrame');
   // Bridge Grist disponible pour tous les types iframe (interaction tables/données)
   var ctx = {state: _sharedState, route: '/'};
-  if (['html','grist','react','app'].includes(type)) {
+  if (type === 'react') {
+    frame.srcdoc = prepareReactHTML(code, ctx);
+  } else if (['html','grist','app'].includes(type)) {
     frame.srcdoc = prepareWidgetHTML(code, ctx);
   } else if (type === 'markdown') {
     var mdHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
@@ -919,19 +997,25 @@ function renderArt(art) {
       'span.oh{color:#3e5de7;font-weight:600;display:block;white-space:pre-wrap}' +
       'span.oe{color:#d32f2f;display:block;white-space:pre-wrap}' +
       'span.ox{color:#ccc;font-style:italic;font-size:12px;padding:24px 0;text-align:center;display:block}' +
-      '#sch{width:155px;flex-shrink:0;overflow-y:auto;background:#fafbfd;display:flex;flex-direction:column}' +
-      '#scLbl{padding:6px 10px 4px;font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:#3e5de7;flex-shrink:0;border-bottom:1px solid #eef0f8}' +
+      '#sch{width:160px;flex-shrink:0;overflow:hidden;background:#fafbfd;display:flex;flex-direction:column;transition:width .15s}' +
+      '#sch.collapsed{width:0}' +
+      '#scHead{padding:5px 8px 4px;font-size:10px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:#3e5de7;flex-shrink:0;border-bottom:1px solid #eef0f8;display:flex;align-items:center;justify-content:space-between;white-space:nowrap}' +
+      '#scToggle{background:none;border:none;cursor:pointer;color:#bbb;font-size:14px;padding:0 2px;line-height:1}#scToggle:hover{color:#3e5de7}' +
       '#scList{flex:1;overflow-y:auto;padding:3px 0}' +
-      '.th{padding:4px 10px;font-size:12px;font-weight:600;color:#444;cursor:pointer;display:flex;align-items:center;gap:5px;border-radius:4px;margin:1px 3px;user-select:none}' +
-      '.th:hover{color:#3e5de7;background:#eef2ff}.th.open{color:#3e5de7}' +
-      '.ch{color:#bbb;font-size:10px;transition:transform .12s;display:inline-block}' +
+      '.th{padding:4px 8px;font-size:12px;font-weight:600;color:#444;cursor:pointer;display:flex;align-items:center;gap:4px;border-radius:4px;margin:1px 3px;user-select:none;white-space:nowrap}' +
+      '.th:hover{color:#3e5de7;background:#eef2ff}' +
+      '.ch{color:#bbb;font-size:9px;transition:transform .12s;display:inline-block;flex-shrink:0}' +
       '.th.open .ch{transform:rotate(90deg);color:#3e5de7}' +
-      '.tc{display:none;padding:2px 10px 4px 22px}' +
+      '.tn{flex:1;overflow:hidden;text-overflow:ellipsis}' +
+      '.ti{cursor:pointer;font-size:9px;color:#bbb;padding:1px 4px;border-radius:3px;flex-shrink:0;background:#eef2ff;color:#3e5de7;display:none}' +
+      '.th:hover .ti{display:inline}' +
+      '.tc{display:none;padding:0 4px 3px 18px}' +
       '.th.open+.tc{display:block}' +
-      '.cr{font-size:10.5px;font-family:monospace;line-height:1.85;display:flex;gap:4px}' +
-      '.ct{color:#bbb;min-width:22px;font-size:9.5px}.cn{color:#3e5de7}' +
-      '#hint{padding:6px 10px;font-size:10px;color:#bbb;border-top:1px solid #eef0f8;line-height:1.5;flex-shrink:0}' +
-      '#hint code{font-family:monospace;color:#3e5de7}' +
+      '.cr{font-size:10.5px;font-family:monospace;line-height:1.7;display:flex;align-items:center;gap:4px;padding:0 2px;border-radius:3px;cursor:pointer}' +
+      '.cr:hover{background:#eef2ff}.ct{color:#cbd5e1;min-width:28px;font-size:9px;text-align:right}.cn{color:#3e5de7;flex:1}' +
+      '.cr:hover .cn{text-decoration:underline}' +
+      '#hint{padding:5px 8px;font-size:9.5px;color:#bbb;border-top:1px solid #eef0f8;line-height:1.5;flex-shrink:0;white-space:nowrap}' +
+      '#hint code{font-family:monospace;color:#94a3b8}' +
       '</style></head><body>' +
       '<div id="sb">' +
       '<div class="dot" id="dot"></div>' +
@@ -941,9 +1025,9 @@ function renderArt(art) {
       '<div id="main">' +
       '<div id="out"><span class="ox">Cliquer Exécuter pour lancer le script avec les données Grist.</span></div>' +
       '<div id="sch">' +
-      '<div id="scLbl">Tables</div>' +
+      '<div id="scHead"><span>TABLES</span><button id="scToggle" title="Réduire" onclick="toggleSch()">‹</button></div>' +
       '<div id="scList"></div>' +
-      '<div id="hint"><code>tables["Nom"]</code><br>liste de dicts</div>' +
+      '<div id="hint"><code>tables["T"][i]["col"]</code><br>Clic = insérer</div>' +
       '</div>' +
       '</div>' +
       '<scri' + 'pt>' +
@@ -951,8 +1035,15 @@ function renderArt(art) {
       'document.getElementById("runBtn").disabled=true;document.getElementById("runBtn").textContent="⏳";' +
       'document.getElementById("dot").className="dot run";document.getElementById("st").textContent="Exécution…";' +
       'window.parent.postMessage({type:"python-run"},"*");}' +
+      'function ins(txt){window.parent.postMessage({type:"python-insert",text:txt},"*");}' +
+      'function toggleSch(){var s=document.getElementById("sch"),btn=document.getElementById("scToggle");s.classList.toggle("collapsed");btn.textContent=s.classList.contains("collapsed")?"›":"‹";}' +
       'document.getElementById("scList").addEventListener("click",function(e){' +
-      'var h=e.target.closest(".th");if(h)h.classList.toggle("open");});' +
+      '  var col=e.target.closest(".cr");' +
+      '  if(col){var t=col.dataset.t,c=col.dataset.c;ins("r[\\""+c+"\\"]");return;}' +
+      '  var ti=e.target.closest(".ti");' +
+      '  if(ti){ins("tables[\\""+ti.dataset.t+"\\"]");return;}' +
+      '  var h=e.target.closest(".th");if(h)h.classList.toggle("open");' +
+      '});' +
       'window.addEventListener("message",function(e){' +
       'if(!e.data)return;' +
       'if(e.data.type==="python-result"){' +
@@ -971,12 +1062,19 @@ function renderArt(art) {
       'if(e.data.type==="python-schema"){' +
       'var tbls=e.data.tables||[],list=document.getElementById("scList");' +
       'list.innerHTML=tbls.map(function(t){' +
-      'var cols=(t.columns||[]).map(function(c){return "<div class=\'cr\'><span class=\'ct\'>"+c.type.slice(0,4)+"</span><span class=\'cn\'>"+c.id+"</span></div>";}).join("");' +
-      'return "<div class=\'th\'><span class=\'ch\'>›</span>📋 "+t.id+"</div><div class=\'tc\'>"+cols+"</div>";}).join("");}' +
+      'var cols=(t.columns||[]).map(function(c){' +
+      '  var tp=(c.type||"").split(":")[0].slice(0,4).toLowerCase();' +
+      '  return "<div class=\'cr\' data-t=\'"+t.id+"\' data-c=\'"+c.id+"\' title=\'Insérer r[\\""+c.id+"\\"]\'>"' +
+      '    +"<span class=\'ct\'>"+tp+"</span><span class=\'cn\'>"+c.id+"</span></div>";}).join("");' +
+      'return "<div class=\'th\'><span class=\'ch\'>›</span>"' +
+      '  +"<span class=\'tn\'>"+t.id+"</span>"' +
+      '  +"<span class=\'ti\' data-t=\'"+t.id+"\' title=\'Insérer tables[\\""+t.id+"\\"]\'>[+]</span>"' +
+      '  +"</div><div class=\'tc\'>"+cols+"</div>";}).join("");}' +
       '});' +
       'window.parent.postMessage({type:"python-ready"},"*");' +
       '<' + '/script></body></html>';
-    frame.srcdoc = prepareWidgetHTML(pyHtml, ctx);
+    // Python canvas n'utilise pas le bridge (postMessage direct) — pas de prepareWidgetHTML
+    frame.srcdoc = pyHtml;
   } else {
     // sql → code avec syntax highlighting via highlight.js
     var escaped = code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -1136,6 +1234,23 @@ var _wzCards = {};       // id → {step, token}
 var _wzOrder = [];       // card display order (non-blocking first, blocking last)
 var _wzDiState = {};     // data-import state: cid → {step, data:[], selected:Set}
 
+function _wzEnsureOverlay() {
+  if (document.getElementById('wz-thread')) return;
+  var ov = document.getElementById('wizardOverlay');
+  ov.innerHTML =
+    '<div id="wz-chips"></div>' +
+    '<div id="wz-thread"></div>' +
+    '<div id="wz-chat-section">' +
+      '<div id="wz-msgs"></div>' +
+      '<div id="wz-chat-bar">' +
+        '<textarea id="wz-chat-input" rows="1" placeholder="Message…" ' +
+          'onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();sendChat();}"></textarea>' +
+        '<button id="wz-chat-send" onclick="sendChat()" title="Envoyer">↑</button>' +
+      '</div>' +
+    '</div>';
+  updatePlanChip(_currentContext);
+}
+
 function _ctxToCard(panel, token) {
   if (!panel || (!panel.title && !(panel.sections||[]).length)) {
     closeWizardCard('ctx-plan'); return;
@@ -1147,6 +1262,7 @@ function _ctxToCard(panel, token) {
 
 function showWizardCard(step, token) {
   if (!step || !step.id) return;
+  _wzEnsureOverlay();
   var id = step.id, isNew = !_wzCards[id];
   _wzCards[id] = {step:step, token:token||_token};
   if (isNew) {
@@ -1156,9 +1272,9 @@ function showWizardCard(step, token) {
   _wzRebuild();
   var ov = document.getElementById('wizardOverlay');
   ov.style.display = 'flex';
-  // scroll to blocking card
+  // scroll to newest / blocking card in thread
   if (_wzIsBlocking(step)) setTimeout(function(){
-    var el = ov.querySelector('.card-blocking');
+    var el = document.querySelector('#wz-thread .card-blocking');
     if (el) el.scrollIntoView({behavior:'smooth', block:'nearest'});
   }, 80);
 }
@@ -1173,7 +1289,7 @@ function _wzLastNB() {
 }
 
 function closeWizardCard(id) {
-  var el = document.querySelector('.wz-card[data-wid="'+id+'"]');
+  var el = document.querySelector('#wz-thread .wz-card[data-wid="'+id+'"]');
   if (el) {
     el.classList.add('card-exit');
     setTimeout(function() { _wzRemove(id); }, 200);
@@ -1183,6 +1299,7 @@ function closeWizardCard(id) {
 function _wzRemove(id) {
   _wzOrder = _wzOrder.filter(function(x){return x!==id;});
   delete _wzCards[id];
+  _wzUpdateChatState();
   if (_wzOrder.length === 0) {
     var ov = document.getElementById('wizardOverlay');
     ov.style.display = 'none'; ov.innerHTML = '';
@@ -1193,13 +1310,20 @@ function closeWizard() {
   _wzCards = {}; _wzOrder = [];
   var ov = document.getElementById('wizardOverlay');
   ov.style.display = 'none'; ov.innerHTML = '';
+  // reset: le chat se masquera à la prochaine _wzEnsureOverlay
+}
+
+function _wzHasChatHistory() {
+  var msgs = document.getElementById('wz-msgs');
+  return msgs && msgs.children.length > 0;
 }
 
 function _wzRebuild() {
-  var ov = document.getElementById('wizardOverlay');
+  var thread = document.getElementById('wz-thread');
+  if (!thread) return;
   // preserve exit-animated cards
   var exiting = {};
-  ov.querySelectorAll('.wz-card.card-exit').forEach(function(el){
+  thread.querySelectorAll('.wz-card.card-exit').forEach(function(el){
     exiting[el.dataset.wid] = el.outerHTML;
   });
   var html = '';
@@ -1207,13 +1331,13 @@ function _wzRebuild() {
     var c = _wzCards[id]; if (!c) return;
     html += _wzBuildCard(id, c.step);
   });
-  // re-append exiting cards so their animation finishes
   Object.values(exiting).forEach(function(h){ html += h; });
-  ov.innerHTML = html;
-  // Direct srcdoc assignment for mermaid iframes (avoids HTML attribute escaping issues)
-  ov.querySelectorAll('iframe[data-srcdoc-b64]').forEach(function(fr) {
+  thread.innerHTML = html;
+  // Direct srcdoc assignment for mermaid iframes
+  thread.querySelectorAll('iframe[data-srcdoc-b64]').forEach(function(fr) {
     try { fr.srcdoc = decodeURIComponent(escape(atob(fr.getAttribute('data-srcdoc-b64')))); } catch(e) {}
   });
+  _wzUpdateChatState();
 }
 
 function _wzBuildCard(id, step) {
@@ -1722,7 +1846,9 @@ function _wzPreview(step, cid) {
     // Use base64 data attr + post-process srcdoc assignment to avoid attribute escaping issues
     srcdoc = 'data:mmd:' + btoa(unescape(encodeURIComponent(_mmdHtml)));
     if (!step.height) height = 420;
-  } else if (ctype === 'html' || ctype === 'react' || ctype === 'grist') {
+  } else if (ctype === 'react') {
+    srcdoc = _injectWzScript(prepareReactHTML(code, {state: _sharedState, route: '/'}));
+  } else if (ctype === 'html' || ctype === 'grist') {
     srcdoc = useBridge ? _injectWzScript(prepareWidgetHTML(code, {state: _sharedState, route: '/'}))
                        : code;
   } else if (ctype === 'svg') {
@@ -1787,6 +1913,66 @@ function wzRevealSubmit(cid, actionId) {
   var t = document.getElementById('wzrev-'+cid);
   var comment = t ? t.value.trim() : '';
   wzPost(cid, 'action', {value: actionId, comment: comment});
+}
+
+// ── WIZARD CHAT HELPERS ───────────────────────────────────────────────────────
+function updatePlanChip(ctx) {
+  var chips = document.getElementById('wz-chips');
+  if (!chips) return;
+  var labels = {qualifying:'🔍 Qualification',assessing:'📊 Analyse',
+    designing:'🎨 Design',building:'⚙️ Build',verifying:'✅ Vérif',done:'✓ Terminé'};
+  var lbl = labels[ctx] || ctx || '';
+  chips.innerHTML = lbl
+    ? '<span class="wz-chip active">'+_wzEsc(lbl)+'</span>'
+    : '';
+}
+
+function appendChatMsg(role, text) {
+  _wzEnsureOverlay();
+  var msgs = document.getElementById('wz-msgs');
+  if (!msgs) return;
+  // Rendre la section chat visible
+  var sec = document.getElementById('wz-chat-section');
+  if (sec) sec.classList.add('active');
+  var div = document.createElement('div');
+  div.className = 'wz-msg ' + (role === 'user' ? 'user' : 'assistant');
+  var initials = role === 'user' ? 'U' : 'AI';
+  div.innerHTML =
+    '<div class="wz-msg-avatar">'+initials+'</div>' +
+    '<div class="wz-msg-bubble">'+_wzEsc(text)+'</div>';
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  // ensure overlay visible
+  var ov = document.getElementById('wizardOverlay');
+  if (ov && ov.style.display === 'none') ov.style.display = 'flex';
+}
+
+async function sendChat() {
+  var inp = document.getElementById('wz-chat-input');
+  if (!inp || !inp.value.trim() || inp.disabled) return;
+  var text = inp.value.trim();
+  inp.value = '';
+  inp.style.height = '';
+  // Pas d'echo local — le serveur pousse SSE chat_message qui appellera appendChatMsg
+  try {
+    await fetch(BASE+'/chat/'+_token, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({message: text})
+    });
+  } catch(e) { showToast('Erreur chat: '+e.message, 'error'); }
+}
+
+function _wzUpdateChatState() {
+  var inp = document.getElementById('wz-chat-input');
+  var btn = document.getElementById('wz-chat-send');
+  if (!inp || !btn) return;
+  var hasBlocking = _wzOrder.some(function(id){
+    var c = _wzCards[id]; return c && _wzIsBlocking(c.step);
+  });
+  inp.disabled = hasBlocking;
+  btn.disabled = hasBlocking;
+  inp.placeholder = hasBlocking ? 'Réponds au formulaire ci-dessus…' : 'Message…';
 }
 
 async function wzPost(cid, type, values) {

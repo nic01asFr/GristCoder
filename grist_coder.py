@@ -30,7 +30,7 @@ WIDGET_PATH = Path(__file__).parent / "widget.html"
 # ── SERVER INSTRUCTIONS ───────────────────────────────────────────────────────
 
 SERVER_INSTRUCTIONS = """
-Tu es Grist Coder MCP v5.9 — service de construction d apps Grist completes et guidees.
+Tu es Grist Coder MCP v5.12 — service de construction d apps Grist completes et guidees.
 
 MISSION
   Transformer le besoin utilisateur en une application Grist complete (donnees + UI + logique +
@@ -108,6 +108,14 @@ PRINCIPES D ORCHESTRATION
                     Dans les deux cas : traiter le resultat puis canvas_context_update(card_id="X")
   - plan_update() en debut + fin de chaque phase : maintient la coherence de la source de verite
 
+BOUCLE AUTONOME — CHAT WIDGET (v5.12)
+  Le widget dispose d un composant chat en bas de l overlay wizard.
+  L utilisateur peut envoyer des messages libres PENDANT qu une operation se deroule.
+  PATTERN STANDARD : chat_reply(message, wait=True) — un seul appel envoie + attend reponse.
+  Retourne {text, ts} quand l utilisateur repond.
+  Pour attendre sans envoyer de message : wait_for_chat(blocking=True).
+  Le composant chat n apparait dans le widget que quand chat_reply est appele (masque par defaut).
+
 BOUCLE POST-WIZARD (apres chaque reponse interactive bloquante)
   La reponse wizard contient toujours : _ux_context, _ux_task, _next
   1. Traiter la reponse (valider, patcher, noter)
@@ -126,6 +134,8 @@ OUTILS (28)
   Canvas   : canvas_read, canvas_write, canvas_patch, canvas_exec, canvas_screenshot, canvas_type
   Wizard   : canvas_wizard (id requis, choice|form|confirm|progress|info|input)
              canvas_wizard_close (card_id? -> ferme une card ; absent -> ferme tout)
+  Chat     : chat_reply(message, wait=False) -> bulle assistant (wait=True = envoie + attend reponse)
+             wait_for_chat(blocking?, timeout?) -> attend message user sans envoyer (cas async)
   Context  : canvas_context_update (card_id? -> card nommee libre dans l overlay)
   Subagent : subagent_call(role=...)  <- roles: data-architect|ui-designer|page-architect|
                                           data-analyst|integrator|assistant
@@ -193,6 +203,7 @@ class SessionCtx:
         self.project_plan: dict = {}   # plan de projet persistant : need, tables, artefacts, pages, status
         self.current_context: str = "qualifying"   # qualifying|assessing|designing|building|verifying|done
         self._active_wizard_cards: dict[str, dict] = {}  # card_id -> step dict (persist on SSE reconnect)
+        self._chat_history: list[dict] = []        # {role, content, ts} — replay sur reconnexion SSE
 
     def touch(self): self.last_seen = time.time()
 
@@ -266,6 +277,7 @@ _client_capabilities: dict[str, dict] = {}   # uid_key -> capabilities déclaré
 _mcp_client_sids: dict[str, str] = {}        # uid_key -> sid SSE du client MCP (Claude Desktop)
 _display_sids: set[str] = set()              # sids des widgets en display mode (?a=...) — pas de replay wizard
 _sampling_waiters: dict[str, asyncio.Future] = {}  # smp_id -> Future pour sampling/createMessage
+_chat_waiters: dict[str, asyncio.Future] = {}      # uid_key -> Future pour wait_for_chat
 
 # ── SSE ───────────────────────────────────────────────────────────────────────
 
@@ -651,13 +663,34 @@ TOOLS = [
     # Chat
     {"name": "chat_reply",
      "description": (
-         "Envoie une reponse dans l interface chat du widget. "
-         "Appeler apres avoir lu chat/{token} et traite la demande utilisateur. "
-         "Inutile si le client supporte sampling (reponse automatique)."
+         "Envoie un message dans le chat widget et optionnellement attend la reponse. "
+         "wait=False (defaut) : envoie seulement, retourne {ok:True}. "
+         "wait=True : envoie + bloque jusqu a la reponse user, retourne {text, ts}. "
+         "Pattern standard : chat_reply(message, wait=True) remplace chat_reply + wait_for_chat. "
+         "Inutile si le client supporte sampling (reponse automatique via _handle_chat_sample)."
      ),
      "inputSchema": {"type": "object",
-                     "properties": {"message": {"type": "string"}},
+                     "properties": {
+                         "message": {"type": "string"},
+                         "wait":    {"type": "boolean", "default": False,
+                                     "description": "True = envoie + attend reponse user"},
+                         "timeout": {"type": "number", "default": 600},
+                     },
                      "required": ["message"]}},
+
+    {"name": "wait_for_chat",
+     "description": (
+         "Bloque jusqu a ce que l utilisateur envoie un message dans le chat widget. "
+         "Retourne {text, ts} quand l utilisateur envoie. "
+         "Permet une boucle autonome : LLM agit -> wait_for_chat() -> user repond -> LLM continue. "
+         "blocking=False : retourne immediatement avec le dernier message en historique (non-bloquant). "
+         "timeout : secondes avant abandon (defaut 600)."
+     ),
+     "inputSchema": {"type": "object", "properties": {
+         "blocking": {"type": "boolean", "default": True,
+                      "description": "True = attend le prochain message ; False = retourne last_message immediatement"},
+         "timeout":  {"type": "number", "default": 600, "description": "Timeout en secondes"},
+     }}},
 
     # Subagent
     {"name": "subagent_call",
@@ -827,7 +860,7 @@ TOOLS = [
 _QUALIFYING_TOOLS = {
     "sessions_list", "session_select", "session_info",
     "canvas_wizard", "canvas_wizard_close", "canvas_context_update",
-    "plan_update", "subagent_call", "artefact_init", "chat_reply",
+    "plan_update", "subagent_call", "artefact_init", "chat_reply", "wait_for_chat",
     "grist_schema", "grist_records", "grist_sql",
 }
 _ASSESSING_TOOLS = _QUALIFYING_TOOLS | {
@@ -4000,9 +4033,43 @@ async def call_tool(uid_key, mcp_sid, name, args):
         message = args.get("message", "").strip()
         if not message:
             return {"error": "message vide"}
+        wait    = args.get("wait", False)
+        timeout = float(args.get("timeout", 600))
+        ts = time.time()
+        ctx._chat_history.append({"role": "assistant", "content": message, "ts": ts})
         _push(uid_key, {"type": "chat_message", "token": ctx.token,
-                        "role": "assistant", "content": message, "ts": time.time()})
-        return {"ok": True}
+                        "role": "assistant", "content": message, "ts": ts})
+        if not wait:
+            return {"ok": True}
+        # wait=True : bloquer jusqu'à la prochaine réponse user (même mécanique que wait_for_chat)
+        loop = asyncio.get_event_loop()
+        fut  = loop.create_future()
+        _chat_waiters[uid_key] = fut
+        try:
+            text = await asyncio.wait_for(asyncio.shield(fut), timeout=timeout)
+            return {"text": text, "ts": time.time()}
+        except asyncio.TimeoutError:
+            return {"status": "timeout"}
+        finally:
+            _chat_waiters.pop(uid_key, None)
+
+    # ── Wait for chat (boucle autonome)
+    if name == "wait_for_chat":
+        blocking = args.get("blocking", True)
+        timeout  = float(args.get("timeout", 600))
+        if not blocking:
+            last = ctx._chat_history[-1] if ctx._chat_history else None
+            return {"ok": True, "blocking": False, "last_message": last}
+        loop = asyncio.get_event_loop()
+        fut  = loop.create_future()
+        _chat_waiters[uid_key] = fut
+        try:
+            text = await asyncio.wait_for(asyncio.shield(fut), timeout=timeout)
+            return {"text": text, "ts": time.time()}
+        except asyncio.TimeoutError:
+            return {"status": "timeout"}
+        finally:
+            _chat_waiters.pop(uid_key, None)
 
     # ── Subagent call via sampling
     if name == "subagent_call":
@@ -4474,7 +4541,7 @@ async def dispatch(uid_key, mcp_sid, method, params):
         _client_capabilities[uid_key] = params.get("capabilities", {})
         return {
             "protocolVersion": MCP_VER,
-            "serverInfo": {"name": "grist-coder", "version": "5.11",
+            "serverInfo": {"name": "grist-coder", "version": "5.12",
                            "instructions": SERVER_INSTRUCTIONS},
             "capabilities": {
                 "tools":     {"listChanged": True},
@@ -4484,9 +4551,9 @@ async def dispatch(uid_key, mcp_sid, method, params):
             },
         }
     if method == "tools/list":
-        ctx = registry.resolve(uid_key, None)
-        context = ctx.current_context if ctx else "qualifying"
-        return {"tools": _tools_for_context(context)}
+        # Always return all tools — context-based filtering via notifications/tools/list_changed
+        # is not reliably acted upon by all MCP clients (e.g. Claude Code). Context is guidance only.
+        return {"tools": TOOLS}
     if method == "tools/call":
         name   = params["name"]
         result = await call_tool(uid_key, mcp_sid, name, params.get("arguments", {}))
@@ -4643,6 +4710,15 @@ async def mcp_sse(request: Request,
         if ctx_for_replay and ctx_for_replay._active_wizard_cards:
             for card_ev in ctx_for_replay._active_wizard_cards.values():
                 try: _queues[sid].put_nowait({**card_ev, "_user": uid_key})
+                except asyncio.QueueFull: pass
+        # Re-push chat history on reconnect
+        if ctx_for_replay and ctx_for_replay._chat_history:
+            for msg in ctx_for_replay._chat_history[-20:]:
+                try:
+                    _queues[sid].put_nowait({
+                        "type": "chat_message", "_user": uid_key,
+                        "role": msg["role"], "content": msg["content"], "ts": msg["ts"]
+                    })
                 except asyncio.QueueFull: pass
     async def stream():
         try:
@@ -4823,9 +4899,15 @@ async def chat_message(token: str, request: Request):
     if not message:
         return JSONResponse({"error": "message vide"}, status_code=400)
     ts = time.time()
+    # Stocker dans l'historique chat
+    ctx._chat_history.append({"role": "user", "content": message, "ts": ts})
     # Echo immédiat au widget (bulle user)
     _push(uid_key, {"type": "chat_message", "token": token,
                     "role": "user", "content": message, "ts": ts})
+    # Débloquer wait_for_chat si en attente
+    fut = _chat_waiters.get(uid_key)
+    if fut and not fut.done():
+        fut.set_result(message)
     # Si le client supporte sampling → réponse automatique
     caps = _client_capabilities.get(uid_key, {})
     if "sampling" in caps:
@@ -4858,7 +4940,7 @@ async def webhook_receive(doc_id: str, request: Request):
 @app.get("/health")
 async def health():
     total = sum(len(u["sessions"]) for u in registry._users.values())
-    return {"ok": True, "version": "5.11", "mcp_protocol": MCP_VER,
+    return {"ok": True, "version": "5.12", "mcp_protocol": MCP_VER,
             "sessions": total, "users": len(registry._users),
             "tools": len(TOOLS), "prompts": len(PROMPTS),
             "resources": {"static": len(STATIC_RESOURCES), "templates": len(RESOURCE_TEMPLATES)},
