@@ -75,6 +75,9 @@ body{display:flex;flex-direction:column}
 #wizardOverlay{position:absolute;inset:0;z-index:50;background:var(--bg2);
   flex-direction:column;overflow:hidden;
   animation:ti .18s ease}
+/* Bottom-sheet mode quand toutes les cards sont non-bloquantes (progress/info/plan passif) */
+#wizardOverlay.wz-nb-mode{top:auto;bottom:0;max-height:46%;
+  border-top:2px solid var(--border);box-shadow:0 -4px 16px rgba(0,0,0,.10);}
 /* thread layout */
 #wz-chips{display:flex;flex-wrap:wrap;gap:5px;padding:7px 12px;
   border-bottom:1px solid var(--border);flex-shrink:0;background:var(--bg2);min-height:0}
@@ -547,6 +550,8 @@ const _DISPLAY_MODE = !!_DISPLAY_ART;
 var _registered=false, _registering=false, _token=null, _mcpId=1, _es=null, _refreshTimer=null;
 var _artefacts=[], _artefactsMap={}, _currentArt=null, _sharedState={};
 var _artefactsLoaded=false; // true après loadArtefacts() — bloque onRecord auto-select avant init
+var _canvasLockUntil=0;    // timestamp ms — onRecord auto-select ignoré pendant canvas_updated (fallback)
+var _canvasTargetArt=null; // art_nom en cours de production — onRecord ne peut pas switcher vers autre chose
 var _currentContext='qualifying'; // phase courante poussée par plan_update via context_changed SSE
 var _editor, _panelOpen=false;
 var _bridgeOnRecordRelays=[], _lastRecords=null;
@@ -612,8 +617,8 @@ grist.onRecord(function(record) {
     if (_currentArt) renderArt(_currentArt);
   } else {
     // IDE mode: auto-select artefact if linked to Artefacts table (record has Nom field)
-    // Ignorer avant loadArtefacts() pour démarrer sur la page vide
-    if (_artefactsLoaded && record.Nom && _artefactsMap[record.Nom]) {
+    // Ignorer avant loadArtefacts() et pendant un canvas_updated en cours
+    if (_artefactsLoaded && !(_canvasTargetArt && record.Nom !== _canvasTargetArt) && record.Nom && _artefactsMap[record.Nom]) {
       var sel = document.getElementById('artSelect');
       if (sel && sel.value !== record.Nom) { sel.value = record.Nom; onArtSelect(); }
     }
@@ -700,6 +705,7 @@ function listenSSE() {
               _evArtKnown = true;
               var sel = document.getElementById('artSelect');
               if (sel && sel.value !== _evData.art_nom) {
+                _canvasTargetArt = _evData.art_nom; // lock: onRecord ne peut pas switcher hors de cet artefact
                 sel.value = _evData.art_nom;
                 _currentArt = _artefactsMap[_evData.art_nom];
               }
@@ -707,18 +713,29 @@ function listenSSE() {
               if (_evData.art_type && _currentArt) {
                 _currentArt.Type = _evData.art_type;
                 _artefactsMap[_evData.art_nom].Type = _evData.art_type;
-                setEditorMode(_evData.art_type);
               }
-              if (!_panelOpen) openPanel();
+              // Initialize editor silently (panel reste fermé pendant production)
+              if (_editor && _currentArt) {
+                setEditorMode(_currentArt.Type);
+                if (!_editor.getValue() || _editor.getValue() !== (_currentArt.Code||'')) {
+                  _editor.setValue(_currentArt.Code || '', -1);
+                }
+              }
+              // Ne pas ouvrir le panel automatiquement — l'utilisateur voit le rendu, pas le code
             }
             loadCanvasIntoEditor().then(function(){
               if (_evArtKnown) saveArt();
+              _canvasTargetArt = null; // libère le lock après sauvegarde
               return renderCurrent();
             });
             document.getElementById('sbCanvas').textContent = _evData.sha || 'updated';
           };
           // If artefact was just created server-side (is_new) or unknown: refresh list first
           if (_evData.art_nom && (!_artefactsMap[_evData.art_nom] || _evData.is_new)) {
+            // Pre-set artSelect so renderArtSelect() preserves the correct name during reload
+            _canvasTargetArt = _evData.art_nom; // lock onRecord pendant le reload
+            var _preSelEl = document.getElementById('artSelect');
+            if (_preSelEl && _evData.art_nom) _preSelEl.value = _evData.art_nom;
             loadArtefacts().then(_applyCanvasUpdate);
           } else {
             _applyCanvasUpdate();
@@ -1270,6 +1287,8 @@ function showWizardCard(step, token) {
     else { var li = _wzLastNB(); _wzOrder.splice(li+1, 0, id); }
   }
   _wzRebuild();
+  _wzUpdateOverlayMode();
+  _wzUpdateChatState();
   var ov = document.getElementById('wizardOverlay');
   ov.style.display = 'flex';
   // scroll to newest / blocking card in thread
@@ -1303,7 +1322,15 @@ function _wzRemove(id) {
   if (_wzOrder.length === 0) {
     var ov = document.getElementById('wizardOverlay');
     ov.style.display = 'none'; ov.innerHTML = '';
-  } else { _wzRebuild(); }
+  } else { _wzRebuild(); _wzUpdateOverlayMode(); }
+}
+
+function _wzUpdateOverlayMode() {
+  var ov = document.getElementById('wizardOverlay');
+  if (!ov) return;
+  var hasBlocking = _wzOrder.some(function(id){ var c=_wzCards[id]; return c && _wzIsBlocking(c.step); });
+  if (hasBlocking) ov.classList.remove('wz-nb-mode');
+  else ov.classList.add('wz-nb-mode');
 }
 
 function closeWizard() {
@@ -1360,7 +1387,7 @@ function _wzBuildCard(id, step) {
 function _wzIsBlocking(step) {
   if (!step) return false;
   var t = step.type;
-  return t==='choice'||t==='form'||t==='confirm'||t==='input'||t==='preview'
+  return t==='choice'||t==='form'||t==='confirm'||t==='input'||t==='preview'||t==='data-import'
     ||(t==='plan'&&((step.actions||[]).length>0||!!step.input))
     ||(t==='info'&&(step.actions||[]).length>0)
     ||(t==='progress'&&((step.actions||[]).length>0||!!step.input));
@@ -1939,7 +1966,7 @@ function appendChatMsg(role, text) {
   var initials = role === 'user' ? 'U' : 'AI';
   div.innerHTML =
     '<div class="wz-msg-avatar">'+initials+'</div>' +
-    '<div class="wz-msg-bubble">'+_wzEsc(text)+'</div>';
+    '<div class="wz-msg-bubble">'+(role==='user'?_wzEsc(text):_wzMd(text))+'</div>';
   msgs.appendChild(div);
   msgs.scrollTop = msgs.scrollHeight;
   // ensure overlay visible

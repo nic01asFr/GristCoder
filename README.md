@@ -1,6 +1,6 @@
 # grist-coder-mcp
 
-> Widget Grist + MCP Server HTTP streamable · spec 2025-03-26 · v5.2
+> Widget Grist + MCP Server HTTP streamable · spec 2025-03-26 · v5.12
 
 ---
 
@@ -68,7 +68,7 @@ Fichier : `%APPDATA%\Claude\claude_desktop_config.json`
 
 ---
 
-## Tools MCP (21)
+## Tools MCP (28)
 
 ### Sessions
 | Tool | Description |
@@ -76,6 +76,11 @@ Fichier : `%APPDATA%\Claude\claude_desktop_config.json`
 | `sessions_list()` | Liste les documents Grist ouverts — **appeler en premier** |
 | `session_select(token)` | Sélectionne une session |
 | `session_info()` | Infos complètes : doc, tables, artefacts, état canvas |
+
+### Plan
+| Tool | Description |
+|------|-------------|
+| `plan_update(status, ...)` | Met à jour le plan de travail et change le contexte actif |
 
 ### Canvas
 | Tool | Description |
@@ -85,6 +90,17 @@ Fichier : `%APPDATA%\Claude\claude_desktop_config.json`
 | `canvas_patch(old_str, new_str)` | str_replace ciblé — SSE push vers le widget |
 | `canvas_exec()` | Exécute le canvas Python (subprocess isolé, timeout 10s) |
 | `canvas_screenshot()` | Capture le rendu iframe du widget |
+| `canvas_type(type)` | Change le type de l'artefact actif |
+
+### Wizard / Chat / Contexte
+| Tool | Description |
+|------|-------------|
+| `canvas_wizard(step)` | Affiche un formulaire interactif dans le widget (bloquant) |
+| `canvas_wizard_close()` | Ferme l'overlay wizard |
+| `canvas_context_update(sections)` | Panneau mémoire non-bloquant dans le widget |
+| `chat_reply(message, wait?)` | Envoie une bulle de chat — `wait=True` attend la réponse user |
+| `wait_for_chat(timeout?)` | Attend un message user sans envoyer |
+| `subagent_call(role, task)` | Délègue à un agent spécialisé (sampling ou fallback) |
 
 ### Artefact
 | Tool | Description |
@@ -129,6 +145,8 @@ Fichier : `%APPDATA%\Claude\claude_desktop_config.json`
 | `GET` | `/mcp` | SSE stream — mises à jour canvas vers widget |
 | `DELETE` | `/mcp` | Ferme une session SSE |
 | `POST` | `/register` | Enregistrement automatique widget |
+| `POST` | `/wizard/{token}` | Réponse formulaire wizard depuis le widget |
+| `POST` | `/run` | Exécution Python canvas avec tables Grist injectées (subprocess isolé) |
 | `POST` | `/webhook-receive/{docId}` | Receiver webhooks Grist → SSE fan-out (production uniquement, HOST_URL public requis) |
 | `GET` | `/` | Widget HTML Grist |
 | `GET` | `/health` | Healthcheck JSON |
@@ -159,14 +177,19 @@ Pattern C — Inter-artefacts temps réel (localhost OK, pas de webhook)
 
 | URI | Contenu |
 |-----|---------|
-| `docs/schema` | Recettes tables/colonnes |
-| `docs/artefacts` | Templates HTML/JS + API bridge Grist |
-| `docs/playbook` | Séquences pages, layouts, liaisons |
-| `docs/app-patterns` | Patterns multi-widgets : nav, sync, Artefactory |
-| `docs/formulas` | Formules colonnes Python natives Grist |
-| `playbook/{scenario}` | Guide cible : dashboard\|fiche\|table\|full-app\|master-detail |
-| `context/{token}` | Snapshot live : tables + artefacts + pages |
-| `code/{token}` | Source de tous les artefacts |
+| `grist-coder://docs/schema` | Recettes tables/colonnes |
+| `grist-coder://docs/artefacts` | Templates HTML/JS + API bridge Grist |
+| `grist-coder://docs/playbook` | Séquences pages, layouts, liaisons |
+| `grist-coder://docs/app-patterns` | Patterns multi-widgets : nav, sync, Artefactory |
+| `grist-coder://docs/formulas` | Formules colonnes Python natives Grist |
+| `grist-coder://docs/wizard` | Schéma et types du wizard interactif |
+| `grist-coder://docs/services-geo` | Géocodage, cartographie (BAN, OSM, IGN, Leaflet) |
+| `grist-coder://docs/services-data` | Données ouvertes (SIRENE, DVF, data.gouv, API Geo) |
+| `grist-coder://docs/services-ai` | Patterns IA (sync, webhook async, bridge, subagent) |
+| `grist-coder://playbook/{scenario}` | Guide cible : `dashboard\|fiche\|table\|full-app\|master-detail` |
+| `grist-coder://examples/{domain}` | Schéma + données exemple : `crm\|rh\|stock\|projets\|immobilier\|association\|restaurant\|formation` |
+| `grist-coder://context/{token}` | Snapshot live : tables + artefacts + pages |
+| `grist-coder://code/{token}` | Source de tous les artefacts |
 
 ---
 
@@ -175,7 +198,7 @@ Pattern C — Inter-artefacts temps réel (localhost OK, pas de webhook)
 ```
 Widget                          Serveur
 ──────                          ───────
-grist.docApi.getAccessToken()  → POST /register → decode JWT → uid:{userId}
+grist.docApi.getAccessToken()  → POST /register → userId (body) → uid:{userId}
                                                 → gc-xxxxxx session token
 
 Claude Desktop                  _resolve_uid_key()
@@ -185,6 +208,13 @@ Claude Desktop                  _resolve_uid_key()
 - Les appels Grist API utilisent `?auth=token` (widget) ou `Authorization: Bearer` (Claude Desktop)
 - accessToken widget = permission document (pas admin webhooks)
 - Clé API owner = CRUD complet dont webhooks
+
+## Sécurité
+
+- **canvas_exec** et **/run** exécutent du code Python arbitraire — réservés à des utilisateurs de confiance
+- **Ne pas exposer ce service sur un réseau public** sans authentification supplémentaire
+- **WEBHOOK_SECRET** (optionnel, recommandé en production) : définir dans `.env` et configurer le même secret dans Grist → Webhook → Header `X-Webhook-Secret`
+- Les clés Grist ne sont jamais retournées dans les réponses des outils
 
 ---
 
@@ -197,7 +227,8 @@ Claude Desktop                  _resolve_uid_key()
 | `403` sur webhook create | accessToken insuffisant | Utiliser `grist_webhooks` via MCP avec clé API owner |
 | `Fragment introuvable` | `old_str` inexact | Appeler `canvas_read()` d'abord |
 | Pas de sessions | Widget non chargé | Ouvrir le widget dans Grist, attendre la connexion |
-| `timeout 10s` | Boucle infinie canvas | Éviter les boucles sans condition de sortie |
+| `timeout 10s` | Boucle infinie canvas (`canvas_exec`) | Éviter les boucles sans condition de sortie |
+| `timeout 30s` | Boucle infinie dans `/run` | Idem — subprocess tué après 30s |
 
 ---
 

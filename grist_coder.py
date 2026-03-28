@@ -12,7 +12,7 @@ TOOLS : sessions(3) canvas(6) wizard(2) context(1) chat(2) subagent(1)
 MCP   : sampling/createMessage (client capability) -> subagent_call + chat auto-reply
 """
 
-import asyncio, base64, hashlib, json, os, re, subprocess, sys, time, uuid
+import asyncio, base64, hashlib, json, os, re, secrets, subprocess, sys, time, uuid, urllib.parse
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -23,7 +23,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 load_dotenv()
-HOST_URL = os.getenv("HOST_URL", "http://localhost:8742")
+HOST_URL        = os.getenv("HOST_URL", "http://localhost:8742")
+WEBHOOK_SECRET  = os.getenv("WEBHOOK_SECRET", "")
 MCP_VER  = "2025-03-26"
 WIDGET_PATH = Path(__file__).parent / "widget.html"
 
@@ -56,44 +57,65 @@ CYCLE GUIDE — 4 PHASES
   PHASE 1 — QUALIFIER (doc vide ou besoin flou)
     1. sessions_list() -> token + _next hint
     2. plan/{token} -> lire si plan existant (reprise) ; _next_step indique l action recommandee
-    3. canvas_wizard(type="input", id="collect-need") -> collecter le besoin brut
-    4. docs/qualification -> identifier categorie + architecture type adaptee
-    5. Si doc existant a explorer : plan_update(status="assessing") -> outils grist_schema/records disponibles
-    6. Si besoin complexe : subagent_call(role="data-architect") -> canvas_context_update(card_id="arch-analysis")
-    7. canvas_wizard(type="choice", id="confirm-category") -> confirmer categorie si plusieurs options
-    8. canvas_wizard(type="form", id="project-details") -> details : utilisateurs, donnees, integrations
-    9. plan_update(need, tables, artefacts, pages, status="designing")
-       -> _next_resources indique les ressources a lire avant conception
+    3. Si reference externe dans la requete (URL, standard, spec, nom de domaine metier) :
+       WebFetch/WebSearch en premier -> extraire entites, relations, contraintes metier
+    4. canvas_wizard(type="input", id="collect-need") -> collecter le besoin brut
+    5. docs/qualification -> identifier categorie + architecture type adaptee
+    6. Si doc existant : plan_update(status="assessing") -> schema-diagram/{token} + context/{token}
+       pour comprendre l etat reel avant de concevoir
+    7. Si besoin hors categorie standard ou domaine specialise : subagent_call(role="data-architect")
+       est le chemin par defaut (pas l exception) -> canvas_context_update(card_id="arch-analysis")
+    8. canvas_wizard(type="choice", id="confirm-category") -> confirmer categorie
+    9. canvas_wizard(type="form", id="project-details") -> details : utilisateurs, donnees, integrations
+    10. plan_update(need, tables, artefacts, pages, status="designing")
+        -> _next_resources indique les ressources a lire avant conception
 
   NOTE CONTEXTES : les outils disponibles evoluent avec le status du plan (tools/list_changed).
     qualifying -> assessing -> designing -> building -> verifying -> done
     Chaque transition debloque les outils necessaires a la phase suivante.
 
   PHASE 2 — CONCEVOIR (valider le plan avec l utilisateur)
-    1. canvas_wizard(type="confirm", id="validate-plan", content=plan_markdown) -> valider ou amender
-    2. plan_update(status="building") si valide ; sinon retour phase 1 avec corrections
-    3. artefact_init() si table Artefacts absente
+    1. canvas_wizard(source="doc-overview") si tables existantes -> vue complete 3 onglets
+       (etat donnees + pages & vues + flux) pour valider la comprehension structurelle
+    2. canvas_wizard(type="confirm", id="validate-plan", content=plan_markdown) -> valider ou amender
+    3. plan_update(status="building") si valide ; sinon retour phase 1 avec corrections
+    4. artefact_init() si table Artefacts absente
 
   PHASE 3 — CONSTRUIRE (sequentiel, progression visible)
-    canvas_wizard(type="progress", id="build-progress", steps=[tables, artefacts, pages, verification])
+    Debut obligatoire :
+      context/{token} -> snapshot complet : relations (graphe FK) + _quality (widgets vides,
+                         tables sans page, Ref sans visibleCol) + _delta plan vs realite
+      Nettoyage : si _quality ou _delta.extra -> supprimer orphelins (RemoveTable, RemoveRecord)
+                  avant toute construction ; ne jamais construire par-dessus un etat incoherent
+    canvas_wizard(type="progress", id="build-progress", steps=[nettoyage, tables, artefacts, pages, verification])
     Pour chaque table :
-      grist_apply([AddTable, ...]) + grist_apply([BulkAddRecord, ...]) (donnees exemple min 3-5)
-      -> update progress card (step "done")
+      docs/schema -> LIRE AVANT tout AddTable (types, formules, visibleCol, linked sections)
+      Regle formule : toute valeur derivable d autres colonnes = colonne isFormula:true
+                      (jours restants, totaux, statuts calcules, slugs...) jamais saisie manuelle
+      grist_apply([AddTable, ...]) + grist_apply([BulkAddRecord, ...]) (min 3-5 lignes exemple)
+      -> update progress card
     Pour chaque artefact (dashboard -> fiches -> composants) :
+      docs/artefacts -> LIRE AVANT canvas_write (templates, API Grist, patterns lies)
+      context/{token}/page/{page_id} -> contexte page : schema table source, liaisons entrantes/
+                                        sortantes, artefact attendu, colonnes disponibles
       canvas_write(code) -> canvas_screenshot -> grist_upsert (ou Save widget si WAF)
       -> update progress card
     Pour chaque page Grist :
+      playbook/{scenario} -> LIRE le scenario adapte : master-detail | dashboard | fiche | full-app
+      docs/playbook -> sequences et decision tree
       grist_view_create / grist_view_add_widget + grist_section_configure
+      Regle completude : toute section custom = artefact configure ; toute table metier = une page
 
   PHASE 4 — VERIFIER ET LIVRER
-    1. context/{token} -> snapshot final (verifier tables + artefacts + pages)
-    2. canvas_wizard(type="confirm", id="delivery") -> resume construit + actions utilisateur
-    3. plan_update(status="done")
-    4. canvas_wizard_close() -> ferme tout l overlay
+    1. context/{token} -> verifier _quality : plus de widgets vides, Ref avec visibleCol
+    2. canvas_wizard(source="doc-overview") -> validation visuelle app complete (3 onglets)
+    3. canvas_wizard(type="confirm", id="delivery") -> resume construit + actions utilisateur
+    4. plan_update(status="done")
+    5. canvas_wizard_close() -> ferme tout l overlay
 
   REPRISE DE SESSION (plan existant)
     1. plan/{token} -> lire plan + status + _next_step
-    2. context/{token} -> etat reel actuel du doc
+    2. context/{token} -> etat reel actuel (relations + _quality + _delta)
     3. plan_update() non-bloquant -> restaure la card ctx-plan-progress
     4. canvas_wizard(type="confirm", id="resume") -> "Reprendre ?" ou "Modifier le plan ?"
     5. Continuer depuis le status precedent
@@ -150,22 +172,44 @@ OUTILS (28)
              grist_section_configure, grist_view_add_widget
   Webhooks : grist_webhooks (list OK accessToken | CRUD = cle API owner)
 
-RESSOURCES (ordre de lecture recommande)
-  plan/{token}       -> PREMIER : plan persistant + _next_step (reprise ou debut)
-  context/{token}    -> etat reel du doc (tables, artefacts, pages actuels)
-  docs/qualification -> LIRE avant phase 1 : categories, architectures, criteres completude
-  docs/schema        -> types colonnes avant grist_apply
-  docs/artefacts     -> templates avant canvas_write
-  docs/playbook      -> pages avant grist_view_create
-  docs/wizard        -> schema wizard avant canvas_wizard
-  code/{token}       -> source artefacts avant iteration sur app existante
-  docs/app-patterns  -> patterns avances (nav, sync, Artefactory)
-  docs/formulas      -> formules colonnes Python Grist
+RESSOURCES — niveaux de contexte
+
+  DOC (session entiere)
+    plan/{token}           -> PREMIER : plan persistant + _next_step (reprise ou debut)
+    context/{token}        -> snapshot doc complet : schema + relations (graphe FK) + artefacts
+                              + pages/sections + _quality (anomalies) + _delta plan vs realite
+    schema-diagram/{token} -> erDiagram mermaid auto-genere : tables + FK Ref: + visibleCol
+    code/{token}           -> source de tous les artefacts (avant iteration sur app existante)
+
+  CONSTRUCTION (avant operation)
+    docs/qualification     -> LIRE avant phase 1 : categories, architectures, criteres completude
+    docs/schema            -> types colonnes, formules, visibleCol AVANT tout grist_apply
+    docs/artefacts         -> templates, API Grist, patterns AVANT canvas_write
+    docs/formulas          -> colonnes Python Grist (isFormula, getattr, lookupOne...)
+    docs/app-patterns      -> patterns avances (nav, sync, Artefactory)
+
+  PAGE (avant coder un artefact ou creer une page)
+    context/{token}/page/{page_id} -> schema table source + liaisons entrantes/sortantes
+                                       + artefact configure + colonnes disponibles
+    playbook/{scenario}    -> guide scenario avant grist_view_create
+                              valeurs : dashboard | fiche | table | full-app | master-detail
+    docs/playbook          -> decision tree pages + sequences linked sections
+    docs/wizard            -> schema wizard avant canvas_wizard
+
+  SERVICES (avant integration externe)
+    docs/services-geo      -> geocodage, cartographie (BAN, OSM, IGN, Leaflet)
+    docs/services-data     -> donnees ouvertes (SIRENE, DVF, data.gouv, API Geo)
+    docs/services-ai       -> patterns IA (sync canvas_exec, async webhook, bridge, subagent)
+    examples/{domain}      -> schema + donnees exemple pour un domaine metier
 
 STANDARDS QUALITE (non-negotiables)
   Donnees  : types corrects (Text/Numeric/Date/Bool/Choice/Ref:Table), FK via Ref:, formules
+             Toute valeur derivable d autres colonnes -> colonne isFormula:true (jamais saisie manuelle)
+             Toute colonne Ref: -> visibleCol defini (sinon champ vide dans UI)
   UI       : design responsive (Inter, CSS var, mobile-first), palette widget (#3e5de7/#10b981)
   UX       : donnees exemple (BulkAddRecord min 3-5 lignes), pages nommees, widgets lies
+  Pages    : toute table metier -> au moins une page Grist avec widget
+             toute section custom -> artefact configure (url ou widgetOptions.artefact)
   Completude : dashboard (vue globale) + fiche detail (vue unitaire) + navigation si >2 pages
 
 REGLES CRITIQUES
@@ -301,13 +345,6 @@ def _notify_resource(uid_key, uri):
 
 # ── GRIST HTTP HELPERS ────────────────────────────────────────────────────────
 
-def _jwt_payload(token):
-    try:
-        part = token.split(".")[1]
-        part += "=" * (-len(part) % 4)
-        return json.loads(base64.b64decode(part.replace("-", "+").replace("_", "/")))
-    except Exception:
-        return {}
 
 def _gh(ctx):
     h = {"Content-Type": "application/json"}
@@ -752,9 +789,9 @@ TOOLS = [
      "description": "Requete SELECT SQLite. Ideal pour agregations et jointures cross-tables.",
      "inputSchema": {"type": "object",
                      "properties": {
-                         "query": {"type": "string"},
-                         "args":  {"type": "array", "items": {}}},
-                     "required": ["query"]},
+                         "sql":   {"type": "string", "description": "Requete SELECT SQLite"},
+                         "args":  {"type": "array", "items": {}, "description": "Parametres positionnels pour les ?"}},
+                     "required": ["sql"]},
      "annotations": {"readOnlyHint": True}},
 
     # Grist ecriture
@@ -3104,6 +3141,11 @@ RESOURCE_TEMPLATES = [
      "name":         "Schema Diagram",
      "description":  "erDiagram mermaid auto-generé depuis le schema Grist courant. Tables + colonnes + relations (Ref:). Passer directement comme code dans canvas_wizard(type=preview, code_type=mermaid) ou utiliser source='schema' pour auto-generation transparente.",
      "mimeType":     "text/plain"},
+
+    {"uriTemplate":  "grist-coder://context/{token}/page/{page_id}",
+     "name":         "Page Context",
+     "description":  "Contexte detaille d une page Grist : schema de la table source, colonnes disponibles (dont formules), liaisons entrantes/sortantes (linkSrcSectionRef), artefact configure, et suggestions de construction. Lire avant de coder un artefact ou creer une page liee.",
+     "mimeType":     "application/json"},
 ]
 
 # ── RESOURCE READ ─────────────────────────────────────────────────────────────
@@ -3189,7 +3231,7 @@ async def _read_resource(uid_key, mcp_sid, uri):
         schema = await _fetch_schema(ctx)
         return {"uri": uri, "mimeType": "text/plain", "text": _schema_to_mermaid(schema)}
 
-    if uri.startswith("grist-coder://context/"):
+    if uri.startswith("grist-coder://context/") and "/page/" not in uri:
         token = uri.split("/")[-1]
         ctx = registry.resolve(uid_key, token)
         if not ctx: raise ValueError(f"Session inconnue : {token}")
@@ -3336,8 +3378,150 @@ async def _read_resource(uid_key, mcp_sid, uri):
             suggestions.append(f"plan_missing_tables: {missing} — grist_apply([AddTable, ...])")
         if suggestions:
             snapshot["_suggestions"] = suggestions
+        # Relations graph (FK from Ref: columns)
+        relations = []
+        schema = snapshot.get("schema", {})
+        for table_id, cols in schema.items():
+            for col in cols:
+                col_type = col.get("type", "")
+                if col_type.startswith("Ref:"):
+                    target = col_type[4:]
+                    relations.append({"from": table_id, "col": col["id"], "to": target})
+                elif col_type.startswith("RefList:"):
+                    target = col_type[8:]
+                    relations.append({"from": table_id, "col": col["id"], "to": target, "list": True})
+        snapshot["relations"] = relations
+        # Quality analysis
+        quality_issues = []
+        pages_data = snapshot.get("pages", [])
+        tables_set = set(snapshot.get("tables", []))
+        tables_with_page = set()
+        for page in pages_data:
+            for sec in page.get("sections", []):
+                tbl = sec.get("table")
+                if tbl:
+                    tables_with_page.add(tbl)
+                if sec.get("type") == "custom" and not sec.get("artefact"):
+                    quality_issues.append({
+                        "issue": "custom_section_no_artefact",
+                        "page": page.get("name"),
+                        "section_id": sec.get("id")
+                    })
+        for tbl in tables_set:
+            if tbl.lower() == "artefacts":
+                continue
+            if tbl not in tables_with_page:
+                quality_issues.append({"issue": "table_without_page", "table": tbl})
+        for tbl, cols in schema.items():
+            for col in cols:
+                col_type = col.get("type", "")
+                if col_type.startswith("Ref:") or col_type.startswith("RefList:"):
+                    # Check if visibleCol defined (formula with displayCol pattern or label)
+                    # We approximate: if no label set and no formula, flag it
+                    if not col.get("label") and not col.get("formula"):
+                        quality_issues.append({
+                            "issue": "ref_no_visiblecol",
+                            "table": tbl, "col": col["id"], "type": col_type
+                        })
+        if quality_issues:
+            snapshot["_quality"] = quality_issues
         return {"uri": uri, "mimeType": "application/json",
                 "text": json.dumps(snapshot, ensure_ascii=False, indent=2)}
+
+    if uri.startswith("grist-coder://context/") and "/page/" in uri:
+        # context/{token}/page/{page_id}
+        parts = uri.replace("grist-coder://context/", "").split("/page/")
+        token, page_id_str = parts[0], parts[1] if len(parts) > 1 else ""
+        ctx = registry.resolve(uid_key, token)
+        if not ctx: raise ValueError(f"Session inconnue : {token}")
+        try:
+            page_id = int(page_id_str)
+        except ValueError:
+            raise ValueError(f"page_id invalide : {page_id_str}")
+        # Fetch pages + sections
+        sections_resp = await grist_get(ctx, "tables/_grist_Views_section/records")
+        tables_meta   = await grist_get(ctx, "tables/_grist_Tables/records")
+        table_ref_map = {r["id"]: r["fields"].get("tableId","") for r in tables_meta.get("records",[])}
+        # Find target page
+        pages_resp = await grist_get(ctx, "tables/_grist_Pages/records")
+        views_resp = await grist_get(ctx, "tables/_grist_Views/records")
+        views_map  = {r["id"]: r["fields"].get("name","") for r in views_resp.get("records",[])}
+        target_page = None
+        for r in pages_resp.get("records", []):
+            if r["id"] == page_id:
+                view_ref = r["fields"].get("viewRef", 0)
+                target_page = {"page_id": page_id, "name": views_map.get(view_ref, ""), "view_ref": view_ref}
+                break
+        if not target_page:
+            raise ValueError(f"Page {page_id} introuvable")
+        # Sections for this page
+        def _extract_artefact_url(options_str):
+            if not options_str: return None
+            try:
+                cv = json.loads(json.loads(options_str).get("customView") or "null")
+                if not cv: return None
+                m = re.search(r'[?&]a=([^&]+)', cv.get("url",""))
+                if m: return m.group(1)
+                wo = cv.get("widgetOptions")
+                if wo: return (json.loads(wo) if isinstance(wo,str) else wo).get("artefact")
+            except Exception: pass
+            return None
+        sections = []
+        all_section_ids = set()
+        for r in sections_resp.get("records", []):
+            f = r["fields"]
+            if f.get("parentId", 0) == target_page["view_ref"]:
+                table_id = table_ref_map.get(f.get("tableRef", 0), "")
+                sec = {
+                    "id": r["id"],
+                    "type": f.get("parentKey", ""),
+                    "table": table_id,
+                    "artefact": _extract_artefact_url(f.get("options", "")),
+                    "linked_to": f.get("linkSrcSectionRef") or None,
+                }
+                sections.append(sec)
+                all_section_ids.add(r["id"])
+        # Resolve incoming links (other sections pointing to this page's sections)
+        incoming_links = []
+        for r in sections_resp.get("records", []):
+            f = r["fields"]
+            if f.get("linkSrcSectionRef") and f["linkSrcSectionRef"] in all_section_ids:
+                incoming_table = table_ref_map.get(f.get("tableRef", 0), "")
+                incoming_links.append({
+                    "from_section": f["linkSrcSectionRef"],
+                    "to_section": r["id"],
+                    "to_table": incoming_table,
+                })
+        # Build column list for each table in sections
+        # schema_full = {table_id: [{id, type, label?}]}
+        table_schemas = {}
+        unique_tables = {sec.get("table") for sec in sections if sec.get("table")}
+        for tid in unique_tables:
+            try:
+                cols_resp = await grist_get(ctx, f"tables/{tid}/columns")
+                table_schemas[tid] = [
+                    {"id": c["id"],
+                     "type": c["fields"].get("type",""),
+                     "label": c["fields"].get("label","") or None,
+                     "formula": c["fields"].get("formula","") or None,
+                     "isFormula": c["fields"].get("isFormula", False)}
+                    for c in cols_resp.get("columns", [])
+                    if not c["id"].startswith("gristHelper_")
+                ]
+            except Exception:
+                table_schemas[tid] = []
+        page_ctx = {
+            "page": target_page,
+            "sections": sections,
+            "table_schemas": table_schemas,
+            "incoming_links": incoming_links,
+            "_hint": (
+                "Sections custom sans artefact : configurer via grist_section_configure(). "
+                "Colonnes Ref: disponibles pour liaison maitre-detail via grist_view_add_widget(linkSrcSectionRef=...)."
+            )
+        }
+        return {"uri": uri, "mimeType": "application/json",
+                "text": json.dumps(page_ctx, ensure_ascii=False, indent=2)}
 
     if uri.startswith("grist-coder://code/"):
         token = uri.split("/")[-1]
@@ -3723,7 +3907,20 @@ async def call_tool(uid_key, mcp_sid, name, args):
 
     # ── Canvas
     if name == "canvas_read":
-        return ctx.canvas or "# canvas vide\n"
+        # If canvas was written in-memory (e.g. by canvas_write) and not yet saved to Grist,
+        # return the in-memory version to avoid overwriting it with empty Grist DB value.
+        if not ctx.canvas and ctx.current_art_id and ctx.doc_id and ctx.site_url:
+            try:
+                sql_resp = await grist_post(ctx, "sql",
+                    {"sql": "SELECT Code FROM Artefacts WHERE id = ?", "args": [ctx.current_art_id]})
+                recs = sql_resp.get("records", [])
+                if recs:
+                    code = recs[0]["fields"].get("Code", "") or ""
+                    if code:
+                        ctx.canvas = code
+            except Exception:
+                pass
+        return ctx.canvas or ""
 
     if name == "canvas_write":
         code     = args["code"]
@@ -4241,15 +4438,17 @@ async def call_tool(uid_key, mcp_sid, name, args):
 
     if name == "grist_records":
         lim  = int(args.get("limit", 50))
+        off  = int(args.get("offset", 0))
         path = f"tables/{args['table_id']}/records?limit={lim}"
-        if "filter" in args: path += f"&filter={json.dumps(args['filter'])}"
-        if "sort"   in args: path += f"&sort={args['sort']}"
+        if off:               path += f"&offset={off}"
+        if "filter" in args:  path += f"&filter={urllib.parse.quote(json.dumps(args['filter']))}"
+        if "sort"   in args:  path += f"&sort={urllib.parse.quote(args['sort'])}"
         data    = await grist_get(ctx, path)
         records = data.get("records", [])
-        return {"records": records[:lim], "total": len(records), "returned": min(len(records), lim)}
+        return {"records": records, "total": len(records), "returned": len(records)}
 
     if name == "grist_sql":
-        body = {"sql": args["query"]}
+        body = {"sql": args.get("sql") or args.get("query", "")}
         if "args" in args: body["args"] = args["args"]
         return await grist_post(ctx, "sql", body)
 
@@ -4763,12 +4962,6 @@ async def register(request: Request):
     if not bearer:
         return JSONResponse({"error": "accessToken manquant"}, status_code=400)
     grist_user_id = None
-    if access_token:
-        payload = _jwt_payload(access_token)
-        raw = payload.get("userId")
-        if raw is not None:
-            try: grist_user_id = int(raw)
-            except (ValueError, TypeError): pass
     if not grist_user_id:
         raw2 = data.get("userId")
         if raw2 is not None:
@@ -4825,26 +5018,37 @@ async def run_python(request: Request):
     except Exception:
         pass
 
-    import io, contextlib, time as _time
-    out_buf = io.StringIO()
-    err_buf = io.StringIO()
-    ns = {"tables": tables, "record": record, "rec": record}
-    t0 = _time.time()
-    rc = 0
-    try:
-        with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
-            exec(compile(code, "<artefact>", "exec"), ns)
-    except Exception:
-        import traceback as _tb
-        err_buf.write(_tb.format_exc())
-        rc = 1
+    # Exécution isolée via subprocess (évite exec() in-process)
+    wrapper = (
+        "import json as _j, sys as _s\n"
+        "_d = _j.loads(_s.stdin.read())\n"
+        "tables = _d['tables']; record = _d['record']; rec = record\n"
+    ) + code
 
-    elapsed = round(_time.time() - t0, 3)
+    import tempfile, os, time as _time
+    t0 = _time.time()
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as f:
+        f.write(wrapper)
+        fname = f.name
+    try:
+        r = subprocess.run(
+            [sys.executable, fname],
+            input=json.dumps({"tables": tables, "record": record}),
+            capture_output=True, text=True, timeout=30,
+        )
+        rc = r.returncode
+        out, err = r.stdout[-6000:], r.stderr[-2000:]
+    except subprocess.TimeoutExpired:
+        rc, out, err = 1, "", "timeout 30s"
+    except Exception as exc:
+        rc, out, err = 1, "", f"erreur subprocess: {type(exc).__name__}"
+    finally:
+        try: os.unlink(fname)
+        except OSError: pass
+
     return JSONResponse({
-        "stdout":     out_buf.getvalue()[-6000:],
-        "stderr":     err_buf.getvalue()[-2000:],
-        "returncode": rc,
-        "elapsed":    elapsed,
+        "stdout": out, "stderr": err,
+        "returncode": rc, "elapsed": round(_time.time() - t0, 3),
     })
 
 
@@ -4923,7 +5127,12 @@ async def webhook_receive(doc_id: str, request: Request):
     """Reçoit les événements webhook Grist et les fan-out via SSE aux widgets connectés.
     URL a configurer dans Grist : HOST_URL/webhook-receive/{docId}
     Fonctionne uniquement si HOST_URL est publiquement accessible (pas localhost).
+    Protéger avec WEBHOOK_SECRET dans .env — ajouter l'en-tête X-Webhook-Secret côté Grist.
     """
+    if WEBHOOK_SECRET:
+        provided = request.headers.get("X-Webhook-Secret", "")
+        if not secrets.compare_digest(provided, WEBHOOK_SECRET):
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
     try:
         payload = await request.json()
     except Exception:

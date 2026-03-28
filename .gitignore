@@ -22,3 +22,6 @@ Thumbs.db
 
 # Dev
 dev_exemples/
+
+# WikiChat overlay (auto-added)
+.wikichat/
