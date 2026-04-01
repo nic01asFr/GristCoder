@@ -11,6 +11,10 @@
 
 > **Project status**: This is an experimental, work-in-progress project developed at [Cerema Méditerranée](https://www.cerema.fr/). It works reliably for a single user on localhost, but several features (wizard, sub-agents, chat) are in beta. We publish it to share the approach, gather feedback from the Grist community, and invite contributions toward a complete Grist Coder.
 
+| Widget home — artefact selector | Map artefact + code editor |
+|:---:|:---:|
+| ![Widget home](docs/screenshot-widget-home.png) | ![Map + editor](docs/screenshot-map-editor.png) |
+
 ---
 
 ## What it does
