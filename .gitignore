@@ -20,8 +20,9 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# Dev
+# Dev artifacts
 dev_exemples/
+tmp_*.html
 
 # WikiChat overlay (auto-added)
 .wikichat/

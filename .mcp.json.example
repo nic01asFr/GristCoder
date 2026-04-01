@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "grist-coder": {
+      "type": "http",
+      "url": "http://localhost:8742/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_GRIST_API_KEY",
+        "X-Grist-Site": "https://your-grist-instance.example.com"
+      }
+    }
+  }
+}

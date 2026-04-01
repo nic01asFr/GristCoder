@@ -407,7 +407,10 @@ function prepareWidgetHTML(html, ctx) {
   var _rec = _st.record ? Object.assign({}, _st.record) : null;
   if (_rec) { delete _rec.Code; delete _rec.Dependencies; delete _rec.Output; }
   var stateClean = Object.assign({}, _st, _rec ? {record: _rec} : {});
-  var init = bridgeTag + '<script>window.__APP_STATE__=' + JSON.stringify(stateClean) +
+  // DSFR — no longer auto-injected. Artefacts that need it import it themselves:
+  //   <link href="https://cdn.jsdelivr.net/npm/@gouvfr/dsfr@1.14/dist/dsfr.min.css" rel="stylesheet">
+  var dsfrInject = '';
+  var init = dsfrInject + bridgeTag + '<script>window.__APP_STATE__=' + JSON.stringify(stateClean) +
     ';window.__APP_ROUTE__="' + (ctx.route || '/') + '";' + APP_RUNTIME_SCRIPT + '<' + '/script>';
   return html.includes('</head>') ? html.replace('</head>', init + '</head>') : init + html;
 }
@@ -547,6 +550,8 @@ window.addEventListener('message', async function(e) {
 const BASE = window.location.origin;
 const _DISPLAY_ART = new URLSearchParams(window.location.search).get('a') || '';
 const _DISPLAY_MODE = !!_DISPLAY_ART;
+// DSFR — not auto-injected. Artefacts import it themselves via CDN <link> tag.
+// The SERVER_INSTRUCTIONS and docs/artefacts resource document the pattern.
 var _registered=false, _registering=false, _token=null, _mcpId=1, _es=null, _refreshTimer=null;
 var _artefacts=[], _artefactsMap={}, _currentArt=null, _sharedState={};
 var _artefactsLoaded=false; // true après loadArtefacts() — bloque onRecord auto-select avant init
@@ -618,7 +623,8 @@ grist.onRecord(function(record) {
   } else {
     // IDE mode: auto-select artefact if linked to Artefacts table (record has Nom field)
     // Ignorer avant loadArtefacts() et pendant un canvas_updated en cours
-    if (_artefactsLoaded && !(_canvasTargetArt && record.Nom !== _canvasTargetArt) && record.Nom && _artefactsMap[record.Nom]) {
+    var _lockedOnOther = _canvasTargetArt && record.Nom !== _canvasTargetArt;
+    if (_artefactsLoaded && !_lockedOnOther && record.Nom && _artefactsMap[record.Nom]) {
       var sel = document.getElementById('artSelect');
       if (sel && sel.value !== record.Nom) { sel.value = record.Nom; onArtSelect(); }
     }
@@ -724,9 +730,22 @@ function listenSSE() {
               // Ne pas ouvrir le panel automatiquement — l'utilisateur voit le rendu, pas le code
             }
             loadCanvasIntoEditor().then(function(){
+              // saveArt FIRST — it compares editor vs _currentArt.Code to detect changes
               if (_evArtKnown) saveArt();
-              _canvasTargetArt = null; // libère le lock après sauvegarde
-              return renderCurrent();
+              // THEN update _currentArt.Code so future saves don't re-save same content
+              if (_currentArt && _editor) {
+                var freshCode = _editor.getValue();
+                _currentArt.Code = freshCode;
+                if (_currentArt.Nom && _artefactsMap[_currentArt.Nom]) _artefactsMap[_currentArt.Nom].Code = freshCode;
+              }
+              renderCurrent();
+              // Release lock AFTER iframe finishes loading (not before)
+              var _frame = document.getElementById('renderFrame');
+              if (_frame) {
+                _frame.onload = function(){ setTimeout(function(){ _canvasTargetArt = null; }, 100); };
+              }
+              // Fallback: release after 5s if onload doesn't fire
+              setTimeout(function(){ _canvasTargetArt = null; }, 5000);
             });
             document.getElementById('sbCanvas').textContent = _evData.sha || 'updated';
           };
@@ -739,6 +758,30 @@ function listenSSE() {
             loadArtefacts().then(_applyCanvasUpdate);
           } else {
             _applyCanvasUpdate();
+          }
+        }
+        // art_select — switch artefact display WITHOUT writing (read-only select)
+        if (ev.type === 'art_select' && ev.art_nom) {
+          var _selArt = _artefactsMap[ev.art_nom];
+          if (_selArt) {
+            _canvasTargetArt = ev.art_nom; // lock onRecord so it doesn't override
+            var sel = document.getElementById('artSelect');
+            if (sel) sel.value = ev.art_nom;
+            _currentArt = _selArt;
+            if (_editor) {
+              _lastServerCanvas = _selArt.Code || '';
+              _editor.setValue(_selArt.Code || '', -1);
+              setEditorMode(_selArt.Type);
+            }
+            renderArt(_selArt);
+            // NO saveArt() — this is read-only
+            // Release lock after iframe finishes loading (not arbitrary timer)
+            var _artFrame = document.getElementById('renderFrame');
+            if (_artFrame) {
+              _artFrame.onload = function(){ setTimeout(function(){ _canvasTargetArt = null; }, 100); };
+            }
+            // Fallback: release after 5s if onload doesn't fire (e.g. srcdoc cache)
+            setTimeout(function(){ _canvasTargetArt = null; }, 5000);
           }
         }
         if (ev.type === 'type_changed' && _currentArt) {
@@ -868,6 +911,7 @@ async function onArtSelect(initOnly) {
   var nom = document.getElementById('artSelect').value;
   if (!nom) {
     _currentArt = null;
+    _canvasTargetArt = null; // release lock — resume Grist cursor auto-select
     setEditorHeader(null);
     if (_editor) { _lastServerCanvas = ''; _editor.setValue('', -1); }
     renderEmpty();
@@ -876,18 +920,20 @@ async function onArtSelect(initOnly) {
   var art = _artefactsMap[nom];
   if (!art) return;
   _currentArt = art;
+  // Lock onRecord auto-select: user chose this artefact manually — don't let Grist cursor override it
+  if (!initOnly) _canvasTargetArt = art.Nom;
   if (!art.Type && art.Code) art.Type = detectType(art.Code);
   if (_editor) {
+    _lastServerCanvas = art.Code || '';  // prevent autoSave from triggering on this content
     _editor.setValue(art.Code || '', -1);
     setEditorMode(art.Type);
     setEditorHeader(art);
-    // Ne pas syncer le canvas serveur lors de l'auto-sélection initiale :
-    // le canvas est un espace de travail explicite, pas le reflet du dropdown
-    if (!initOnly) {
-      try { await tool('canvas_write', {code: art.Code || '', art_id: art.id, art_nom: art.Nom, art_type: art.Type}); } catch(_) {}
-    }
   }
   renderArt(art);
+  // Sync server context (read-only) — tells server which artefact is active without writing
+  if (!initOnly) {
+    try { await tool('canvas_select', {art_nom: art.Nom}); } catch(_) {}
+  }
 }
 
 function setEditorHeader(art) { /* artSelect IS the header */ }
@@ -937,10 +983,20 @@ function renderEmpty() {
     '</div>' +
     '<script>window.addEventListener("message",function(e){if(e.data&&e.data.type==="art-select")window.parent.postMessage(e.data,"*");});<'+'/script>' +
     '</body></html>';
-  frame.srcdoc = body;
+  setFrameContent(frame, body);
   // hide editor empty overlay when no art selected
   var ee = document.getElementById('editorEmpty');
   if (ee) ee.style.display = 'flex';
+}
+
+// Use blob URL instead of srcdoc so iframe gets a real origin (blob:http://localhost:…)
+// This fixes CORS issues with map tile servers (MapLibre, etc.) that reject Origin: null from srcdoc iframes
+function setFrameContent(frame, html) {
+  // Revoke previous blob URL to avoid memory leaks
+  if (frame._blobUrl) { URL.revokeObjectURL(frame._blobUrl); frame._blobUrl = null; }
+  var blob = new Blob([html], {type: 'text/html'});
+  frame._blobUrl = URL.createObjectURL(blob);
+  frame.src = frame._blobUrl;
 }
 
 function renderArt(art) {
@@ -953,9 +1009,9 @@ function renderArt(art) {
   // Bridge Grist disponible pour tous les types iframe (interaction tables/données)
   var ctx = {state: _sharedState, route: '/'};
   if (type === 'react') {
-    frame.srcdoc = prepareReactHTML(code, ctx);
+    setFrameContent(frame, prepareReactHTML(code, ctx));
   } else if (['html','grist','app'].includes(type)) {
-    frame.srcdoc = prepareWidgetHTML(code, ctx);
+    setFrameContent(frame, prepareWidgetHTML(code, ctx));
   } else if (type === 'markdown') {
     var mdHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
       '<style>' +
@@ -981,7 +1037,7 @@ function renderArt(art) {
         'return hljs.highlightAuto(c,[l]).value;}});' +
         'document.getElementById("c").innerHTML=marked.parse(' + JSON.stringify(code) + ');<' + '/script>' +
       '</body></html>';
-    frame.srcdoc = prepareWidgetHTML(mdHtml, ctx);
+    setFrameContent(frame, prepareWidgetHTML(mdHtml, ctx));
   } else if (type === 'mermaid') {
     var mmdHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
       '<style>body{margin:0;background:#f8fafc;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px}' +
@@ -990,10 +1046,10 @@ function renderArt(art) {
       '<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"><' + '/script>' +
       '<script>mermaid.initialize({startOnLoad:true,theme:"neutral"});<' + '/script>' +
       '</body></html>';
-    frame.srcdoc = prepareWidgetHTML(mmdHtml, ctx);
+    setFrameContent(frame, prepareWidgetHTML(mmdHtml, ctx));
   } else if (type === 'svg') {
     var svgHtml = '<!DOCTYPE html><html><body style="margin:0;background:#f8fafc;display:flex;align-items:center;justify-content:center;min-height:100vh">' + code + '</body></html>';
-    frame.srcdoc = prepareWidgetHTML(svgHtml, ctx);
+    setFrameContent(frame, prepareWidgetHTML(svgHtml, ctx));
   } else if (type === 'python') {
     // Python console — output + tables sidebar via postMessage with parent
     var pyHtml = '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
@@ -1091,7 +1147,7 @@ function renderArt(art) {
       'window.parent.postMessage({type:"python-ready"},"*");' +
       '<' + '/script></body></html>';
     // Python canvas n'utilise pas le bridge (postMessage direct) — pas de prepareWidgetHTML
-    frame.srcdoc = pyHtml;
+    setFrameContent(frame, pyHtml);
   } else {
     // sql → code avec syntax highlighting via highlight.js
     var escaped = code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -1104,7 +1160,7 @@ function renderArt(art) {
       '<script src="https://cdn.jsdelivr.net/npm/highlight.js@11/highlight.min.js"><' + '/script>' +
       '<script>hljs.highlightAll();<' + '/script>' +
       '</body></html>';
-    frame.srcdoc = prepareWidgetHTML(codeHtml, ctx);
+    setFrameContent(frame, prepareWidgetHTML(codeHtml, ctx));
   }
 }
 
@@ -1145,6 +1201,15 @@ async function captureScreenshot() {
   try {
     var frame = document.getElementById('renderFrame');
     if (!frame || !frame.contentWindow) return;
+    // Wait for iframe to be fully loaded before requesting screenshot
+    await new Promise(function(resolve) {
+      try {
+        if (frame.contentDocument && frame.contentDocument.readyState === 'complete') { resolve(); return; }
+      } catch(_) {} // cross-origin: can't check readyState, use fallback
+      var _loadDone = false;
+      frame.addEventListener('load', function _onLoad() { if (!_loadDone) { _loadDone = true; resolve(); } frame.removeEventListener('load', _onLoad); });
+      setTimeout(function() { if (!_loadDone) { _loadDone = true; resolve(); } }, 500); // fallback
+    });
     // L'iframe se capture elle-même (html2canvas dans l'iframe = accès DOM complet)
     var dataUrl = await new Promise(function(resolve, reject) {
       var timer = setTimeout(function() { reject(new Error('timeout 12s')); }, 12000);

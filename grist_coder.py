@@ -94,8 +94,15 @@ CYCLE GUIDE — 4 PHASES
                       (jours restants, totaux, statuts calcules, slugs...) jamais saisie manuelle
       grist_apply([AddTable, ...]) + grist_apply([BulkAddRecord, ...]) (min 3-5 lignes exemple)
       -> update progress card
+    STYLE : pour utiliser le DSFR (Systeme de Design de l Etat), ajouter dans le <head> de l artefact :
+      <link href="https://cdn.jsdelivr.net/npm/@gouvfr/dsfr@1.14/dist/dsfr.min.css" rel="stylesheet">
+      <link href="https://cdn.jsdelivr.net/npm/@gouvfr/dsfr@1.14/dist/utility/utility.min.css" rel="stylesheet">
+      Puis utiliser les classes fr-* (fr-btn, fr-card, fr-table, fr-alert, fr-input-group, fr-grid-row...)
+      NE PAS injecter DSFR dans les artefacts utilisant des libs graphiques (MapLibre, Leaflet, Chart.js, D3)
+      car le CSS global DSFR casse leurs rendus. Voir docs/artefacts pour le catalogue.
+
     Pour chaque artefact (dashboard -> fiches -> composants) :
-      docs/artefacts -> LIRE AVANT canvas_write (templates, API Grist, patterns lies)
+      docs/artefacts -> LIRE AVANT canvas_write (templates, API Grist, patterns lies, composants DSFR)
       context/{token}/page/{page_id} -> contexte page : schema table source, liaisons entrantes/
                                         sortantes, artefact attendu, colonnes disponibles
       canvas_write(code) -> canvas_screenshot -> grist_upsert (ou Save widget si WAF)
@@ -153,7 +160,7 @@ OUTILS (28)
   Plan     : plan_update              <- META-CONTROLE : persiste + _next_resources par phase
   Sessions : sessions_list            <- _next hint integre (plan? ou docs/qualification)
              session_select, session_info
-  Canvas   : canvas_read, canvas_write, canvas_patch, canvas_exec, canvas_screenshot, canvas_type
+  Canvas   : canvas_select (switch artefact, lecture seule), canvas_read, canvas_write, canvas_patch, canvas_exec, canvas_screenshot, canvas_type
   Wizard   : canvas_wizard (id requis, choice|form|confirm|progress|info|input)
              canvas_wizard_close (card_id? -> ferme une card ; absent -> ferme tout)
   Chat     : chat_reply(message, wait=False) -> bulle assistant (wait=True = envoie + attend reponse)
@@ -530,8 +537,20 @@ TOOLS = [
      "annotations": {"readOnlyHint": True}},
 
     # Canvas
+    {"name": "canvas_select",
+     "description": (
+         "Selectionne un artefact existant par nom — charge son code dans le canvas et switch le widget. "
+         "LECTURE SEULE : n ecrit rien, ne cree rien. Retourne le code complet. "
+         "Utiliser AVANT canvas_read/canvas_patch pour travailler sur un artefact specifique."
+     ),
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "art_nom": {"type": "string", "description": "Nom exact de l artefact a selectionner"}},
+                     "required": ["art_nom"]},
+     "annotations": {"readOnlyHint": True}},
+
     {"name": "canvas_read",
-     "description": "Lit le code complet du canvas. Appeler AVANT tout canvas_patch.",
+     "description": "Lit le code complet du canvas (artefact actuellement selectionne). Appeler AVANT tout canvas_patch.",
      "inputSchema": {"type": "object", "properties": {}},
      "annotations": {"readOnlyHint": True}},
 
@@ -901,7 +920,7 @@ _QUALIFYING_TOOLS = {
     "grist_schema", "grist_records", "grist_sql",
 }
 _ASSESSING_TOOLS = _QUALIFYING_TOOLS | {
-    "canvas_read", "canvas_screenshot", "grist_views_list",
+    "canvas_select", "canvas_read", "canvas_screenshot", "grist_views_list",
 }
 _DESIGNING_TOOLS = _ASSESSING_TOOLS | {
     "canvas_write", "canvas_patch", "canvas_type",
@@ -1240,10 +1259,11 @@ DOCS_ARTEFACTS = """GRIST CODER - Recettes artefacts HTML/JS
 =========================================
 
 TEMPLATE BASE - TYPE: grist (widget reactif aux donnees)
+DSFR CSS+JS auto-injecte par prepareWidgetHTML — NE PAS ajouter de CDN CSS/Tailwind.
 <!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">
 <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
-<script src="https://cdn.tailwindcss.com"></script>
-</head><body><div id="app" class="p-4"></div>
+</head><body>
+<div class="fr-container fr-py-4w" id="app"></div>
 <script>
 const app = window.app || {navigate:p=>showToast(p,'info'),emit:()=>{},on:()=>{},'setState':(k,v)=>{},state:{}};
 const isGristCoder = typeof window.app?.navigate === 'function';
@@ -1277,12 +1297,11 @@ async function loadData() {
 }
 function render() {
   const el = document.getElementById('app');
-  if(_state.loading){el.innerHTML='<div class="text-gray-400 p-8 text-center">Chargement...</div>';return;}
-  if(!_state.data.length){el.innerHTML='<div class="text-gray-400 text-center py-8">Aucune donnee</div>';return;}
-  el.innerHTML = _state.data.map(r=>`
-    <div class="flex items-center p-3 border-b hover:bg-gray-50 cursor-pointer" onclick="selectRow(${r.id})">
-      <span class="flex-1 font-medium">${r.Nom||r.id}</span>
-    </div>`).join('');
+  if(_state.loading){el.innerHTML='<div class="fr-py-4w fr-text--center" style="color:var(--text-mention-grey)">Chargement...</div>';return;}
+  if(!_state.data.length){el.innerHTML='<div class="fr-py-4w fr-text--center" style="color:var(--text-mention-grey)">Aucune donnee</div>';return;}
+  el.innerHTML = '<div class="fr-table"><table><thead><tr><th>Nom</th></tr></thead><tbody>' +
+    _state.data.map(r=>`<tr style="cursor:pointer" onclick="selectRow(${r.id})"><td>${r.Nom||r.id}</td></tr>`).join('') +
+    '</tbody></table></div>';
 }
 grist.ready({requiredAccess:'full'});
 loadData();
@@ -1290,10 +1309,119 @@ loadData();
 
 ---
 TEMPLATE BASE - TYPE: html (UI independante, pas de donnees Grist)
-<!-- Pas de grist.ready() si aucune donnee Grist necessaire -->
-<!DOCTYPE html><html><head><meta charset="UTF-8">
-<script src="https://cdn.tailwindcss.com"></script>
-</head><body>...</body></html>
+DSFR CSS+JS auto-injecte — NE PAS ajouter de CDN CSS/Tailwind.
+<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">
+</head><body>
+<div class="fr-container fr-py-4w">...</div>
+</body></html>
+
+---
+DSFR — COMPOSANTS DE REFERENCE (auto-injecte, classes fr-* utilisables directement)
+=====================================================================================
+Le DSFR (Systeme de Design de l Etat) est le framework CSS officiel de l administration francaise.
+Il est charge automatiquement dans tous les artefacts — utiliser les classes fr-* ci-dessous.
+
+## LAYOUT
+<div class="fr-container">                           <!-- max-width 78rem, centre -->
+<div class="fr-grid-row fr-grid-row--gutters">        <!-- grille flexbox -->
+  <div class="fr-col-12 fr-col-md-6 fr-col-lg-4">    <!-- 12 colonnes, responsive -->
+
+## BOUTONS
+<button class="fr-btn">Principal</button>
+<button class="fr-btn fr-btn--secondary">Secondaire</button>
+<button class="fr-btn fr-btn--tertiary">Tertiaire</button>
+<button class="fr-btn" disabled>Desactive</button>
+<ul class="fr-btns-group fr-btns-group--inline">      <!-- groupe horizontal -->
+  <li><button class="fr-btn">Action 1</button></li>
+  <li><button class="fr-btn fr-btn--secondary">Action 2</button></li>
+</ul>
+
+## CARTE
+<div class="fr-card fr-card--shadow">
+  <div class="fr-card__body">
+    <div class="fr-card__content">
+      <h3 class="fr-card__title">Titre</h3>
+      <p class="fr-card__desc">Description</p>
+      <div class="fr-card__start"><p class="fr-badge fr-badge--info">Statut</p></div>
+    </div>
+  </div>
+</div>
+<!-- Grille de cartes -->
+<div class="fr-grid-row fr-grid-row--gutters">
+  <div class="fr-col-12 fr-col-md-6 fr-col-lg-4"><div class="fr-card fr-card--shadow">...</div></div>
+</div>
+
+## TABLEAU
+<div class="fr-table">
+  <table>
+    <caption>Titre du tableau</caption>
+    <thead><tr><th>Col 1</th><th>Col 2</th><th>Col 3</th></tr></thead>
+    <tbody>
+      <tr><td>Valeur</td><td>Valeur</td><td>Valeur</td></tr>
+    </tbody>
+  </table>
+</div>
+
+## ALERTE
+<div class="fr-alert fr-alert--info"><h3 class="fr-alert__title">Info</h3><p>Message</p></div>
+<div class="fr-alert fr-alert--success"><h3 class="fr-alert__title">Succes</h3><p>Message</p></div>
+<div class="fr-alert fr-alert--error"><h3 class="fr-alert__title">Erreur</h3><p>Message</p></div>
+<div class="fr-alert fr-alert--warning"><h3 class="fr-alert__title">Attention</h3><p>Message</p></div>
+
+## BADGE / TAG
+<p class="fr-badge fr-badge--info">Information</p>
+<p class="fr-badge fr-badge--success">Succes</p>
+<p class="fr-badge fr-badge--error">Erreur</p>
+<p class="fr-badge fr-badge--warning">Attention</p>
+<p class="fr-badge fr-badge--new">Nouveau</p>
+<ul class="fr-tags-group"><li><button class="fr-tag">Tag filtre</button></li></ul>
+
+## FORMULAIRE
+<div class="fr-input-group">
+  <label class="fr-label" for="input-1">Label<span class="fr-hint-text">Aide</span></label>
+  <input class="fr-input" type="text" id="input-1">
+</div>
+<div class="fr-select-group">
+  <label class="fr-label" for="select-1">Label</label>
+  <select class="fr-select" id="select-1"><option>Option 1</option></select>
+</div>
+<div class="fr-checkbox-group">
+  <input type="checkbox" id="cb-1"><label class="fr-label" for="cb-1">Option</label>
+</div>
+<fieldset class="fr-fieldset"><legend class="fr-fieldset__legend">Choix</legend>
+  <div class="fr-fieldset__element"><div class="fr-radio-group">
+    <input type="radio" id="r-1" name="choix"><label class="fr-label" for="r-1">Option A</label>
+  </div></div>
+</fieldset>
+<!-- Etats validation -->
+<div class="fr-input-group fr-input-group--error">
+  <label class="fr-label" for="err-1">Champ en erreur</label>
+  <input class="fr-input fr-input--error" id="err-1"><p class="fr-error-text">Message erreur</p>
+</div>
+<div class="fr-input-group fr-input-group--valid">
+  <label class="fr-label" for="ok-1">Champ valide</label>
+  <input class="fr-input fr-input--valid" id="ok-1"><p class="fr-valid-text">Valide</p>
+</div>
+
+## MISE EN AVANT / CALLOUT
+<div class="fr-callout">
+  <h3 class="fr-callout__title">Titre</h3>
+  <p class="fr-callout__text">Texte mis en avant</p>
+  <button class="fr-btn">Action</button>
+</div>
+
+## TUILE
+<div class="fr-tile fr-tile--horizontal">
+  <div class="fr-tile__body"><div class="fr-tile__content">
+    <h3 class="fr-tile__title"><a href="#">Titre tuile</a></h3>
+    <p class="fr-tile__desc">Description</p>
+  </div></div>
+</div>
+
+## TYPOGRAPHIE UTILITAIRE
+fr-h1..fr-h6 fr-text--bold fr-text--lead fr-text--sm fr-text--center
+fr-mb-2w fr-mt-4w fr-py-2w fr-px-3w  (espacements: 1w=0.25rem, 2w=0.5rem, 4w=1rem, 8w=2rem)
+fr-background-alt--grey  fr-background-contrast--grey
 
 ---
 GRIST PLUGIN API - BRIDGE COMPLET (disponible dans tous les artefacts)
@@ -1544,11 +1672,11 @@ PATTERNS WIDGET LIE (IsDoc=false, linkSrcSectionRef defini)
 // app.on('record', cb) = reactive sur changement de selection (IDE mode)
 // IMPORTANT: colonnes formule et references completes via docApi.fetchTable (pas dans record)
 async function render(rowId) {
-  if (!rowId) { el.innerHTML = '<p>Selectionnez un enregistrement</p>'; return; }
+  if (!rowId) { el.innerHTML = '<div class="fr-callout"><p class="fr-callout__text">Selectionnez un enregistrement</p></div>'; return; }
   const d = await grist.docApi.fetchTable('MaTable');  // toutes colonnes incl. formules
   const i = d.id.indexOf(rowId);
   const r = { id: rowId, Nom: d.Nom[i], CA: d.CA[i], NbCmd: d.NbCmd[i] };  // formules OK
-  el.innerHTML = `<h2>${r.Nom}</h2><p>CA: ${r.CA}</p>`;
+  el.innerHTML = `<h2 class="fr-h4">${r.Nom}</h2><p class="fr-text--lead">CA: ${r.CA}</p>`;
 }
 grist.ready({requiredAccess:'read table'});
 const _r0 = window.__APP_STATE__?.record || {};
@@ -3906,6 +4034,33 @@ async def call_tool(uid_key, mcp_sid, name, args):
         return info
 
     # ── Canvas
+    if name == "canvas_select":
+        art_nom = args["art_nom"]
+        if not ctx.doc_id or not ctx.site_url:
+            return {"error": "Pas de document connecte"}
+        try:
+            sql_resp = await grist_post(ctx, "sql",
+                {"sql": "SELECT id, Type, Code FROM Artefacts WHERE Nom = ?", "args": [art_nom]})
+            recs = sql_resp.get("records", [])
+            if not recs:
+                return {"error": f"Artefact '{art_nom}' introuvable"}
+            rec = recs[0]["fields"]
+            art_id   = rec["id"]
+            art_type = rec.get("Type", "html")
+            code     = rec.get("Code", "") or ""
+            ctx.canvas           = code
+            ctx.current_art_id   = art_id
+            ctx.current_art_nom  = art_nom
+            ctx.current_art_type = art_type
+            # Push art_select SSE to widget — switches dropdown without saving
+            _push(uid_key, {"type": "art_select", "token": ctx.token,
+                            "art_nom": art_nom, "art_id": art_id, "art_type": art_type})
+            return {"ok": True, "art_nom": art_nom, "art_id": art_id, "art_type": art_type,
+                    "code_length": len(code), "code": code,
+                    "_next": "canvas_read() pour relire, canvas_write() pour modifier, canvas_patch() pour ajuster."}
+        except Exception as e:
+            return {"error": f"Erreur lecture artefact: {e}"}
+
     if name == "canvas_read":
         # If canvas was written in-memory (e.g. by canvas_write) and not yet saved to Grist,
         # return the in-memory version to avoid overwriting it with empty Grist DB value.
@@ -3979,7 +4134,8 @@ async def call_tool(uid_key, mcp_sid, name, args):
         ctx.canvas = ctx.canvas.replace(old, new, 1)
         sha = hashlib.sha1(ctx.canvas.encode()).hexdigest()[:8]
         ctx.history.appendleft({"ts": time.time(), "sha": sha, "op": "patch"})
-        _push(uid_key, {"type": "canvas_patched", "token": ctx.token, "sha": sha})
+        _push(uid_key, {"type": "canvas_patched", "token": ctx.token, "sha": sha,
+              "art_nom": ctx.current_art_nom, "art_type": ctx.current_art_type})
         _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
         return {"ok": True, "sha": sha}
 
@@ -4288,11 +4444,15 @@ async def call_tool(uid_key, mcp_sid, name, args):
             "ui-designer": (
                 "Tu es un designer UI expert en artefacts Grist (HTML/CSS/JS/React). "
                 "Tu generes des interfaces utilisateur elegantes, responsives et fonctionnelles. "
-                "Charte visuelle : Inter, palette #3e5de7/#10b981/#f8fafc. "
+                "FRAMEWORK : utilise exclusivement le DSFR (Systeme de Design de l Etat) — "
+                "classes fr-* (fr-container, fr-grid-row, fr-col-*, fr-card, fr-table, fr-btn, "
+                "fr-alert, fr-badge, fr-tag, fr-input-group, fr-callout, fr-tile). "
+                "PAS de Tailwind, PAS de CSS custom sauf ajustements mineurs. "
+                "Pour un composant DSFR inconnu, chercher dans la collection Albert DSFR (id:142091). "
                 "IMPORTANT : Reponds TOUJOURS en JSON valide avec ces cles exactes :\n"
-                '{"artefacts":[{"name":"X","type":"react|html","description":"role UX","components":["comp1"]}],'
+                '{"artefacts":[{"name":"X","type":"react|html","description":"role UX","dsfr_components":["fr-card","fr-table"]}],'
                 '"pages":[{"name":"X","widgets":["grid","custom"]}],'
-                '"styles":{"palette":["#hex"],"font":"Inter","layout":"flex|grid"},'
+                '"styles":{"palette":"DSFR default (#000091/#e3e3fd)","layout":"fr-grid-row"},'
                 '"notes":"decisions design cles"}'
             ),
             "page-architect": (

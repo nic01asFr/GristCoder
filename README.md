@@ -1,58 +1,218 @@
-# grist-coder-mcp
+# Grist Coder — MCP Server for Grist
 
-> Widget Grist + MCP Server HTTP streamable · spec 2025-03-26 · v5.12
+> Turn any Grist document into a full business application using AI.
+
+**Grist Coder** is an [MCP](https://modelcontextprotocol.io/) server that connects Claude (or any MCP-compatible LLM) to a [Grist](https://www.getgrist.com/) document. It ships with a **custom widget** (IDE + live preview) that lets you build, edit, and deploy HTML/React artefacts — all stored inside your Grist document, no external hosting needed.
+
+![MCP Streamable HTTP](https://img.shields.io/badge/MCP-Streamable_HTTP_2025--03--26-blue)
+![Python 3.11+](https://img.shields.io/badge/Python-3.11+-green)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow)
+![Status: Exploratory](https://img.shields.io/badge/Status-Exploratory-orange)
+
+> **Project status**: This is an exploratory, work-in-progress project developed at [Cerema Méditerranée](https://www.cerema.fr/). It is functional and used in real workflows, but several features (wizard, sub-agents, chat) are in beta. We publish it to share the approach, gather feedback, and invite contributions from the Grist community.
 
 ---
 
-## Vision
+## What it does
 
-Un document Grist devient une **app métier complète**, déployée dans le navigateur, sans infrastructure supplémentaire. L'utilisateur final interagit avec des artefacts (widgets HTML/React) liés à ses données. Ses actions peuvent déclencher des effets externes. Tout est construit et maintenu depuis ce MCP.
+| You say to Claude | What happens |
+|---|---|
+| *"Create a CRM for my contacts"* | Tables, columns, sample data, a React dashboard, and Grist pages — all wired together |
+| *"Add a chart showing sales by month"* | An HTML artefact with Chart.js, linked to your data via the Grist bridge |
+| *"Set up a webhook to notify Slack when a deal closes"* | A Grist webhook pointing to your Slack endpoint |
+| *"Fix the filter on the inventory page"* | Reads the artefact code, patches it, live-previews the result |
 
-**Philosophie** : n'implémenter que ce qui est optimal, peu complexe, facile au regard de l'existant.
+Everything lives inside the Grist document. The artefacts (HTML/React widgets) are stored in an `Artefacts` table and rendered by the custom widget. Users interact with the finished app — they never see the AI or the code.
 
 ---
 
-## Architecture — 4 couches d'une app complète
+## Architecture
+
+### The 4-layer model
+
+Grist Coder sees a Grist document as a **4-layer application**:
 
 ```
-1. Données    tables Grist + formules colonnes       ce que l'utilisateur possède
-2. UI         artefacts HTML/React + pages Grist     ce que l'utilisateur voit
-3. Logique    grist_apply, grist_sql, grist_upsert   ce que le système fait
-4. Intégr.    grist_webhooks → CRM / email / ERP     ce que le doc déclenche à l'extérieur
+Layer          Built with                       What it is
+─────────────  ───────────────────────────────  ──────────────────────────────
+1. Data        Grist tables + column formulas   The structured information
+2. UI          HTML/React artefacts + pages     What users see and interact with
+3. Logic       grist_apply, grist_sql, upsert   What the system does on actions
+4. Integration grist_webhooks → external APIs   What the document triggers outside
 ```
+
+### Contextual navigation — progressive tool disclosure
+
+The server does **not** expose all 28 tools at once. Instead, it tracks a **session context** that evolves through 6 phases:
+
+```
+qualifying → assessing → designing → building → verifying → done
+```
+
+At each phase, only the relevant tools are visible to the LLM client:
+
+| Phase | Tools available | Purpose |
+|-------|----------------|---------|
+| **qualifying** (13 tools) | sessions, wizard, plan, grist read, subagent, chat | Understand what the user needs |
+| **assessing** (16 tools) | + canvas_read, screenshot, views_list | Audit the existing document |
+| **designing** (19 tools) | + canvas_write, canvas_patch, canvas_type | Prototype the UI |
+| **building** (28 tools) | All tools | Full construction |
+| **verifying** (28 tools) | All tools | Quality check |
+| **done** (13 tools) | = qualifying | Delivered, ready for next project |
+
+Phase transitions are triggered by `plan_update(status=...)` which:
+1. Updates the session context
+2. Pushes a `notifications/tools/list_changed` MCP notification to the client
+3. The client re-fetches the tool list and sees the new set
+
+This prevents the LLM from jumping ahead (e.g., writing code before understanding the schema) and reduces token waste from unused tool descriptions.
+
+### Contextual MCP resources
+
+Resources are also organized by phase. Each tool response includes a `_next` hint and `_next_resources` pointing to what the LLM should read next:
+
+```
+Phase         Recommended resources
+────────────  ──────────────────────────────────────────────────
+qualifying    docs/qualification, docs/wizard
+assessing     context/{token}, docs/schema, schema-diagram/{token}
+designing     docs/schema, docs/artefacts, docs/playbook
+building      context/{token}, docs/artefacts, docs/formulas, playbook/{scenario}
+verifying     context/{token}, code/{token}
+```
+
+The `context/{token}` resource is a live snapshot that includes: full schema, FK relationship graph, artefact list, page/section layout, quality audit (`_quality`: missing visibleCol, empty widgets, orphan tables), and delta between plan and reality (`_delta`).
 
 ---
 
-## Démarrage rapide
+## The Widget — Grist Custom Widget
+
+The widget (`widget.html`) is a split-pane IDE served at `/`:
+
+```
+┌──────────────────────────────────────────────┐
+│  Navbar: ‹ ● › Coder          [panel toggle] │
+├────────────────────────┬─────────────────────┤
+│                        │ Edit bar: [artSelect]│
+│   Preview (iframe)     │ Ace editor           │
+│   Live render of the   │ Syntax-highlighted   │
+│   selected artefact    │ source code          │
+│                        │                      │
+├────────────────────────┴─────────────────────┤
+│  Wizard overlay (when active)                 │
+│  ┌─────────────────────────────────────────┐ │
+│  │ Multi-card thread: progress, forms,     │ │
+│  │ choices, confirmations — all coexist    │ │
+│  ├─────────────────────────────────────────┤ │
+│  │ Chat bar (appears when LLM sends chat)  │ │
+│  └─────────────────────────────────────────┘ │
+└──────────────────────────────────────────────┘
+```
+
+Key features:
+- **Artefact selector**: dropdown to switch between artefacts stored in Grist
+- **Live preview**: sandboxed iframe with auto-injected Grist bridge (`grist.docApi.*`, `grist.onRecord()`)
+- **Auto-save**: edits in Ace are saved back to Grist via browser-side `applyUserActions` (bypasses server-side WAF)
+- **SSE sync**: canvas changes from the LLM (via `canvas_write`/`canvas_patch`) push to the widget in real-time
+
+---
+
+## Wizard — Interactive AI ↔ User dialogue (beta)
+
+The wizard is an overlay system that lets the LLM interact with the user **directly through the widget**, without requiring the user to type in the LLM chat interface.
+
+### How it works
+
+1. The LLM calls `canvas_wizard(step)` with a step definition
+2. The server pushes the step via SSE to the widget
+3. The widget renders an interactive card (form, choice, confirmation...)
+4. The user responds in the widget
+5. The response is sent back to the server via `POST /wizard/{token}`
+6. The `canvas_wizard` tool call unblocks and returns the user's answer to the LLM
+
+### Card types
+
+| Type | Behavior | Use case |
+|------|----------|----------|
+| `input` | Blocking | Free-text collection with suggestion chips |
+| `choice` | Blocking | Category selection (clickable cards) |
+| `form` | Blocking | Structured data collection (text, number, select, toggle) |
+| `confirm` | Blocking | Markdown preview + accept/reject |
+| `progress` | Non-blocking | Build progress with status indicators |
+| `info` | Non-blocking | Contextual information |
+| `preview` | Blocking | Live iframe preview + interaction |
+| `data-import` | Blocking | Fetch external API → preview table → import to Grist |
+
+### Multi-card thread
+
+Multiple cards coexist in the overlay — a non-blocking progress card can stay visible while a blocking form card collects input. Cards are managed independently:
+- `canvas_wizard(id="build-progress", type="progress", ...)` — persistent progress tracker
+- `canvas_wizard(id="confirm-plan", type="confirm", ...)` — blocking validation
+- `canvas_wizard_close(card_id="confirm-plan")` — close one card
+- `canvas_wizard_close()` — close everything
+
+### Current limitations (beta)
+
+- The wizard UX is functional but rough — styling and transitions need polish
+- Card layout on mobile/small viewports is not optimized
+- The `data-import` card type works but error handling is minimal
+- Chat integration (`chat_reply` / `wait_for_chat`) is basic — no message history persistence
+- Sub-agent delegation (`subagent_call`) depends on MCP client sampling support; fallback mode works but is less reliable
+
+---
+
+## Quick start
+
+### Option A — Python (development)
 
 ```bash
-python -m venv .venv && .venv/Scripts/activate   # Windows
+git clone https://github.com/cerema-med/grist-coder-mcp.git
+cd grist-coder-mcp
+
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# macOS/Linux
+source .venv/bin/activate
+
 pip install -r requirements.txt
-cp .env.example .env                              # remplir HOST_URL si besoin
+cp .env.example .env        # edit HOST_URL if needed
 uvicorn grist_coder:app --port 8742 --reload
-curl http://localhost:8742/health                 # -> {"ok":true,...}
 ```
 
-Ou avec Docker :
+### Option B — Docker
 
 ```bash
+git clone https://github.com/cerema-med/grist-coder-mcp.git
+cd grist-coder-mcp
+
 cp .env.example .env
-docker compose up
+docker compose up -d
+```
+
+### Verify
+
+```bash
+curl http://localhost:8742/health
+# → {"ok": true, "version": "5.12", "tools": 28, ...}
 ```
 
 ---
 
-## Configuration widget Grist
+## Setup
 
-Dans Grist → **Ajouter un widget personnalisé** → URL : `http://localhost:8742/`
+### 1. Add the widget to Grist
 
-Le widget se connecte **automatiquement** via `grist.docApi.getAccessToken()`. Aucune clé à saisir.
+In your Grist document:
+1. Add a new **Custom Widget**
+2. Set the URL to `http://localhost:8742/`
+3. Grant **Full document access** when prompted
 
----
+The widget registers itself automatically — no API key needed on the widget side.
 
-## Configuration Claude Desktop
+### 2. Connect Claude Desktop
 
-Fichier : `%APPDATA%\Claude\claude_desktop_config.json`
+Edit `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS):
 
 ```json
 {
@@ -60,181 +220,293 @@ Fichier : `%APPDATA%\Claude\claude_desktop_config.json`
     "grist-coder": {
       "type": "http",
       "url": "http://localhost:8742/mcp",
-      "headers": { "Authorization": "Bearer <grist_api_key>" }
+      "headers": {
+        "Authorization": "Bearer YOUR_GRIST_API_KEY"
+      }
     }
   }
 }
 ```
 
+Get your Grist API key from **Grist → Profile → API**.
+
+Restart Claude Desktop after editing.
+
+### 3. Connect Claude Code (CLI)
+
+Copy `.mcp.json.example` to `.mcp.json` and fill in your Grist API key:
+
+```bash
+cp .mcp.json.example .mcp.json
+# edit .mcp.json with your key
+```
+
 ---
 
-## Tools MCP (28)
+## MCP Tools (28)
 
 ### Sessions
 | Tool | Description |
 |------|-------------|
-| `sessions_list()` | Liste les documents Grist ouverts — **appeler en premier** |
-| `session_select(token)` | Sélectionne une session |
-| `session_info()` | Infos complètes : doc, tables, artefacts, état canvas |
+| `sessions_list` | List open Grist documents — **call first** |
+| `session_select` | Switch to a specific session |
+| `session_info` | Full context: doc, tables, artefacts, canvas state |
 
-### Plan
+### Plan & context
 | Tool | Description |
 |------|-------------|
-| `plan_update(status, ...)` | Met à jour le plan de travail et change le contexte actif |
+| `plan_update` | Update the work plan, transition phase, trigger tool list change |
 
-### Canvas
+### Canvas (artefact editor)
 | Tool | Description |
 |------|-------------|
-| `canvas_read()` | Lit le code complet — **appeler avant canvas_patch** |
-| `canvas_write(code)` | Réécrit intégralement le canvas |
-| `canvas_patch(old_str, new_str)` | str_replace ciblé — SSE push vers le widget |
-| `canvas_exec()` | Exécute le canvas Python (subprocess isolé, timeout 10s) |
-| `canvas_screenshot()` | Capture le rendu iframe du widget |
-| `canvas_type(type)` | Change le type de l'artefact actif |
+| `canvas_select` | Switch to a different artefact (read-only) |
+| `canvas_read` | Read the current artefact source code |
+| `canvas_write` | Write/replace the full artefact code |
+| `canvas_patch` | Surgical find-and-replace (`old_str` → `new_str`) |
+| `canvas_exec` | Execute Python canvas (sandboxed subprocess, 10s timeout) |
+| `canvas_screenshot` | Capture the rendered artefact as PNG |
+| `canvas_type` | Change artefact type (html, react, markdown, mermaid, python, sql, svg...) |
 
-### Wizard / Chat / Contexte
+### Interactive — wizard / chat (beta)
 | Tool | Description |
 |------|-------------|
-| `canvas_wizard(step)` | Affiche un formulaire interactif dans le widget (bloquant) |
-| `canvas_wizard_close()` | Ferme l'overlay wizard |
-| `canvas_context_update(sections)` | Panneau mémoire non-bloquant dans le widget |
-| `chat_reply(message, wait?)` | Envoie une bulle de chat — `wait=True` attend la réponse user |
-| `wait_for_chat(timeout?)` | Attend un message user sans envoyer |
-| `subagent_call(role, task)` | Délègue à un agent spécialisé (sampling ou fallback) |
+| `canvas_wizard` | Show an interactive card in the widget (choice, form, confirm, progress...) |
+| `canvas_wizard_close` | Close a specific card or the entire overlay |
+| `canvas_context_update` | Non-blocking context card in the overlay |
+| `chat_reply` | Send a chat message — optionally wait for user response |
+| `wait_for_chat` | Wait for user input without sending |
+| `subagent_call` | Delegate to a specialized sub-agent (data-architect, ui-designer...) |
 
-### Artefact
+### Artefact management
 | Tool | Description |
 |------|-------------|
-| `artefact_init()` | Crée la table Artefacts si absente (idempotent) |
+| `artefact_init` | Create the `Artefacts` table if missing (idempotent) |
 
-### Grist — Lecture
+### Grist — Read
 | Tool | Description |
 |------|-------------|
-| `grist_schema()` | Schéma des tables du document actif |
-| `grist_records(table_id, filter?, limit?)` | Enregistrements d'une table |
-| `grist_sql(sql)` | Requête SQL libre sur le document |
+| `grist_schema` | Document schema (tables, columns, types) |
+| `grist_records` | Read records from a table (with optional filter/limit) |
+| `grist_sql` | Run arbitrary SQL on the document |
 
-### Grist — Écriture
+### Grist — Write
 | Tool | Description |
 |------|-------------|
-| `grist_records_add(table_id, records)` | Ajoute des enregistrements |
-| `grist_records_patch(table_id, records)` | Met à jour des enregistrements existants |
-| `grist_upsert(table_id, records)` | Upsert sur clé métier (`require` + `fields`) |
-| `grist_apply(actions)` | User Actions Grist bas niveau (AddTable, AddColumn…) |
+| `grist_records_add` | Insert new records |
+| `grist_records_patch` | Update existing records by ID |
+| `grist_upsert` | Upsert on a business key (`require` + `fields`) |
+| `grist_apply` | Low-level Grist UserActions (AddTable, AddColumn, etc.) |
 
 ### Document / Pages
 | Tool | Description |
 |------|-------------|
-| `grist_views_list()` | Liste les pages avec leurs sections |
-| `grist_view_create(table_id, page_name, artefact?)` | Crée une page grille + widget lié |
-| `grist_view_add_widget(view_ref, table_id, artefact?)` | Ajoute un widget à une page existante |
-| `grist_section_configure(section_ref, artefact?, link_section_ref?)` | Configure un widget custom |
+| `grist_views_list` | List pages with their widget sections |
+| `grist_view_create` | Create a page with a grid + optional artefact widget |
+| `grist_view_add_widget` | Add a widget section to an existing page |
+| `grist_section_configure` | Configure a custom widget section (artefact, linking...) |
 
 ### Webhooks
 | Tool | Description |
 |------|-------------|
-| `grist_webhooks(action, fields?, webhook_id?)` | CRUD webhooks — `list` OK avec accessToken ; `create/update/delete` nécessitent clé API owner |
+| `grist_webhooks` | CRUD webhooks (list, create, update, delete) |
 
 ---
 
-## Endpoints HTTP
+## HTTP Endpoints
 
-| Méthode | Route | Rôle |
-|---------|-------|------|
-| `POST` | `/mcp` | JSON-RPC MCP |
-| `GET` | `/mcp` | SSE stream — mises à jour canvas vers widget |
-| `DELETE` | `/mcp` | Ferme une session SSE |
-| `POST` | `/register` | Enregistrement automatique widget |
-| `POST` | `/wizard/{token}` | Réponse formulaire wizard depuis le widget |
-| `POST` | `/run` | Exécution Python canvas avec tables Grist injectées (subprocess isolé) |
-| `POST` | `/webhook-receive/{docId}` | Receiver webhooks Grist → SSE fan-out (production uniquement, HOST_URL public requis) |
-| `GET` | `/` | Widget HTML Grist |
-| `GET` | `/health` | Healthcheck JSON |
-
----
-
-## Webhooks — Patterns d'usage
-
-```
-Pattern A — Intégration externe (cas principal)
-  Table change → webhook → POST /api/crm | /api/notify | /api/erp
-  Setup via MCP : grist_webhooks(action="create", fields={tableId, eventTypes, url, name})
-
-Pattern B — Async processing loop (HOST_URL public requis)
-  Artefact écrit record Statut="pending"
-  → webhook → HOST_URL/webhook-receive/{docId} → SSE au widget
-  → traitement externe → patch Statut="done" → onRecords met à jour l'UI
-
-Pattern C — Inter-artefacts temps réel (localhost OK, pas de webhook)
-  app.emit/on | grist.setCursorPos | grist.onRecord
-```
-
-> En développement local (localhost) : Grist externe ne peut pas atteindre le receiver. Utiliser ngrok ou Pattern C.
+| Method | Route | Purpose |
+|--------|-------|---------|
+| `POST` | `/mcp` | MCP JSON-RPC (tools, resources, prompts) |
+| `GET` | `/mcp` | SSE stream — live canvas updates to widget |
+| `DELETE` | `/mcp` | Close an SSE session |
+| `POST` | `/register` | Widget auto-registration |
+| `POST` | `/wizard/{token}` | Wizard form response from widget |
+| `POST` | `/webhook-receive/{docId}` | Grist webhook receiver → SSE fan-out (production, public URL required) |
+| `GET` | `/` | Serves the custom widget |
+| `GET` | `/health` | Health check |
 
 ---
 
-## Ressources MCP
+## MCP Resources
 
-| URI | Contenu |
+Resources provide contextual documentation and live data to the LLM.
+
+### Static documentation
+| URI | Content |
 |-----|---------|
-| `grist-coder://docs/schema` | Recettes tables/colonnes |
-| `grist-coder://docs/artefacts` | Templates HTML/JS + API bridge Grist |
-| `grist-coder://docs/playbook` | Séquences pages, layouts, liaisons |
-| `grist-coder://docs/app-patterns` | Patterns multi-widgets : nav, sync, Artefactory |
-| `grist-coder://docs/formulas` | Formules colonnes Python natives Grist |
-| `grist-coder://docs/wizard` | Schéma et types du wizard interactif |
-| `grist-coder://docs/services-geo` | Géocodage, cartographie (BAN, OSM, IGN, Leaflet) |
-| `grist-coder://docs/services-data` | Données ouvertes (SIRENE, DVF, data.gouv, API Geo) |
-| `grist-coder://docs/services-ai` | Patterns IA (sync, webhook async, bridge, subagent) |
-| `grist-coder://playbook/{scenario}` | Guide cible : `dashboard\|fiche\|table\|full-app\|master-detail` |
-| `grist-coder://examples/{domain}` | Schéma + données exemple : `crm\|rh\|stock\|projets\|immobilier\|association\|restaurant\|formation` |
-| `grist-coder://context/{token}` | Snapshot live : tables + artefacts + pages |
-| `grist-coder://code/{token}` | Source de tous les artefacts |
+| `grist-coder://docs/schema` | Column types, formulas, visibleCol recipes |
+| `grist-coder://docs/artefacts` | Artefact templates, Grist bridge API, DSFR components |
+| `grist-coder://docs/playbook` | Page creation sequences, linked sections, decision tree |
+| `grist-coder://docs/app-patterns` | Multi-widget patterns: navigation, sync, routing |
+| `grist-coder://docs/formulas` | Grist Python column formulas (isFormula, lookupOne...) |
+| `grist-coder://docs/wizard` | Wizard card schema and types |
+| `grist-coder://docs/qualification` | App categories, architecture templates, completeness criteria |
+| `grist-coder://docs/services-geo` | Geocoding, maps (BAN, OSM, IGN, Leaflet) |
+| `grist-coder://docs/services-data` | Open data (SIRENE, DVF, data.gouv, API Geo) |
+| `grist-coder://docs/services-ai` | AI patterns (sync, async webhook, bridge, sub-agent) |
+
+### Live document context (templates)
+| URI | Content |
+|-----|---------|
+| `grist-coder://plan/{token}` | Persistent work plan + phase + `_next_step` hint |
+| `grist-coder://context/{token}` | Full document snapshot: schema, FK graph, artefacts, pages, `_quality` audit, `_delta` plan vs reality |
+| `grist-coder://schema-diagram/{token}` | Auto-generated Mermaid ER diagram |
+| `grist-coder://code/{token}` | Source code of all artefacts |
+| `grist-coder://context/{token}/page/{page_id}` | Page-level context: source table, linked sections, configured artefact |
+| `grist-coder://playbook/{scenario}` | Scenario guide: `dashboard`, `fiche`, `table`, `full-app`, `master-detail` |
+| `grist-coder://examples/{domain}` | Schema + sample data for: `crm`, `rh`, `stock`, `projets`, `immobilier`, `association`, `restaurant`, `formation` |
 
 ---
 
-## Auth
+## How artefacts work
+
+Artefacts are stored in a Grist table called `Artefacts`:
+
+| Column | Purpose |
+|--------|---------|
+| `Nom` | Unique name (used as key) |
+| `Type` | `html`, `react`, `app`, `markdown`, `mermaid`, `python`, `sql`, `svg` |
+| `Code` | The source code |
+| `Description` | What this artefact does |
+
+The widget renders artefacts in a sandboxed iframe with an auto-injected **Grist bridge** — artefacts can call `grist.docApi.fetchTable()`, `grist.onRecord()`, etc. to read and write Grist data directly.
+
+### Artefact types
+
+| Type | Rendered as | Use case |
+|------|------------|----------|
+| `html` | Raw HTML in iframe | Dashboards, forms, custom UIs |
+| `react` | React 18 + Babel (CDN) | Complex interactive components |
+| `app` | React + multi-view router | Full single-page applications |
+| `markdown` | Rendered Markdown | Documentation, reports |
+| `mermaid` | Mermaid diagrams | Flowcharts, ER diagrams |
+| `python` | Executed via `canvas_exec` | Data processing scripts |
+| `sql` | Executed via `grist_sql` | Analytical queries |
+| `svg` | Inline SVG | Icons, illustrations |
+
+---
+
+## Authentication model
 
 ```
-Widget                          Serveur
-──────                          ───────
-grist.docApi.getAccessToken()  → POST /register → userId (body) → uid:{userId}
-                                                → gc-xxxxxx session token
+Widget (browser)                    Server
+──────────────────                  ──────
+grist.docApi.getAccessToken()  →  POST /register  →  uid:{userId}
+                                                   →  session token gc-xxxxxx
 
-Claude Desktop                  _resolve_uid_key()
-  Bearer grist_api_key         → GET /api/profile/user → uid:{id}
+Claude Desktop                      Server
+──────────────────                  ──────
+Authorization: Bearer <api_key>  →  GET /api/profile/user  →  uid:{userId}
 ```
 
-- Les appels Grist API utilisent `?auth=token` (widget) ou `Authorization: Bearer` (Claude Desktop)
-- accessToken widget = permission document (pas admin webhooks)
-- Clé API owner = CRUD complet dont webhooks
-
-## Sécurité
-
-- **canvas_exec** et **/run** exécutent du code Python arbitraire — réservés à des utilisateurs de confiance
-- **Ne pas exposer ce service sur un réseau public** sans authentification supplémentaire
-- **WEBHOOK_SECRET** (optionnel, recommandé en production) : définir dans `.env` et configurer le même secret dans Grist → Webhook → Header `X-Webhook-Secret`
-- Les clés Grist ne sont jamais retournées dans les réponses des outils
+Both paths resolve to the same `uid:{userId}` identity. Sessions are shared between the widget and Claude — they see the same artefacts and canvas state.
 
 ---
 
-## Erreurs communes
+## Security
 
-| Erreur | Cause | Solution |
-|--------|-------|----------|
-| `401` widget | Token expiré | Widget se ré-enregistre automatiquement toutes les 12 min |
-| `401` Claude Desktop | Clé Grist incorrecte | Vérifier `Authorization: Bearer` dans `claude_desktop_config.json` |
-| `403` sur webhook create | accessToken insuffisant | Utiliser `grist_webhooks` via MCP avec clé API owner |
-| `Fragment introuvable` | `old_str` inexact | Appeler `canvas_read()` d'abord |
-| Pas de sessions | Widget non chargé | Ouvrir le widget dans Grist, attendre la connexion |
-| `timeout 10s` | Boucle infinie canvas (`canvas_exec`) | Éviter les boucles sans condition de sortie |
-| `timeout 30s` | Boucle infinie dans `/run` | Idem — subprocess tué après 30s |
+- **`canvas_exec`** runs arbitrary Python in a subprocess — only expose to trusted users
+- **Do not expose this service publicly** without additional authentication
+- **`WEBHOOK_SECRET`** (optional, recommended in production): set in `.env` and configure the same secret in Grist webhook headers
+- API keys are never returned in tool responses
 
 ---
 
-## Stack
+## What works, what doesn't (honest status)
 
-- Python 3.11+ · FastAPI · uvicorn · httpx
-- Transport MCP : Streamable HTTP 2025-03-26
-- Auth : Grist docApi JWT (widget) / Grist API key (Claude Desktop)
-- Widget : Grist Custom Widget API (`grist-plugin-api.js`)
+### Stable
+- MCP server core: tool dispatch, resource serving, SSE streaming
+- Grist CRUD tools: schema, records, sql, apply, upsert, webhooks
+- Canvas tools: read, write, patch, screenshot, type detection
+- Widget: artefact editing, live preview, auto-save, Grist bridge injection
+- Authentication: widget auto-registration + Claude Desktop API key
+- Docker deployment
+
+### Beta — functional but needs work
+- **Wizard system**: multi-card overlay works, but UI polish is lacking. Transitions between phases can feel abrupt. The `data-import` card type is useful but fragile with malformed API responses.
+- **Chat integration**: `chat_reply` and `wait_for_chat` work, but there's no message persistence — refreshing the widget loses chat history.
+- **Sub-agents**: `subagent_call` works when the MCP client supports `sampling/createMessage` (Claude Desktop). Fallback mode (for Claude Code and other clients) works but the LLM must manually adopt the sub-agent role, which is less reliable.
+- **Contextual tool filtering**: the phase-based tool disclosure works correctly, but the phase transitions could be smoother — sometimes the LLM needs a tool that's not yet available in the current phase.
+
+### Experimental / incomplete
+- **Plan persistence**: plans live in-memory (session), not in Grist. Server restart = plan lost. We intend to store plans in a Grist table.
+- **Webhook receiver** (`/webhook-receive/{docId}`): works in production with a public URL, but not usable on localhost without a tunnel (ngrok, etc.)
+- **DSFR auto-injection**: the French government design system (Système de Design de l'État) is injected inline into all artefacts. This is specific to our use case at Cerema — you may want to replace it with your own CSS framework.
+
+### Known limitations
+- Single file architecture (`grist_coder.py`, ~5300 lines) — intentional for deployment simplicity, but makes contribution harder
+- In-memory sessions — no horizontal scaling, no persistence across restarts
+- The widget is vanilla JS (~2000 lines) — no framework, no build step, which keeps it simple but limits maintainability
+- `canvas_exec` and `/run` execute arbitrary Python — this is a feature for trusted environments, a risk for public ones
+
+---
+
+## Project structure
+
+```
+grist-coder-mcp/
+├── grist_coder.py       # MCP server (single file, ~5300 lines)
+├── widget.html           # Grist custom widget (IDE + preview + wizard)
+├── requirements.txt      # Python dependencies
+├── Dockerfile            # Container image
+├── docker-compose.yml    # One-command deployment
+├── .env.example          # Environment template
+├── .mcp.json.example     # Claude Code MCP config template
+├── CLAUDE.md             # AI assistant instructions (for contributors using Claude Code)
+├── LICENSE               # MIT
+└── README.md             # This file
+```
+
+---
+
+## Compatible Grist instances
+
+Tested with:
+- [Grist Community Edition](https://github.com/gristlabs/grist-core) (self-hosted)
+- [grist.numerique.gouv.fr](https://grist.numerique.gouv.fr) (French government instance)
+- [docs.getgrist.com](https://docs.getgrist.com) (Grist Labs hosted)
+
+Any Grist instance exposing the standard REST API should work.
+
+---
+
+## Tech stack
+
+- **Python 3.11+** · FastAPI · uvicorn · httpx
+- **MCP transport**: Streamable HTTP (spec 2025-03-26)
+- **Widget**: Vanilla JS + [Ace Editor](https://ace.c9.io/) + Grist Plugin API
+- **No database**: sessions are in-memory, all persistent state lives in Grist
+
+---
+
+## Contributing
+
+This project is exploratory and we welcome contributions — whether it's bug reports, feature ideas, or pull requests. We're particularly interested in:
+
+- **Wizard UX improvements** — better card styling, animations, mobile support
+- **Session persistence** — storing plans/state in Grist tables instead of memory
+- **Alternative CSS frameworks** — making the injected CSS configurable (currently DSFR)
+- **Testing** — there are currently no automated tests
+- **Documentation** — usage guides, video demos, example workflows
+
+### How to contribute
+
+1. Fork the repo
+2. Create a feature branch (`git checkout -b feat/my-feature`)
+3. Make your changes in `grist_coder.py` and/or `widget.html`
+4. Test with a real Grist document
+5. Submit a pull request
+
+### Code conventions
+
+- `grist_coder.py` is a single file by design — do not split it
+- New tools: add to `TOOLS[]` list + handle in `call_tool()`
+- New prompts: add to `PROMPTS[]` + handle in `_prompt_messages()`
+- New resources: add to `STATIC_RESOURCES[]` + handle in `_read_resource()`
+
+---
+
+## License
+
+[MIT](LICENSE) — Nicolas LAVAL, Cerema Méditerranée
