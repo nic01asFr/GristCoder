@@ -1,4 +1,4 @@
-# Grist Coder — MCP Server for Grist
+# GristCoderMCP — MCP Server for Grist
 
 > Turn any Grist document into a full business application using AI.
 
@@ -9,7 +9,7 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow)
 ![Status: Exploratory](https://img.shields.io/badge/Status-Exploratory-orange)
 
-> **Project status**: This is an exploratory, work-in-progress project developed at [Cerema Méditerranée](https://www.cerema.fr/). It is functional and used in real workflows, but several features (wizard, sub-agents, chat) are in beta. We publish it to share the approach, gather feedback, and invite contributions from the Grist community.
+> **Project status**: This is an experimental, work-in-progress project developed at [Cerema Méditerranée](https://www.cerema.fr/). It works reliably for a single user on localhost, but several features (wizard, sub-agents, chat) are in beta. We publish it to share the approach, gather feedback from the Grist community, and invite contributions toward a complete Grist Coder.
 
 ---
 
@@ -166,7 +166,7 @@ Multiple cards coexist in the overlay — a non-blocking progress card can stay 
 ### Option A — Python (development)
 
 ```bash
-git clone https://github.com/cerema-med/grist-coder-mcp.git
+git clone https://gitlab.cerema.fr/mcp/gristcoder_mcp.git
 cd grist-coder-mcp
 
 python -m venv .venv
@@ -183,7 +183,7 @@ uvicorn grist_coder:app --port 8742 --reload
 ### Option B — Docker
 
 ```bash
-git clone https://github.com/cerema-med/grist-coder-mcp.git
+git clone https://gitlab.cerema.fr/mcp/gristcoder_mcp.git
 cd grist-coder-mcp
 
 cp .env.example .env
@@ -415,13 +415,15 @@ Both paths resolve to the same `uid:{userId}` identity. Sessions are shared betw
 
 ## What works, what doesn't (honest status)
 
-### Stable
+### Stable (single user, localhost)
 - MCP server core: tool dispatch, resource serving, SSE streaming
 - Grist CRUD tools: schema, records, sql, apply, upsert, webhooks
 - Canvas tools: read, write, patch, screenshot, type detection
 - Widget: artefact editing, live preview, auto-save, Grist bridge injection
 - Authentication: widget auto-registration + Claude Desktop API key
 - Docker deployment
+
+The server architecture supports multiple users: per-user sessions (`uid:{grist_user_id}`), isolated SSE streams (events filtered server-side), and per-user Grist API credentials. However, it has only been tested in single-user local deployments. Multi-user and remote deployments are untested and would require additional hardening (HTTPS reverse proxy, rate limiting, `canvas_exec` sandboxing).
 
 ### Beta — functional but needs work
 - **Wizard system**: multi-card overlay works, but UI polish is lacking. Transitions between phases can feel abrupt. The `data-import` card type is useful but fragile with malformed API responses.
@@ -445,7 +447,7 @@ Both paths resolve to the same `uid:{userId}` identity. Sessions are shared betw
 ## Project structure
 
 ```
-grist-coder-mcp/
+gristcoder_mcp/
 ├── grist_coder.py       # MCP server (single file, ~5300 lines)
 ├── widget.html           # Grist custom widget (IDE + preview + wizard)
 ├── requirements.txt      # Python dependencies
@@ -492,11 +494,11 @@ This project is exploratory and we welcome contributions — whether it's bug re
 
 ### How to contribute
 
-1. Fork the repo
+1. Fork the repo on [GitLab CEREMA](https://gitlab.cerema.fr/mcp/gristcoder_mcp)
 2. Create a feature branch (`git checkout -b feat/my-feature`)
 3. Make your changes in `grist_coder.py` and/or `widget.html`
 4. Test with a real Grist document
-5. Submit a pull request
+5. Submit a merge request
 
 ### Code conventions
 

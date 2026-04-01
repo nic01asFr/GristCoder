@@ -23,6 +23,7 @@ Thumbs.db
 # Dev artifacts
 dev_exemples/
 tmp_*.html
+*.log
 
 # WikiChat overlay (auto-added)
 .wikichat/
