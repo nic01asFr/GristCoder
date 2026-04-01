@@ -1,5 +1,7 @@
 # Contributing to GristCoderMCP
 
+> **Language note**: The server code (`SERVER_INSTRUCTIONS`, tool descriptions, wizard labels, prompts) is written in **French** — this is intentional, as the primary audience is French public sector users. The documentation files (README, ARCHITECTURE, CONTRIBUTING) are in English for broader accessibility. Line numbers below are approximate landmarks — they may drift as the code evolves.
+
 ## Code structure
 
 Everything is in two files:

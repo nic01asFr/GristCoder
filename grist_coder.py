@@ -1,5 +1,5 @@
 """
-GRIST CODER · MCP Server v5.11 · streamable HTTP spec 2025-03-26
+GRIST CODER · MCP Server v5.12 · streamable HTTP spec 2025-03-26
 ────────────────────────────────────────────────────────────────
 Document Grist = codebase du projet.
 Widget = split vertical Ace editor | iframe preview.

@@ -1,4 +1,4 @@
-# Environnement
+# Environment
 .env
 .venv/
 __pycache__/
@@ -8,7 +8,7 @@ __pycache__/
 # Docker
 .docker/
 
-# Credentials locaux (contiennent des cles API)
+# Local credentials (API keys)
 .mcp.json
 .claude/
 
@@ -25,5 +25,5 @@ dev_exemples/
 tmp_*.html
 *.log
 
-# WikiChat overlay (auto-added)
+# WikiChat overlay (auto-generated)
 .wikichat/
