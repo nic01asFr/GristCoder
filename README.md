@@ -455,6 +455,8 @@ gristcoder_mcp/
 ├── docker-compose.yml    # One-command deployment
 ├── .env.example          # Environment template
 ├── .mcp.json.example     # Claude Code MCP config template
+├── ARCHITECTURE.md       # How it works — capabilities, widget types, user guide
+├── CONTRIBUTING.md       # Developer guide — code map, how to add tools/resources/prompts
 ├── CLAUDE.md             # AI assistant instructions (for contributors using Claude Code)
 ├── LICENSE               # MIT
 └── README.md             # This file
