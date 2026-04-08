@@ -299,7 +299,8 @@ const GRIST_BRIDGE_SCRIPT =
   "window.addEventListener('message',function(e){" +
     "var m=e.data;if(!m)return;" +
     "if(m.type==='grist-bridge-response'){var p=_p.get(m.callbackId);" +
-      "if(p){_p.delete(m.callbackId);if(m.error)p.reject(new Error(m.error));else p.resolve(m.result);}}" +
+      "if(p){_p.delete(m.callbackId);if(m.error)p.reject(new Error(m.error));else p.resolve(m.result);}" +
+      "else{console.warn('[grist-bridge] late response for cid='+m.callbackId+' (already timed out or unknown)');}}" +
     "if(m.type==='grist-bridge-callback'){var cb=_cbs.get(m.callbackId);if(cb)cb.apply(null,m.args||[]);}" +
   "});" +
   "function call(a,args){return new Promise(function(res,rej){" +
@@ -561,6 +562,8 @@ var _currentContext='qualifying'; // phase courante poussée par plan_update via
 var _editor, _panelOpen=false;
 var _bridgeOnRecordRelays=[], _lastRecords=null;
 var _lastServerCanvas=null; // Guard: prevent autoSave on server-pushed setValue
+var _serverUpdating=false;  // True while SSE-driven canvas update is in progress (blocks autoSave)
+var _autoSaveTimer=null;    // Manual debounce timer (cancellable)
 var _gristSchema=null;      // Last schema from grist_schema tool (tables + columns)
 
 // ── ACE EDITOR ──────────────────────────────────────────────────────────────
@@ -574,7 +577,7 @@ window.addEventListener('DOMContentLoaded', function() {
   _editor.setTheme('ace/theme/one_dark');
   _editor.setOptions({fontSize:'13px',tabSize:2,useSoftTabs:true,wrap:false,showPrintMargin:false});
   _editor.on('change', debounce(autoPreview, 1800));
-  _editor.on('change', debounce(autoSave, 3000));
+  _editor.on('change', scheduleAutoSave);
   initSplitter();
   renderEmpty(); // état initial avant que Grist charge les artefacts
 });
@@ -626,7 +629,13 @@ grist.onRecord(function(record) {
     var _lockedOnOther = _canvasTargetArt && record.Nom !== _canvasTargetArt;
     if (_artefactsLoaded && !_lockedOnOther && record.Nom && _artefactsMap[record.Nom]) {
       var sel = document.getElementById('artSelect');
-      if (sel && sel.value !== record.Nom) { sel.value = record.Nom; onArtSelect(); }
+      if (sel && sel.value !== record.Nom) {
+        // Cancel pending autoSave before switching: previous editor content
+        // belongs to a different artefact and must NOT be persisted to the new one.
+        cancelAutoSave();
+        sel.value = record.Nom;
+        onArtSelect();
+      }
     }
   }
 });
@@ -706,12 +715,18 @@ function listenSSE() {
         if (ev.type === 'canvas_updated' || ev.type === 'canvas_patched') {
           var _evData = ev; // capture for async closure
           var _applyCanvasUpdate = function() {
+            // CRITICAL race fix: lock saveArt + cancel any pending autoSave so
+            // an in-flight user-typed save can't fire with stale editor content
+            // and a freshly switched _currentArt (would write the wrong code
+            // to the wrong artefact). Released after loadCanvasIntoEditor.
+            _serverUpdating = true;
+            cancelAutoSave();
             var _evArtKnown = !_evData.art_nom;
             if (_evData.art_nom && _artefactsMap[_evData.art_nom]) {
               _evArtKnown = true;
               var sel = document.getElementById('artSelect');
               if (sel && sel.value !== _evData.art_nom) {
-                _canvasTargetArt = _evData.art_nom; // lock: onRecord ne peut pas switcher hors de cet artefact
+                _canvasTargetArt = _evData.art_nom; // lock onRecord
                 sel.value = _evData.art_nom;
                 _currentArt = _artefactsMap[_evData.art_nom];
               }
@@ -720,32 +735,37 @@ function listenSSE() {
                 _currentArt.Type = _evData.art_type;
                 _artefactsMap[_evData.art_nom].Type = _evData.art_type;
               }
-              // Initialize editor silently (panel reste fermé pendant production)
-              if (_editor && _currentArt) {
-                setEditorMode(_currentArt.Type);
-                if (!_editor.getValue() || _editor.getValue() !== (_currentArt.Code||'')) {
-                  _editor.setValue(_currentArt.Code || '', -1);
-                }
-              }
-              // Ne pas ouvrir le panel automatiquement — l'utilisateur voit le rendu, pas le code
+              if (_editor && _currentArt) setEditorMode(_currentArt.Type);
             }
             loadCanvasIntoEditor().then(function(){
-              // saveArt FIRST — it compares editor vs _currentArt.Code to detect changes
-              if (_evArtKnown) saveArt();
-              // THEN update _currentArt.Code so future saves don't re-save same content
-              if (_currentArt && _editor) {
-                var freshCode = _editor.getValue();
-                _currentArt.Code = freshCode;
-                if (_currentArt.Nom && _artefactsMap[_currentArt.Nom]) _artefactsMap[_currentArt.Nom].Code = freshCode;
+              var artNow = _currentArt;
+              var freshCode = _editor ? _editor.getValue() : '';
+              // Release the server-update lock so saveArt can run
+              _serverUpdating = false;
+              // Save the freshly loaded canvas to Grist (browser bypass for WAF).
+              // Only if we have real content (guard against empty editor edge cases).
+              if (_evArtKnown && artNow && freshCode) {
+                saveArt().then(function() {
+                  // Sync cache after successful save
+                  if (artNow && _editor) {
+                    var c = _editor.getValue();
+                    if (c) {
+                      artNow.Code = c;
+                      if (artNow.Nom && _artefactsMap[artNow.Nom]) _artefactsMap[artNow.Nom].Code = c;
+                    }
+                  }
+                });
               }
               renderCurrent();
-              // Release lock AFTER iframe finishes loading (not before)
+              // Release art lock AFTER iframe finishes loading
               var _frame = document.getElementById('renderFrame');
               if (_frame) {
                 _frame.onload = function(){ setTimeout(function(){ _canvasTargetArt = null; }, 100); };
               }
-              // Fallback: release after 5s if onload doesn't fire
               setTimeout(function(){ _canvasTargetArt = null; }, 5000);
+            }).catch(function(err) {
+              console.error('canvas_updated handler:', err);
+              _serverUpdating = false;
             });
             document.getElementById('sbCanvas').textContent = _evData.sha || 'updated';
           };
@@ -764,6 +784,9 @@ function listenSSE() {
         if (ev.type === 'art_select' && ev.art_nom) {
           var _selArt = _artefactsMap[ev.art_nom];
           if (_selArt) {
+            // Cancel any pending autoSave from previous editor content (otherwise
+            // it would fire with the OLD editor content + NEW _currentArt)
+            cancelAutoSave();
             _canvasTargetArt = ev.art_nom; // lock onRecord so it doesn't override
             var sel = document.getElementById('artSelect');
             if (sel) sel.value = ev.art_nom;
@@ -919,6 +942,9 @@ async function onArtSelect(initOnly) {
   }
   var art = _artefactsMap[nom];
   if (!art) return;
+  // Cancel any pending autoSave: previous editor content belongs to a different
+  // artefact, firing autoSave now would write the wrong code to the new one.
+  cancelAutoSave();
   _currentArt = art;
   // Lock onRecord auto-select: user chose this artefact manually — don't let Grist cursor override it
   if (!initOnly) _canvasTargetArt = art.Nom;
@@ -1174,20 +1200,47 @@ function autoPreview() { renderCurrent(); }
 // ── SAVE ─────────────────────────────────────────────────────────────────────
 async function saveArt() {
   if (!_currentArt) return;
+  // Block writes during server-driven updates: editor and _currentArt may be
+  // momentarily out of sync (e.g. canvas_patched switched _currentArt but
+  // loadCanvasIntoEditor hasn't completed yet).
+  if (_serverUpdating) {
+    console.warn('saveArt: blocked — server update in progress');
+    return;
+  }
+  // Capture the artefact reference BEFORE awaiting anything: _currentArt may
+  // be reassigned while applyUserActions is in flight, which would otherwise
+  // cause us to write the saved code to the wrong artefact in _artefactsMap.
+  var art = _currentArt;
   var code = _editor ? _editor.getValue() : '';
-  if (code === _currentArt.Code) return;
+  if (code === art.Code) return;
+  // Safety: never overwrite a non-empty artefact with an empty editor.
+  if (!code && art.Code) {
+    console.warn('saveArt: refusing to overwrite non-empty artefact with empty editor');
+    return;
+  }
   var ss = document.getElementById('saveStatus');
   if (ss) ss.textContent = 'saving…';
   try {
     // Sauvegarde directe browser→Grist via applyUserActions (contourne WAF serveur)
     await grist.docApi.applyUserActions([
-      ['UpdateRecord', 'Artefacts', _currentArt.id, {Code: code, UpdatedAt: Math.floor(Date.now()/1000)}]
+      ['UpdateRecord', 'Artefacts', art.id, {Code: code, UpdatedAt: Math.floor(Date.now()/1000)}]
     ]);
-    _currentArt.Code = code;
-    _artefactsMap[_currentArt.Nom].Code = code;
+    art.Code = code;
+    if (_artefactsMap[art.Nom]) _artefactsMap[art.Nom].Code = code;
     if (ss) ss.textContent = 'saved ✓';
     setTimeout(function(){ if (ss) ss.textContent = ''; }, 2000);
   } catch(e) { if (ss) ss.textContent = 'err'; console.error('saveArt:', e); }
+}
+function scheduleAutoSave() {
+  cancelAutoSave();
+  _autoSaveTimer = setTimeout(function() {
+    _autoSaveTimer = null;
+    if (_serverUpdating) return;
+    autoSave();
+  }, 3000);
+}
+function cancelAutoSave() {
+  if (_autoSaveTimer) { clearTimeout(_autoSaveTimer); _autoSaveTimer = null; }
 }
 function autoSave() {
   // Skip if content was just set from server (not a user edit)

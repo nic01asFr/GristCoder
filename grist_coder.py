@@ -28,6 +28,17 @@ WEBHOOK_SECRET  = os.getenv("WEBHOOK_SECRET", "")
 MCP_VER  = "2025-03-26"
 WIDGET_PATH = Path(__file__).parent / "widget.html"
 
+# Security warning: webhook receiver is unauthenticated unless WEBHOOK_SECRET is set.
+# If HOST_URL is publicly accessible (not localhost), this allows anyone to inject
+# fake webhook events into widgets connected to the server.
+if not WEBHOOK_SECRET and "localhost" not in HOST_URL and "127.0.0.1" not in HOST_URL:
+    print(
+        "[SECURITY WARNING] WEBHOOK_SECRET is not set but HOST_URL appears public "
+        f"({HOST_URL}). The /webhook-receive endpoint is unauthenticated — anyone "
+        "can POST to it. Set WEBHOOK_SECRET in .env to prevent fake event injection.",
+        file=sys.stderr,
+    )
+
 # ── SERVER INSTRUCTIONS ───────────────────────────────────────────────────────
 
 SERVER_INSTRUCTIONS = """
@@ -342,8 +353,17 @@ def _push(uid_key, event):
     for sid, q in _queues.items():
         if is_wizard_event and sid in _display_sids:
             continue  # Ne pas envoyer les events wizard aux widgets en display mode
-        try: q.put_nowait(event)
-        except asyncio.QueueFull: pass
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            # Drop oldest event to make room — keeps the queue responsive instead
+            # of silently losing the newest events
+            try:
+                q.get_nowait()
+                q.put_nowait(event)
+                print(f"[SSE] queue full for sid={sid[:8]} — dropped oldest event", file=sys.stderr)
+            except Exception:
+                print(f"[SSE] queue full for sid={sid[:8]} — dropped event {event.get('type')}", file=sys.stderr)
 
 def _notify_resource(uid_key, uri):
     _push(uid_key, {"type": "mcp_notification",
@@ -4129,9 +4149,76 @@ async def call_tool(uid_key, mcp_sid, name, args):
 
     if name == "canvas_patch":
         old, new = args["old_str"], args["new_str"]
-        if old not in ctx.canvas:
-            return {"error": f"Fragment introuvable : {old!r:.80}"}
-        ctx.canvas = ctx.canvas.replace(old, new, 1)
+        canvas = ctx.canvas
+
+        # Strategy 1 — exact match (fast path)
+        idx = canvas.find(old)
+        n_matches = canvas.count(old) if idx >= 0 else 0
+
+        # Strategy 2 — normalize line endings (CRLF/LF) on both sides
+        if idx < 0:
+            canvas_lf = canvas.replace("\r\n", "\n").replace("\r", "\n")
+            old_lf    = old.replace("\r\n", "\n").replace("\r", "\n")
+            new_lf    = new.replace("\r\n", "\n").replace("\r", "\n")
+            idx2 = canvas_lf.find(old_lf)
+            if idx2 >= 0:
+                n2 = canvas_lf.count(old_lf)
+                if n2 > 1:
+                    return {"error": f"Fragment trouve {n2} fois (apres normalisation des sauts de ligne) — elargir le contexte pour le rendre unique."}
+                canvas, old, new = canvas_lf, old_lf, new_lf
+                idx, n_matches = idx2, 1
+
+        # Strategy 3 — normalize trailing whitespace on each line
+        if idx < 0:
+            def _strip_trailing(s):
+                return "\n".join(line.rstrip() for line in s.split("\n"))
+            canvas_t = _strip_trailing(canvas)
+            old_t    = _strip_trailing(old)
+            idx3 = canvas_t.find(old_t)
+            if idx3 >= 0:
+                n3 = canvas_t.count(old_t)
+                if n3 > 1:
+                    return {"error": f"Fragment trouve {n3} fois (apres normalisation des espaces) — elargir le contexte."}
+                canvas, old = canvas_t, old_t
+                idx, n_matches = idx3, 1
+
+        # Strategy 4 — leading-whitespace tolerant (re-indent old_str to match canvas)
+        if idx < 0 and old.strip():
+            old_lines = old.split("\n")
+            first_nonblank = next((l for l in old_lines if l.strip()), "")
+            if first_nonblank:
+                core = first_nonblank.lstrip()
+                old_indent = first_nonblank[:len(first_nonblank) - len(first_nonblank.lstrip())]
+                for ln in canvas.split("\n"):
+                    if ln.lstrip() == core and ln != first_nonblank:
+                        canvas_indent = ln[:len(ln) - len(ln.lstrip())]
+                        if canvas_indent.startswith(old_indent):
+                            delta = canvas_indent[len(old_indent):]
+                            old_reindent = "\n".join((delta + l) if l.strip() else l for l in old_lines)
+                            new_reindent = "\n".join((delta + l) if l.strip() else l for l in new.split("\n"))
+                            idx4 = canvas.find(old_reindent)
+                            if idx4 >= 0 and canvas.count(old_reindent) == 1:
+                                old, new = old_reindent, new_reindent
+                                idx, n_matches = idx4, 1
+                                break
+
+        if idx < 0:
+            # Fuzzy hint: find the 3 most similar lines in the canvas
+            import difflib
+            old_first_line = next((l for l in old.split("\n") if l.strip()), old[:80])
+            canvas_lines = [l for l in canvas.split("\n") if l.strip()]
+            close = difflib.get_close_matches(old_first_line, canvas_lines, n=3, cutoff=0.6)
+            hint = ""
+            if close:
+                hint = " | Lignes similaires : " + " ;; ".join(repr(l[:80]) for l in close)
+            return {"error": f"Fragment introuvable : {old[:80]!r}{hint}",
+                    "_hint": "Verifier indentation/sauts de ligne. Appeler canvas_read() pour relire le contenu exact."}
+
+        if n_matches > 1:
+            return {"error": f"Fragment trouve {n_matches} fois — elargir le contexte (old_str) pour le rendre unique."}
+
+        # Apply the patch
+        ctx.canvas = canvas[:idx] + new + canvas[idx + len(old):]
         sha = hashlib.sha1(ctx.canvas.encode()).hexdigest()[:8]
         ctx.history.appendleft({"ts": time.time(), "sha": sha, "op": "patch"})
         _push(uid_key, {"type": "canvas_patched", "token": ctx.token, "sha": sha,
@@ -4151,6 +4238,11 @@ async def call_tool(uid_key, mcp_sid, name, args):
             return {"error": "timeout 10s"}
 
     if name == "canvas_screenshot":
+        # Cancel any prior pending screenshot waiter for this token to avoid
+        # orphaning futures when the LLM calls canvas_screenshot rapidly in succession.
+        prior = _screenshot_waiters.pop(ctx.token, None)
+        if prior and not prior.done():
+            prior.cancel()
         loop = asyncio.get_event_loop()
         fut  = loop.create_future()
         _screenshot_waiters[ctx.token] = fut
@@ -4163,7 +4255,10 @@ async def call_tool(uid_key, mcp_sid, name, args):
         except asyncio.TimeoutError:
             return {"error": "Timeout 15s : widget ferme ou iframe vide."}
         finally:
-            _screenshot_waiters.pop(ctx.token, None)
+            # Only pop if this future is still the registered one (avoid clobbering
+            # a newer waiter that took our slot).
+            if _screenshot_waiters.get(ctx.token) is fut:
+                _screenshot_waiters.pop(ctx.token, None)
 
     if name == "canvas_type":
         art_type = args.get("type","html")
@@ -5097,9 +5192,17 @@ async def mcp_sse(request: Request,
         finally:
             _queues.pop(sid, None)
             _display_sids.discard(sid)
-            # Nettoyer le sid MCP client si c'était lui
+            # Nettoyer le sid MCP client si c'était lui + cancel any sampling
+            # waiters that were targeting this disconnected client
             if is_mcp_client and _mcp_client_sids.get(uid_key) == sid:
                 _mcp_client_sids.pop(uid_key, None)
+                # Cancel any pending sampling futures: the client is gone, no
+                # response will ever arrive. Without this they wait the full 120s.
+                for waiter_id in list(_sampling_waiters.keys()):
+                    fut = _sampling_waiters.get(waiter_id)
+                    if fut and not fut.done():
+                        fut.set_exception(Exception("MCP client disconnected"))
+                        _sampling_waiters.pop(waiter_id, None)
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Mcp-Session-Id": sid})
 
