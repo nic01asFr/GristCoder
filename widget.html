@@ -564,6 +564,25 @@ var _bridgeOnRecordRelays=[], _lastRecords=null;
 var _lastServerCanvas=null; // Guard: prevent autoSave on server-pushed setValue
 var _serverUpdating=false;  // True while SSE-driven canvas update is in progress (blocks autoSave)
 var _autoSaveTimer=null;    // Manual debounce timer (cancellable)
+function _setSyncStatus(state) {
+  // state: 'syncing' | 'saving' | 'saved' | 'patched' | 'error' | ''
+  var ss = document.getElementById('saveStatus');
+  if (!ss) return;
+  var styles = {
+    syncing: {text:'● syncing…', color:'#f59e0b'},
+    saving:  {text:'saving…',    color:'#64748b'},
+    saved:   {text:'saved ✓',    color:'#10b981'},
+    patched: {text:'patched ✓',  color:'#10b981'},
+    error:   {text:'err',        color:'#ef4444'},
+    '':      {text:'',           color:''},
+  };
+  var s = styles[state] || styles[''];
+  ss.textContent = s.text;
+  ss.style.color = s.color;
+  if (state === 'saved' || state === 'patched') {
+    setTimeout(function(){ if (ss.textContent === s.text) _setSyncStatus(''); }, 2000);
+  }
+}
 var _gristSchema=null;      // Last schema from grist_schema tool (tables + columns)
 
 // ── ACE EDITOR ──────────────────────────────────────────────────────────────
@@ -721,6 +740,7 @@ function listenSSE() {
             // to the wrong artefact). Released after loadCanvasIntoEditor.
             _serverUpdating = true;
             cancelAutoSave();
+            _setSyncStatus('syncing');
             var _evArtKnown = !_evData.art_nom;
             if (_evData.art_nom && _artefactsMap[_evData.art_nom]) {
               _evArtKnown = true;
@@ -757,6 +777,8 @@ function listenSSE() {
                 });
               }
               renderCurrent();
+              // Sync status: distinguish patch vs full write for visual feedback
+              if (_evData.type === 'canvas_patched') _setSyncStatus('patched');
               // Release art lock AFTER iframe finishes loading
               var _frame = document.getElementById('renderFrame');
               if (_frame) {
@@ -766,6 +788,7 @@ function listenSSE() {
             }).catch(function(err) {
               console.error('canvas_updated handler:', err);
               _serverUpdating = false;
+              _setSyncStatus('error');
             });
             document.getElementById('sbCanvas').textContent = _evData.sha || 'updated';
           };
@@ -1218,8 +1241,7 @@ async function saveArt() {
     console.warn('saveArt: refusing to overwrite non-empty artefact with empty editor');
     return;
   }
-  var ss = document.getElementById('saveStatus');
-  if (ss) ss.textContent = 'saving…';
+  _setSyncStatus('saving');
   try {
     // Sauvegarde directe browser→Grist via applyUserActions (contourne WAF serveur)
     await grist.docApi.applyUserActions([
@@ -1227,9 +1249,8 @@ async function saveArt() {
     ]);
     art.Code = code;
     if (_artefactsMap[art.Nom]) _artefactsMap[art.Nom].Code = code;
-    if (ss) ss.textContent = 'saved ✓';
-    setTimeout(function(){ if (ss) ss.textContent = ''; }, 2000);
-  } catch(e) { if (ss) ss.textContent = 'err'; console.error('saveArt:', e); }
+    _setSyncStatus('saved');
+  } catch(e) { _setSyncStatus('error'); console.error('saveArt:', e); }
 }
 function scheduleAutoSave() {
   cancelAutoSave();

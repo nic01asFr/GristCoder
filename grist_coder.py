@@ -263,6 +263,7 @@ class SessionCtx:
         self._wizard_events: dict[str, asyncio.Event] = {}  # keyed by step/card id
         self._async_wizard_responses: dict[str, dict] = {}  # card_id -> dernière réponse (mode async)
         self.project_plan: dict = {}   # plan de projet persistant : need, tables, artefacts, pages, status
+        self.plan_history: deque = deque(maxlen=50)  # [{ts, status, summary}] — timeline des transitions
         self.current_context: str = "qualifying"   # qualifying|assessing|designing|building|verifying|done
         self._active_wizard_cards: dict[str, dict] = {}  # card_id -> step dict (persist on SSE reconnect)
         self._chat_history: list[dict] = []        # {role, content, ts} — replay sur reconnexion SSE
@@ -3361,6 +3362,14 @@ async def _read_resource(uid_key, mcp_sid, uri):
         plan["_hint"] = ("Plan vide — commencer par Phase 1 (canvas_wizard type=input + docs/qualification)"
                          if not plan.get("need") else
                          f"Plan en cours — status: {status}")
+        # Timeline of status transitions (most recent first, max 10 entries shown)
+        if ctx.plan_history:
+            plan["_history"] = [
+                {"status": h["status"], "from": h.get("from"),
+                 "summary": h["summary"],
+                 "ago_seconds": int(time.time() - h["ts"])}
+                for h in list(ctx.plan_history)[:10]
+            ]
         return {"uri": uri, "mimeType": "application/json",
                 "text": json.dumps(plan, ensure_ascii=False, indent=2)}
 
@@ -4202,6 +4211,33 @@ async def call_tool(uid_key, mcp_sid, name, args):
                                 idx, n_matches = idx4, 1
                                 break
 
+        # Strategy 5 — line-based fuzzy block match (≥92% similarity, single best)
+        fuzzy_warning = None
+        if idx < 0 and old.strip():
+            import difflib
+            old_lines_list = old.split("\n")
+            canvas_lines_list = canvas.split("\n")
+            n_old = len(old_lines_list)
+            best_ratio = 0.0
+            best_start = -1
+            # Slide window of size n_old over canvas_lines
+            for i in range(len(canvas_lines_list) - n_old + 1):
+                window = "\n".join(canvas_lines_list[i:i + n_old])
+                ratio = difflib.SequenceMatcher(None, old, window, autojunk=False).ratio()
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    best_start = i
+                    if ratio == 1.0:
+                        break
+            if best_ratio >= 0.92 and best_start >= 0:
+                # Compute char index of best window in canvas
+                char_idx = sum(len(l) + 1 for l in canvas_lines_list[:best_start])
+                matched = "\n".join(canvas_lines_list[best_start:best_start + n_old])
+                old = matched
+                idx = char_idx
+                n_matches = 1
+                fuzzy_warning = f"match approximatif ({int(best_ratio * 100)}% similarite) — verifier le resultat"
+
         if idx < 0:
             # Fuzzy hint: find the 3 most similar lines in the canvas
             import difflib
@@ -4224,7 +4260,10 @@ async def call_tool(uid_key, mcp_sid, name, args):
         _push(uid_key, {"type": "canvas_patched", "token": ctx.token, "sha": sha,
               "art_nom": ctx.current_art_nom, "art_type": ctx.current_art_type})
         _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
-        return {"ok": True, "sha": sha}
+        result = {"ok": True, "sha": sha}
+        if fuzzy_warning:
+            result["_warning"] = fuzzy_warning
+        return result
 
     if name == "canvas_exec":
         if not ctx.canvas.strip():
@@ -4358,12 +4397,27 @@ async def call_tool(uid_key, mcp_sid, name, args):
 
     # ── Plan meta-control
     if name == "plan_update":
+        prev_status = ctx.project_plan.get("status")
         for k, v in args.items():
             if v is not None:
                 ctx.project_plan[k] = v
         ctx.project_plan["updated_at"] = time.time()
         plan = ctx.project_plan
         status = plan.get("status", "qualifying")
+        # Record timeline entry on status transition or first plan update
+        if status != prev_status or not ctx.plan_history:
+            summary_parts = []
+            if args.get("need"): summary_parts.append(f"need: {str(args['need'])[:60]}")
+            if args.get("tables"): summary_parts.append(f"{len(args['tables'])} tables")
+            if args.get("artefacts"): summary_parts.append(f"{len(args['artefacts'])} artefacts")
+            if args.get("pages"): summary_parts.append(f"{len(args['pages'])} pages")
+            if args.get("notes"): summary_parts.append(f"note: {str(args['notes'])[:50]}")
+            ctx.plan_history.appendleft({
+                "ts": time.time(),
+                "status": status,
+                "from": prev_status,
+                "summary": " · ".join(summary_parts) or "update",
+            })
         STATUS_META = {
             "qualifying":  ("Qualification du besoin",   "info",    10),
             "assessing":   ("Exploration du document",   "info",    20),
@@ -5410,13 +5464,35 @@ async def webhook_receive(doc_id: str, request: Request):
 
 
 @app.get("/health")
-async def health():
+async def health(request: Request):
     total = sum(len(u["sessions"]) for u in registry._users.values())
-    return {"ok": True, "version": "5.12", "mcp_protocol": MCP_VER,
+    base = {"ok": True, "version": "5.12", "mcp_protocol": MCP_VER,
             "sessions": total, "users": len(registry._users),
             "tools": len(TOOLS), "prompts": len(PROMPTS),
             "resources": {"static": len(STATIC_RESOURCES), "templates": len(RESOURCE_TEMPLATES)},
             "widget": WIDGET_PATH.exists()}
+    # Optional diagnostic detail (?diag=1) — for debugging desync without log access
+    if request.query_params.get("diag") == "1":
+        active_arts = []
+        wizard_pending = 0
+        for u in registry._users.values():
+            for tk, sctx in u.get("sessions", {}).items():
+                if sctx.current_art_nom:
+                    active_arts.append({"token": tk, "doc": sctx.doc_title,
+                                        "art": sctx.current_art_nom, "type": sctx.current_art_type,
+                                        "context": sctx.current_context,
+                                        "wizard_cards": list(sctx._active_wizard_cards.keys())})
+                wizard_pending += len(sctx._wizard_events)
+        base["_diagnostic"] = {
+            "queues": {sid[:8]: {"depth": q.qsize(), "display": sid in _display_sids}
+                       for sid, q in _queues.items()},
+            "wizard_pending_events": wizard_pending,
+            "screenshot_waiters": len(_screenshot_waiters),
+            "sampling_waiters": len(_sampling_waiters),
+            "mcp_clients": len(_mcp_client_sids),
+            "active_artefacts": active_arts,
+        }
+    return base
 
 
 @app.get("/", response_class=HTMLResponse)
