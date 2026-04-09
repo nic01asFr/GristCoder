@@ -734,67 +734,59 @@ function listenSSE() {
         if (ev.type === 'canvas_updated' || ev.type === 'canvas_patched') {
           var _evData = ev; // capture for async closure
           var _applyCanvasUpdate = function() {
-            // CRITICAL race fix: lock saveArt + cancel any pending autoSave so
-            // an in-flight user-typed save can't fire with stale editor content
-            // and a freshly switched _currentArt (would write the wrong code
-            // to the wrong artefact). Released after loadCanvasIntoEditor.
-            _serverUpdating = true;
-            cancelAutoSave();
-            _setSyncStatus('syncing');
-            var _evArtKnown = !_evData.art_nom;
-            if (_evData.art_nom && _artefactsMap[_evData.art_nom]) {
-              _evArtKnown = true;
-              var sel = document.getElementById('artSelect');
-              if (sel && sel.value !== _evData.art_nom) {
-                _canvasTargetArt = _evData.art_nom; // lock onRecord
-                sel.value = _evData.art_nom;
-                _currentArt = _artefactsMap[_evData.art_nom];
-              }
-              // Sync type on existing artefact if server changed it
-              if (_evData.art_type && _currentArt) {
-                _currentArt.Type = _evData.art_type;
-                _artefactsMap[_evData.art_nom].Type = _evData.art_type;
-              }
-              if (_editor && _currentArt) setEditorMode(_currentArt.Type);
+            var artNom = _evData.art_nom;
+            var artId  = _evData.art_id;
+            var code   = _evData.code;
+            var isCurrentlyDisplayed = _currentArt && _currentArt.Nom === artNom;
+
+            // 1. Save directly to Grist via applyUserActions (browser bypass for WAF).
+            //    This does NOT touch the editor — it writes the code from the server
+            //    event directly to the Artefacts table. No race with autoSave possible.
+            if (artId && code) {
+              _setSyncStatus('syncing');
+              grist.docApi.applyUserActions([
+                ['UpdateRecord', 'Artefacts', artId, {Code: code, UpdatedAt: Math.floor(Date.now()/1000)}]
+              ]).then(function() {
+                // Update cache
+                if (artNom && _artefactsMap[artNom]) {
+                  _artefactsMap[artNom].Code = code;
+                }
+                if (isCurrentlyDisplayed && _currentArt) {
+                  _currentArt.Code = code;
+                }
+                _setSyncStatus(_evData.type === 'canvas_patched' ? 'patched' : 'saved');
+              }).catch(function(err) {
+                console.error('SSE save to Grist failed:', err);
+                _setSyncStatus('error');
+              });
             }
-            loadCanvasIntoEditor().then(function(){
-              var artNow = _currentArt;
-              var freshCode = _editor ? _editor.getValue() : '';
-              // Release the server-update lock so saveArt can run
-              _serverUpdating = false;
-              // Save the freshly loaded canvas to Grist (browser bypass for WAF).
-              // Only if we have real content (guard against empty editor edge cases).
-              if (_evArtKnown && artNow && freshCode) {
-                saveArt().then(function() {
-                  // Sync cache after successful save
-                  if (artNow && _editor) {
-                    var c = _editor.getValue();
-                    if (c) {
-                      artNow.Code = c;
-                      if (artNow.Nom && _artefactsMap[artNow.Nom]) _artefactsMap[artNow.Nom].Code = c;
-                    }
-                  }
-                });
+
+            // 2. Sync type in cache
+            if (_evData.art_type && artNom && _artefactsMap[artNom]) {
+              _artefactsMap[artNom].Type = _evData.art_type;
+            }
+
+            // 3. Update editor + preview ONLY if this artefact is the one displayed.
+            //    If the user is looking at a different artefact, don't touch the editor —
+            //    just save in the background silently.
+            if (isCurrentlyDisplayed && code) {
+              cancelAutoSave();
+              _serverUpdating = true;
+              _lastServerCanvas = code;
+              if (_editor) {
+                var pos = _editor.getCursorPosition();
+                _editor.setValue(code, -1);
+                _editor.moveCursorToPosition(pos);
+                setEditorMode(_evData.art_type || _currentArt.Type);
               }
+              _serverUpdating = false;
               renderCurrent();
-              // Sync status: distinguish patch vs full write for visual feedback
-              if (_evData.type === 'canvas_patched') _setSyncStatus('patched');
-              // Release art lock AFTER iframe finishes loading
-              var _frame = document.getElementById('renderFrame');
-              if (_frame) {
-                _frame.onload = function(){ setTimeout(function(){ _canvasTargetArt = null; }, 100); };
-              }
-              setTimeout(function(){ _canvasTargetArt = null; }, 5000);
-            }).catch(function(err) {
-              console.error('canvas_updated handler:', err);
-              _serverUpdating = false;
-              _setSyncStatus('error');
-            });
+            }
+
             document.getElementById('sbCanvas').textContent = _evData.sha || 'updated';
           };
           // If artefact was just created server-side (is_new) or unknown: refresh list first
           if (_evData.art_nom && (!_artefactsMap[_evData.art_nom] || _evData.is_new)) {
-            // Pre-set artSelect so renderArtSelect() preserves the correct name during reload
             _canvasTargetArt = _evData.art_nom; // lock onRecord pendant le reload
             var _preSelEl = document.getElementById('artSelect');
             if (_preSelEl && _evData.art_nom) _preSelEl.value = _evData.art_nom;
@@ -821,13 +813,9 @@ function listenSSE() {
             }
             renderArt(_selArt);
             // NO saveArt() — this is read-only
-            // Release lock after iframe finishes loading (not arbitrary timer)
-            var _artFrame = document.getElementById('renderFrame');
-            if (_artFrame) {
-              _artFrame.onload = function(){ setTimeout(function(){ _canvasTargetArt = null; }, 100); };
-            }
-            // Fallback: release after 5s if onload doesn't fire (e.g. srcdoc cache)
-            setTimeout(function(){ _canvasTargetArt = null; }, 5000);
+            // Keep _canvasTargetArt locked — it will only be released when:
+            //   - User selects "— aucun —" in the dropdown
+            //   - A new canvas_updated/art_select SSE arrives for a different artefact
           }
         }
         if (ev.type === 'type_changed' && _currentArt) {
@@ -914,8 +902,11 @@ async function loadArtefacts() {
   var n = (data.id||[]).length;
   _artefacts = []; _artefactsMap = {};
   for (var i=0; i<n; i++) {
+    var nom = (data.Nom||[])[i]||'';
+    // Skip the GristCoderMCP meta record (project need persistence)
+    if (nom === '_project_meta') continue;
     var art = {
-      id: data.id[i], Nom: (data.Nom||[])[i]||'', Type: (data.Type||[])[i]||'html',
+      id: data.id[i], Nom: nom, Type: (data.Type||[])[i]||'html',
       Code: (data.Code||[])[i]||'',
       Description: (data.Description||[])[i]||'', IsDoc: !!(data.IsDoc||[])[i],
     };
@@ -979,10 +970,13 @@ async function onArtSelect(initOnly) {
     setEditorHeader(art);
   }
   renderArt(art);
-  // Sync server context (read-only) — tells server which artefact is active without writing
-  if (!initOnly) {
-    try { await tool('canvas_select', {art_nom: art.Nom}); } catch(_) {}
-  }
+  // NOTE: We deliberately do NOT call tool('canvas_select') here.
+  // The widget and the LLM have independent notions of "current artefact":
+  //   - Widget: what the user is looking at right now (can change freely)
+  //   - LLM:    what the LLM has explicitly selected via MCP canvas_select
+  // Calling canvas_select from here would race with the LLM and overwrite
+  // ctx.current_art_* with whatever the user just clicked, breaking ongoing
+  // canvas_patch / canvas_write sequences.
 }
 
 function setEditorHeader(art) { /* artSelect IS the header */ }

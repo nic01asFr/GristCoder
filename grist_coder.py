@@ -132,11 +132,15 @@ CYCLE GUIDE — 4 PHASES
     5. canvas_wizard_close() -> ferme tout l overlay
 
   REPRISE DE SESSION (plan existant)
-    1. plan/{token} -> lire plan + status + _next_step
-    2. context/{token} -> etat reel actuel (relations + _quality + _delta)
+    1. plan/{token} -> lire plan + status + _next_step + _history (timeline transitions)
+       Le 'need' du plan est PERSISTE dans Grist (table Artefacts, record _project_meta)
+       et automatiquement restaure au demarrage — pas besoin de re-qualifier.
+    2. context/{token} -> etat reel actuel + _inferred_plan (status deduit de l etat doc :
+       tables, artefacts, pages, qualite). Si memory_status_diverges est present,
+       l etat memoire est obsolete -> faire confiance a _inferred_plan.
     3. plan_update() non-bloquant -> restaure la card ctx-plan-progress
     4. canvas_wizard(type="confirm", id="resume") -> "Reprendre ?" ou "Modifier le plan ?"
-    5. Continuer depuis le status precedent
+    5. Continuer depuis le status precedent (memoire ou inferred)
 
 PRINCIPES D ORCHESTRATION
   - Chaque outil a un moment optimal : lire _next des reponses pour savoir quoi appeler apres
@@ -271,6 +275,12 @@ class SessionCtx:
     def touch(self): self.last_seen = time.time()
 
     def meta(self):
+        # Auto-cleanup: never expose _project_meta as the current artefact
+        if self.current_art_nom == "_project_meta":
+            self.current_art_id = None
+            self.current_art_nom = None
+            self.current_art_type = None
+            self.canvas = ""
         age = int(time.time() - self.last_seen)
         return {
             "token":        self.token,
@@ -437,6 +447,147 @@ async def grist_apply(ctx, actions: list) -> dict:
         r = await c.post(f"{_base(ctx)}/apply", headers=_gh(ctx), params=_aq(ctx),
                          content=json.dumps(actions))
         r.raise_for_status(); return r.json()
+
+# ── PROJECT META PERSISTENCE ──────────────────────────────────────────────────
+# The "need" (user's project intention) is the only piece of plan state that
+# can't be inferred from the live Grist document. We persist it as a single
+# special record in the existing Artefacts table — no parallel tables, no
+# schema migration, naturally hidden by the IsDoc=True convention.
+
+PROJECT_META_NAME = "_project_meta"
+
+async def _read_project_meta(ctx):
+    """Read the persisted project meta (need) from Artefacts table.
+       Returns dict {need, created_at, updated_at} or {} if not found."""
+    if not ctx.doc_id or not ctx.site_url:
+        return {}
+    try:
+        resp = await grist_post(ctx, "sql",
+            {"sql": "SELECT Code, Description, UpdatedAt FROM Artefacts WHERE Nom = ? LIMIT 1",
+             "args": [PROJECT_META_NAME]})
+        recs = resp.get("records", [])
+        if not recs:
+            return {}
+        f = recs[0]["fields"]
+        return {
+            "need": f.get("Code", "") or "",
+            "description": f.get("Description", "") or "",
+            "updated_at": f.get("UpdatedAt", 0),
+        }
+    except Exception:
+        return {}
+
+async def _write_project_meta(ctx, need: str):
+    """Persist the project need into the Artefacts table as a special record.
+       Idempotent upsert. Fire-and-forget — never raises."""
+    if not ctx.doc_id or not ctx.site_url or not need:
+        return
+    try:
+        # Make sure Artefacts table exists (auto-init like artefact_init does)
+        try:
+            await grist_post(ctx, "sql",
+                {"sql": "SELECT 1 FROM Artefacts LIMIT 1"})
+        except Exception:
+            await grist_apply(ctx, [["AddTable", "Artefacts", [
+                {"id": "Nom",          "type": "Text"},
+                {"id": "Type",         "type": "Choice", "widgetOptions": json.dumps({"choices":["html","react","grist","app","markdown","mermaid","python","sql","svg"]})},
+                {"id": "Code",         "type": "Text"},
+                {"id": "Description",  "type": "Text"},
+                {"id": "Dependencies", "type": "Text"},
+                {"id": "IsDoc",        "type": "Bool"},
+                {"id": "Output",       "type": "Text"},
+                {"id": "UpdatedAt",    "type": "DateTime:Europe/Paris"},
+            ]]])
+        # Upsert by Nom
+        await grist_put(ctx, "tables/Artefacts/records",
+            {"records": [{
+                "require": {"Nom": PROJECT_META_NAME},
+                "fields": {
+                    "Nom":         PROJECT_META_NAME,
+                    "Type":        "markdown",
+                    "Code":        need,
+                    "Description": "Project need (auto-managed by GristCoderMCP — do not edit manually)",
+                    "IsDoc":       True,
+                    "UpdatedAt":   int(time.time()),
+                }
+            }]})
+    except Exception as e:
+        print(f"[project_meta] write failed for {ctx.doc_id}: {e}", file=sys.stderr)
+
+def _infer_status_from_snapshot(snapshot: dict) -> tuple[str, float, list[str]]:
+    """Infer project status, completeness ratio, and next actions from a context snapshot.
+       Pure function — no I/O. Used to enrich plan/{token} and context/{token}.
+       Returns: (status, completeness_0_to_1, next_actions_list)"""
+    tables = [t for t in snapshot.get("tables", []) if t.lower() != "artefacts"]
+    artefacts = [a for a in snapshot.get("artefacts", []) if a.get("nom","").lower() != PROJECT_META_NAME]
+    pages = snapshot.get("pages", [])
+    quality = snapshot.get("_quality", [])
+    has_need = bool(snapshot.get("_meta", {}).get("need"))
+
+    next_actions = []
+    score = 0.0
+
+    # No tables yet → still qualifying or assessing
+    if not tables:
+        if has_need:
+            next_actions.append("Lire docs/qualification puis canvas_wizard(type='choice', id='confirm-category')")
+            return ("qualifying", 0.10, next_actions)
+        next_actions.append("canvas_wizard(type='input', id='collect-need') pour collecter le besoin")
+        return ("qualifying", 0.0, next_actions)
+
+    score += 0.25  # has tables
+
+    # Has tables but no artefacts → designing
+    if not artefacts:
+        next_actions.append("artefact_init() puis canvas_write() pour creer les premiers artefacts")
+        return ("designing", score, next_actions)
+
+    score += 0.20  # has artefacts
+
+    # Has artefacts but no pages → still building
+    if not pages:
+        next_actions.append("grist_view_create() pour creer les pages Grist liees aux tables")
+        return ("building", score + 0.10, next_actions)
+
+    score += 0.20  # has pages
+
+    # Compute coverage: tables with at least one page section
+    tables_with_page = set()
+    for p in pages:
+        for s in p.get("sections", []):
+            if s.get("table"):
+                tables_with_page.add(s["table"])
+    coverage = len(tables_with_page) / max(len(tables), 1)
+    score += 0.20 * coverage
+
+    missing_pages = [t for t in tables if t not in tables_with_page]
+    if missing_pages:
+        next_actions.append(f"Tables sans page : {missing_pages[:3]} — grist_view_create() pour chacune")
+
+    # Check for quality issues
+    if quality:
+        custom_no_art = sum(1 for q in quality if q.get("issue") == "custom_section_no_artefact")
+        ref_no_visible = sum(1 for q in quality if q.get("issue") == "ref_no_visiblecol")
+        if custom_no_art:
+            next_actions.append(f"{custom_no_art} section(s) custom sans artefact configure — grist_section_configure()")
+        if ref_no_visible:
+            next_actions.append(f"{ref_no_visible} colonne(s) Ref: sans visibleCol — grist_apply([UpdateRecord, _grist_Tables_column,...])")
+
+    # Has dashboard?
+    art_names_lc = {a.get("nom","").lower() for a in artefacts}
+    page_names_lc = {p.get("name","").lower() for p in pages if p.get("name")}
+    has_dashboard = any("dashboard" in n for n in art_names_lc | page_names_lc)
+    if has_dashboard:
+        score += 0.10
+
+    # Verifying state: things look complete
+    if score >= 0.85 and not next_actions:
+        next_actions.append("plan_update(status='done') pour livrer l app")
+        return ("verifying", min(score, 0.99), next_actions)
+    if score >= 0.75:
+        return ("verifying", score, next_actions)
+
+    return ("building", score, next_actions)
 
 async def fetch_grist_user_profile(site_url, bearer_token):
     try:
@@ -3346,6 +3497,15 @@ async def _read_resource(uid_key, mcp_sid, uri):
         ctx = registry.resolve(uid_key, token)
         if not ctx: raise ValueError(f"Session inconnue : {token}")
         plan = dict(ctx.project_plan)
+        # Lazy-restore project need from Artefacts table if memory plan is empty
+        # (server restart or first call after fresh session)
+        if not plan.get("need"):
+            meta = await _read_project_meta(ctx)
+            if meta.get("need"):
+                plan["need"] = meta["need"]
+                ctx.project_plan["need"] = meta["need"]  # cache for future calls
+                if not plan.get("status"):
+                    plan["status"] = "qualifying"  # at least we have a need
         plan.setdefault("status", "not_started")
         plan.setdefault("doc_title", ctx.doc_title)
         status = plan["status"]
@@ -3582,6 +3742,33 @@ async def _read_resource(uid_key, mcp_sid, uri):
                         })
         if quality_issues:
             snapshot["_quality"] = quality_issues
+
+        # Read persisted project need (the only state not derivable from live Grist)
+        meta = await _read_project_meta(ctx)
+        if meta:
+            snapshot["_meta"] = {"need": meta.get("need", "")}
+
+        # Filter out the special _project_meta record from the artefacts list
+        # (it's metadata, not a real artefact)
+        snapshot["artefacts"] = [a for a in snapshot.get("artefacts", [])
+                                 if a.get("nom") != PROJECT_META_NAME]
+
+        # Inferred plan: status, completeness ratio, recommended next actions —
+        # all derived from the live Grist state, no parallel persistence needed
+        inferred_status, completeness, next_actions = _infer_status_from_snapshot(snapshot)
+        snapshot["_inferred_plan"] = {
+            "status":       inferred_status,
+            "completeness": round(completeness, 2),
+            "next_actions": next_actions,
+            "rationale":    f"Etat reel : {len(snapshot.get('tables',[]))-1} tables metier, "
+                            f"{len(snapshot.get('artefacts',[]))} artefacts, "
+                            f"{len(snapshot.get('pages',[]))} pages",
+        }
+        # If memory plan disagrees with inferred status, expose the divergence
+        plan_status = ctx.project_plan.get("status")
+        if plan_status and plan_status != inferred_status:
+            snapshot["_inferred_plan"]["memory_status_diverges"] = plan_status
+
         return {"uri": uri, "mimeType": "application/json",
                 "text": json.dumps(snapshot, ensure_ascii=False, indent=2)}
 
@@ -4036,7 +4223,8 @@ async def call_tool(uid_key, mcp_sid, name, args):
         if "Artefacts" in info.get("tables", []):
             try:
                 data = await grist_get(ctx, "tables/Artefacts/records?limit=200")
-                recs = data.get("records", [])
+                recs = [r for r in data.get("records", [])
+                        if r["fields"].get("Nom") != PROJECT_META_NAME]
                 info["artefacts_count"] = len(recs)
                 info["artefacts"] = [
                     {"nom": r["fields"].get("Nom",""), "type": r["fields"].get("Type",""),
@@ -4067,6 +4255,8 @@ async def call_tool(uid_key, mcp_sid, name, args):
         art_nom = args["art_nom"]
         if not ctx.doc_id or not ctx.site_url:
             return {"error": "Pas de document connecte"}
+        if art_nom == PROJECT_META_NAME:
+            return {"error": f"'{PROJECT_META_NAME}' est un record meta interne, pas un artefact selectionnable."}
         try:
             sql_resp = await grist_post(ctx, "sql",
                 {"sql": "SELECT id, Type, Code FROM Artefacts WHERE Nom = ?", "args": [art_nom]})
@@ -4145,7 +4335,7 @@ async def call_tool(uid_key, mcp_sid, name, args):
         ctx.current_art_type = art_type
         ctx.history.appendleft({"ts": time.time(), "sha": sha, "op": "write"})
         ev = {"type": "canvas_updated", "token": ctx.token, "sha": sha,
-              "art_nom": art_nom, "art_type": art_type}
+              "art_nom": art_nom, "art_type": art_type, "code": code}
         if art_id: ev["art_id"] = art_id
         if is_new: ev["is_new"] = True
         _push(uid_key, ev)
@@ -4258,7 +4448,8 @@ async def call_tool(uid_key, mcp_sid, name, args):
         sha = hashlib.sha1(ctx.canvas.encode()).hexdigest()[:8]
         ctx.history.appendleft({"ts": time.time(), "sha": sha, "op": "patch"})
         _push(uid_key, {"type": "canvas_patched", "token": ctx.token, "sha": sha,
-              "art_nom": ctx.current_art_nom, "art_type": ctx.current_art_type})
+              "art_nom": ctx.current_art_nom, "art_type": ctx.current_art_type,
+              "art_id": ctx.current_art_id, "code": ctx.canvas})
         _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
         result = {"ok": True, "sha": sha}
         if fuzzy_warning:
@@ -4398,12 +4589,18 @@ async def call_tool(uid_key, mcp_sid, name, args):
     # ── Plan meta-control
     if name == "plan_update":
         prev_status = ctx.project_plan.get("status")
+        prev_need = ctx.project_plan.get("need")
         for k, v in args.items():
             if v is not None:
                 ctx.project_plan[k] = v
         ctx.project_plan["updated_at"] = time.time()
         plan = ctx.project_plan
         status = plan.get("status", "qualifying")
+        # Persist project need to the Artefacts table (the only piece of state
+        # that can't be inferred from live Grist data). Fire-and-forget.
+        new_need = plan.get("need")
+        if new_need and new_need != prev_need:
+            asyncio.create_task(_write_project_meta(ctx, new_need))
         # Record timeline entry on status transition or first plan update
         if status != prev_status or not ctx.plan_history:
             summary_parts = []
