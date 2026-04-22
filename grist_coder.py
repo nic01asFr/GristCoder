@@ -4506,6 +4506,9 @@ async def call_tool(uid_key, mcp_sid, name, args):
     # ── Wizard
     if name == "canvas_wizard":
         step = args.get("step", {})
+        if isinstance(step, str):
+            try: step = json.loads(step)
+            except (json.JSONDecodeError, TypeError): pass
         # Auto-génération depuis le schema/structure Grist si source= défini
         source = step.get("source")
         if source in ("schema", "doc-map", "doc-overview") and not step.get("code"):
@@ -4590,6 +4593,13 @@ async def call_tool(uid_key, mcp_sid, name, args):
     if name == "plan_update":
         prev_status = ctx.project_plan.get("status")
         prev_need = ctx.project_plan.get("need")
+        # MCP args may arrive as JSON strings from some clients (Claude Code)
+        # — parse list/dict fields that should be structured
+        for k in ("tables", "artefacts", "pages", "integrations", "decisions"):
+            v = args.get(k)
+            if isinstance(v, str):
+                try: args[k] = json.loads(v)
+                except (json.JSONDecodeError, TypeError): pass
         for k, v in args.items():
             if v is not None:
                 ctx.project_plan[k] = v
