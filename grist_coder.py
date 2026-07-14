@@ -439,6 +439,59 @@ def _notify_resource(uid_key, uri):
                     "method": "notifications/resources/updated",
                     "params": {"uri": uri}})
 
+# ── PLAN PROGRESS CARD ────────────────────────────────────────────────────────
+# Construit la card "ctx-plan-progress" (bandeau Zone 1) depuis ctx.project_plan.
+# Factorise pour etre reutilise par plan_update ET par le replay SSE (restauration
+# du bandeau apres reconnexion / reload).
+
+_PLAN_STATUS_META = {
+    "qualifying":  ("Qualification du besoin",   "info",    10),
+    "assessing":   ("Exploration du document",   "info",    20),
+    "designing":   ("Conception de l app",       "info",    35),
+    "building":    ("Construction en cours",     "warn",    65),
+    "verifying":   ("Verification finale",       "success", 85),
+    "done":        ("App livree",                "success", 100),
+}
+_PLAN_PHASES = [
+    ("qualifying", "Qualification du besoin"),
+    ("assessing",  "Exploration du document"),
+    ("designing",  "Conception de l app"),
+    ("building",   "Construction"),
+    ("verifying",  "Verification finale"),
+    ("done",       "Livre"),
+]
+
+def _plan_progress_step(ctx):
+    """Card progress du plan courant (sections + steps + %), ou None si pas de plan."""
+    plan = ctx.project_plan
+    if not plan or not plan.get("status"):
+        return None
+    status = plan.get("status", "qualifying")
+    label, style, progress = _PLAN_STATUS_META.get(status, ("En cours", "default", 20))
+    meta_sections = [{"label": "Phase", "content": label, "style": style}]
+    if plan.get("need"):
+        meta_sections.append({"label": "Besoin", "content": str(plan["need"])[:90], "style": "default"})
+    tables = plan.get("tables", [])
+    if tables:
+        names = ", ".join(t.get("name", t) if isinstance(t, dict) else t for t in tables[:6])
+        meta_sections.append({"label": "Tables", "content": names, "style": "code"})
+    arts = plan.get("artefacts", [])
+    if arts:
+        names = ", ".join(a.get("name", a) if isinstance(a, dict) else a for a in arts[:5])
+        meta_sections.append({"label": "Artefacts", "content": names, "style": "code"})
+    if plan.get("notes"):
+        meta_sections.append({"label": "Note", "content": str(plan["notes"])[:80], "style": "default"})
+    phase_order = [p[0] for p in _PLAN_PHASES]
+    cur_idx = phase_order.index(status) if status in phase_order else 0
+    prog_steps = [
+        {"id": ph, "label": lbl,
+         "status": "done" if i < cur_idx else ("active" if i == cur_idx else "pending")}
+        for i, (ph, lbl) in enumerate(_PLAN_PHASES)
+    ]
+    return {"id": "ctx-plan-progress", "type": "progress",
+            "title": f"Plan · {ctx.doc_title}", "steps": prog_steps,
+            "sections": meta_sections, "progress": progress}
+
 # ── GRIST HTTP HELPERS ────────────────────────────────────────────────────────
 
 
@@ -4757,49 +4810,9 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 "from": prev_status,
                 "summary": " · ".join(summary_parts) or "update",
             })
-        STATUS_META = {
-            "qualifying":  ("Qualification du besoin",   "info",    10),
-            "assessing":   ("Exploration du document",   "info",    20),
-            "designing":   ("Conception de l app",       "info",    35),
-            "building":    ("Construction en cours",     "warn",    65),
-            "verifying":   ("Verification finale",       "success", 85),
-            "done":        ("App livree",                "success", 100),
-        }
-        label, style, progress = STATUS_META.get(status, ("En cours", "default", 20))
-        # Build plan metadata sections for the progress card
-        meta_sections = [{"label": "Phase", "content": label, "style": style}]
-        if plan.get("need"):
-            meta_sections.append({"label": "Besoin", "content": plan["need"][:90], "style": "default"})
-        tables = plan.get("tables", [])
-        if tables:
-            names = ", ".join(t.get("name", t) if isinstance(t, dict) else t for t in tables[:6])
-            meta_sections.append({"label": "Tables", "content": names, "style": "code"})
-        arts = plan.get("artefacts", [])
-        if arts:
-            names = ", ".join(a.get("name", a) if isinstance(a, dict) else a for a in arts[:5])
-            meta_sections.append({"label": "Artefacts", "content": names, "style": "code"})
-        if plan.get("notes"):
-            meta_sections.append({"label": "Note", "content": plan["notes"][:80], "style": "default"})
         _notify_resource(uid_key, f"grist-coder://plan/{ctx.token}")
         # Auto-push/update progress card dans le wizard overlay (single source of truth)
-        PHASES = [
-            ("qualifying", "Qualification du besoin"),
-            ("assessing",  "Exploration du document"),
-            ("designing",  "Conception de l app"),
-            ("building",   "Construction"),
-            ("verifying",  "Verification finale"),
-            ("done",       "Livre"),
-        ]
-        phase_order = [p[0] for p in PHASES]
-        cur_idx = phase_order.index(status) if status in phase_order else 0
-        prog_steps = [
-            {"id": ph, "label": lbl,
-             "status": "done" if i < cur_idx else ("active" if i == cur_idx else "pending")}
-            for i, (ph, lbl) in enumerate(PHASES)
-        ]
-        prog_step = {"id": "ctx-plan-progress", "type": "progress",
-                     "title": f"Plan \u00b7 {ctx.doc_title}", "steps": prog_steps,
-                     "sections": meta_sections, "progress": progress}
+        prog_step = _plan_progress_step(ctx)
         interactive = bool(args.get("actions") or args.get("input"))
         if args.get("actions"): prog_step["actions"] = args["actions"]
         if args.get("input"):   prog_step["input"]   = args["input"]
@@ -4831,12 +4844,13 @@ async def call_tool(uid_key, mcp_sid, name, args):
         ctx._wizard_events["ctx-plan-progress"] = event
         try:
             await asyncio.wait_for(event.wait(), timeout=timeout)
-            resp = ctx.wizard_responses[0] if ctx.wizard_responses else None
+            resp = ctx._async_wizard_responses.pop("ctx-plan-progress", None)
             return resp or {"status": "no_response"}
         except asyncio.TimeoutError:
             return {"status": "timeout"}
         finally:
             ctx._wizard_events.pop("ctx-plan-progress", None)
+            ctx._async_wizard_responses.pop("ctx-plan-progress", None)
 
     # ── Context panel
     if name == "canvas_context_update":
@@ -5694,8 +5708,22 @@ async def mcp_sse(request: Request,
     # Re-push active wizard cards on reconnect (SSE restore) — sauf pour display mode
     if not is_display:
         ctx_for_replay = registry.resolve(uid_key, None)
+        # Restaurer le bandeau plan + la phase depuis project_plan (source persistante),
+        # meme si la card ephemere ctx-plan-progress a ete fermee entre-temps.
+        if ctx_for_replay and ctx_for_replay.project_plan.get("status"):
+            plan_step = _plan_progress_step(ctx_for_replay)
+            if plan_step:
+                try:
+                    _queues[sid].put_nowait({"type": "wizard_step", "token": ctx_for_replay.token,
+                                             "step": plan_step, "_user": uid_key})
+                    _queues[sid].put_nowait({"type": "context_changed", "token": ctx_for_replay.token,
+                                             "context": ctx_for_replay.current_context, "_user": uid_key})
+                except asyncio.QueueFull: pass
         if ctx_for_replay and ctx_for_replay._active_wizard_cards:
             for card_ev in ctx_for_replay._active_wizard_cards.values():
+                # ctx-plan-progress deja restaure ci-dessus depuis project_plan
+                if card_ev.get("step", {}).get("id") == "ctx-plan-progress":
+                    continue
                 try: _queues[sid].put_nowait({**card_ev, "_user": uid_key})
                 except asyncio.QueueFull: pass
         # Re-push chat history on reconnect
@@ -5721,7 +5749,9 @@ async def mcp_sse(request: Request,
                     else:
                         yield f"data: {json.dumps(ev)}\n\n"
                 except asyncio.TimeoutError:
-                    yield ": ping\n\n"
+                    # Vrai event heartbeat (le widget arme un watchdog dessus) —
+                    # un commentaire ": ping" ne declenche pas EventSource.onmessage.
+                    yield 'data: {"type":"heartbeat"}\n\n'
         finally:
             _queues.pop(sid, None)
             _sid_uid.pop(sid, None)

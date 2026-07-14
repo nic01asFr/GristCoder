@@ -98,7 +98,9 @@ body{display:flex;flex-direction:column}
 .pb-label{font-weight:600;flex-shrink:0;opacity:.8}
 .pb-content{line-height:1.4}
 /* ── ZONE 2 — MODAL BACKDROP ──────────────────────────────────────── */
-#wizardBackdrop{position:absolute;inset:0;z-index:50;
+/* z-index 100 > statusPanel (60) : le modal bloquant couvre le panneau bas
+   pour ne jamais laisser un bouton submit recouvert (clic absorbe). */
+#wizardBackdrop{position:absolute;inset:0;z-index:100;
   background:rgba(15,23,42,.35);backdrop-filter:blur(2px);
   display:flex;align-items:center;justify-content:center;
   animation:wz-fade-in .2s ease}
@@ -777,14 +779,28 @@ async function doRegister(msg) {
 }
 
 // ── SSE ─────────────────────────────────────────────────────────────────────
+var _sseWatchdog = null;
+function _armSSEWatchdog() {
+  // Le serveur emet un heartbeat toutes les 20s. Si aucun message (event ou
+  // heartbeat) pendant 45s, la connexion est probablement zombie -> reconnecter.
+  if (_sseWatchdog) clearTimeout(_sseWatchdog);
+  _sseWatchdog = setTimeout(function() {
+    if (_es) { try { _es.close(); } catch(_){} _es = null; }
+    _registered = false;
+    if (window._gristMsg) doRegister(window._gristMsg);
+  }, 45000);
+}
 function listenSSE() {
   if (!_token) return;
   if (_es) { _es.close(); _es = null; }
   var _sseUrl = BASE+'/mcp?token='+encodeURIComponent(_token)+(_DISPLAY_MODE?'&display=1':'');
   _es = new EventSource(_sseUrl);
+  _armSSEWatchdog();
   _es.onmessage = function(e) {
+    _armSSEWatchdog();  // tout message (y compris heartbeat) prouve la connexion vivante
     try {
       var ev = JSON.parse(e.data);
+      if (ev.type === 'heartbeat') return;  // keep-alive : rien a router
       if (ev.token === _token) {
         if (ev.type === 'canvas_updated' || ev.type === 'canvas_patched') {
           var _evData = ev; // capture for async closure
@@ -894,6 +910,7 @@ function listenSSE() {
     } catch(_) {}
   };
   _es.onerror = function() {
+    if (_sseWatchdog) { clearTimeout(_sseWatchdog); _sseWatchdog = null; }
     if (_es) { _es.close(); _es = null; }
     _registered = false;
     setTimeout(async function() { if (window._gristMsg) await doRegister(window._gristMsg); }, 3000);
@@ -1443,36 +1460,39 @@ var _wzOrder = [];       // card display order
 var _wzDiState = {};     // data-import state: cid → {step, data:[], selected:Set}
 
 // ── ZONE 1 — Plan Banner ────────────────────────────────────────────────────
+// % de secours par phase quand step.progress est absent (evite la barre a 0%)
+var _PHASE_PCT = {qualifying:10,assessing:20,designing:35,building:65,verifying:85,done:100};
+
 function updatePlanBanner(step) {
   var banner = document.getElementById('planBanner');
   if (!step || (!step.title && !step.progress && !(step.sections||[]).length)) {
     banner.style.display = 'none'; return;
   }
   banner.style.display = 'block';
-  // Progress bar
-  var fill = document.getElementById('pbFill');
-  fill.style.width = (step.progress || 0) + '%';
+  var secs = step.sections || [];
+  var ctx = _currentContext || 'qualifying';
+  // Progress bar : valeur du step, sinon derivee de la phase courante
+  var pct = (typeof step.progress === 'number' && step.progress > 0)
+    ? step.progress : (_PHASE_PCT[ctx] || 0);
+  document.getElementById('pbFill').style.width = pct + '%';
   // Phase chip
   var chip = document.getElementById('pbChip');
   var phaseLabels = {qualifying:'Qualif.',assessing:'Explore',designing:'Design',
     building:'Build',verifying:'Vérif.',done:'Livré'};
-  var ctx = _currentContext || 'qualifying';
   chip.textContent = phaseLabels[ctx] || ctx;
-  // Stats (from sections)
-  var stats = document.getElementById('pbStats');
-  var secs = step.sections || [];
+  // Stats (from code sections, sinon %)
   var parts = [];
-  secs.forEach(function(s) {
-    if (s.style === 'code') parts.push(s.content);
-  });
-  stats.textContent = parts.join(' · ') || ((step.progress||0) + '%');
-  // Detail sections
+  secs.forEach(function(s) { if (s.style === 'code') parts.push(s.content); });
+  document.getElementById('pbStats').textContent = parts.join(' · ') || (pct + '%');
+  // Detail sections + toggle masque si rien a deplier
   var detail = document.getElementById('pbSections');
   detail.innerHTML = secs.map(function(s) {
     return '<div class="pb-section '+(s.style||'default')+'"><span class="pb-label">'
       + _wzEsc(s.label||'') + '</span> <span class="pb-content">'
       + _wzEsc(s.content||'') + '</span></div>';
   }).join('');
+  var toggle = document.querySelector('.pb-toggle');
+  if (toggle) toggle.style.visibility = secs.length ? 'visible' : 'hidden';
 }
 
 function togglePlanDetail() {
@@ -1509,14 +1529,16 @@ function showWizardCard(step, token) {
   _wzCards[id] = {step:step, token:token||_token};
   if (_wzOrder.indexOf(id) < 0) _wzOrder.push(id);
 
-  // Route plan/progress cards to Zone 1 (banner) if non-blocking
-  if ((step.type === 'plan' || step.type === 'progress' || id === 'ctx-plan-progress') && !_wzIsBlocking(step)) {
+  // Seule la card plan dediee va au bandeau (Zone 1). Les cards progress nommees
+  // (ex: build-progress) tombent en Zone 3 et sont rendues avec leurs steps.
+  if (id === 'ctx-plan-progress' && !_wzIsBlocking(step)) {
     updatePlanBanner(step);
     return;
   }
 
   if (_wzIsBlocking(step)) {
-    // Blocking card → Zone 2 modal
+    // Blocking card → Zone 2 modal. Masquer le panneau bas tant que le modal
+    // est ouvert (evite tout recouvrement du bouton submit).
     var backdrop = document.getElementById('wizardBackdrop');
     var modal = document.getElementById('wizardModal');
     modal.innerHTML = _wzBuildCard(id, step);
@@ -1525,6 +1547,7 @@ function showWizardCard(step, token) {
       try { fr.srcdoc = decodeURIComponent(escape(atob(fr.getAttribute('data-srcdoc-b64')))); } catch(e) {}
     });
     backdrop.style.display = 'flex';
+    document.getElementById('statusPanel').style.display = 'none';
     _updateChatVisibility();
   } else {
     // Non-blocking card → Zone 3 status panel
@@ -1542,7 +1565,7 @@ function _rebuildStatusCards() {
     var c = _wzCards[id]; if (!c) return;
     // Skip cards routed to Zone 1 (plan banner) or Zone 2 (modal)
     if (_wzIsBlocking(c.step)) return;
-    if (c.step.type === 'plan' || c.step.type === 'progress' || id === 'ctx-plan-progress') return;
+    if (id === 'ctx-plan-progress') return;
     html += _wzBuildCard(id, c.step);
   });
   container.innerHTML = html;
@@ -1570,6 +1593,7 @@ function _wzRemove(id) {
     document.getElementById('wizardBackdrop').style.display = 'none';
     document.getElementById('wizardModal').innerHTML = '';
   }
+  // _rebuildStatusCards restaure aussi le panneau bas masque pendant un modal bloquant
   _rebuildStatusCards();
   _updateChatVisibility();
   // If nothing left, hide all
