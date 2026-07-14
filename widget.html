@@ -767,6 +767,10 @@ async function doRegister(msg) {
     dot.className = 'on'; dot.title = 'Connecté · cliquer pour copier token MCP';
     document.getElementById('sbDoc').textContent = docTitle;
     listenSSE();
+    // Hook harness agent LLM navigateur : _token défini + SSE lancé. Idempotent
+    // (garde anti-double-init côté HarnessBoot) — appelé aussi au refresh de token.
+    // Ne démarre PAS l'agent : le pilote SSE reste le défaut jusqu'au clic « Lancer ».
+    if (window.HarnessBoot) HarnessBoot.init(_token);
     await loadArtefacts();
     if (_refreshTimer) clearTimeout(_refreshTimer);
     var delay = Math.max((tk.ttlMsecs||3600000)*0.8, 60000);
@@ -2261,5 +2265,20 @@ async function wzPost(cid, type, values) {
   } catch(e) { showToast('Erreur: '+e.message, 'error'); }
 }
 </script>
+<!-- ── HARNESS AGENT LLM (navigateur) ─────────────────────────────────────────
+     Modules chargés APRÈS le gros script inline : tous les globals du widget
+     (tool, _token, BASE, showWizardCard, wzPost, appendChatMsg, sendChat,
+     updatePlanBanner, showToast) existent déjà quand les wrappers s'installent.
+     Les wrappers sont transparents tant que le driver reste 'sse' (défaut).
+     Le panneau config + bouton robot s'auto-injectent (config-panel.js).
+     L'agent local ne démarre qu'au clic « Lancer ». Hook: HarnessBoot.init
+     dans doRegister (une fois _token défini + listenSSE lancé). -->
+<script src="/harness/agent-memory.js"></script>
+<script src="/harness/llm-client.js"></script>
+<script src="/harness/render-bridge.js"></script>
+<script src="/harness/mcp-tools.js"></script>
+<script src="/harness/agent-loop.js"></script>
+<script src="/harness/config-panel.js"></script>
+<script src="/harness/boot.js"></script>
 </body>
 </html>
