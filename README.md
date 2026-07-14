@@ -247,7 +247,7 @@ cp .mcp.json.example .mcp.json
 
 ---
 
-## MCP Tools (28)
+## MCP Tools (31)
 
 ### Sessions
 | Tool | Description |
@@ -286,6 +286,7 @@ cp .mcp.json.example .mcp.json
 | Tool | Description |
 |------|-------------|
 | `artefact_init` | Create the `Artefacts` table if missing (idempotent) |
+| `artefact_publish` | Freeze a finished HTML artefact as a **fully standalone widget stored inside the doc** (gallery "Custom widget builder") — no MCP server needed at runtime |
 
 ### Grist — Read
 | Tool | Description |

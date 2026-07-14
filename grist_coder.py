@@ -7,8 +7,8 @@ LLM via MCP : schema relationnel + artefacts + pages structurées.
 
 AUTH  : widget -> grist.docApi.getAccessToken() -> POST /register -> gc-xxx
         Claude Desktop -> Bearer <grist_key> -> uid:user_id stable
-TOOLS : sessions(3) canvas(6) wizard(2) context(1) chat(2) subagent(1)
-        artefact(1) grist-r(3) grist-w(3) doc(5) webhooks(1) = 28
+TOOLS : sessions(3) plan(1) canvas(7) wizard(2) context(1) chat(2) subagent(1)
+        artefact(2) grist-r(3) grist-w(3) doc(5) webhooks(1) = 31
 MCP   : sampling/createMessage (client capability) -> subagent_call + chat auto-reply
 """
 
@@ -128,8 +128,11 @@ CYCLE GUIDE — 4 PHASES
     1. context/{token} -> verifier _quality : plus de widgets vides, Ref avec visibleCol
     2. canvas_wizard(source="doc-overview") -> validation visuelle app complete (3 onglets)
     3. canvas_wizard(type="confirm", id="delivery") -> resume construit + actions utilisateur
-    4. plan_update(status="done")
-    5. canvas_wizard_close() -> ferme tout l overlay
+    4. Si l utilisateur veut une app autonome (sans serveur MCP au runtime) :
+       artefact_publish(artefact, section_ref?) pour chaque artefact html finalise
+       -> le code est fige DANS le doc (options de section, widget builder galerie)
+    5. plan_update(status="done")
+    6. canvas_wizard_close() -> ferme tout l overlay
 
   REPRISE DE SESSION (plan existant)
     1. plan/{token} -> lire plan + status + _next_step + _history (timeline transitions)
@@ -171,7 +174,7 @@ BOUCLE POST-WIZARD (apres chaque reponse interactive bloquante)
   3. Le wizard ne se ferme que sur plan_update(status='done') ou choix explicite utilisateur
   Objectif : le LLM ne laisse jamais l overlay vide apres une reponse — il enchaine toujours.
 
-OUTILS (28)
+OUTILS (31)
   Plan     : plan_update              <- META-CONTROLE : persiste + _next_resources par phase
   Sessions : sessions_list            <- _next hint integre (plan? ou docs/qualification)
              session_select, session_info
@@ -188,6 +191,9 @@ OUTILS (28)
                                           Auto-injecte etat doc + ressources disponibles.
                                           Retourne {next_step, resources_a_lire, reasoning}.
   Artefact : artefact_init
+             artefact_publish       <- LIVRAISON : fige un artefact html en widget 100% autonome
+                                       (code copie dans les options de section, builder galerie —
+                                       zero dependance au serveur MCP au runtime)
   Grist R  : grist_schema, grist_records, grist_sql
   Grist W  : grist_records_add, grist_records_patch, grist_upsert
   Document : grist_apply, grist_views_list, grist_view_create,
@@ -412,41 +418,100 @@ def _detect_type(code: str) -> str:
     if "<" in s and ">" in s:                                                     return "html"
     return "html"
 
+# Le WAF (Imperva/Incapsula) devant grist.numerique.gouv.fr challenge par
+# intermittence avec un 302 + Set-Cookie vers la meme URL. Un jar partage +
+# follow_redirects permet de resoudre le challenge une fois pour tout le process.
+_GRIST_COOKIES = httpx.Cookies()
+
+def _grist_client():
+    return httpx.AsyncClient(timeout=15, follow_redirects=True, cookies=_GRIST_COOKIES)
+
 async def grist_get(ctx, path):
-    async with httpx.AsyncClient(timeout=15) as c:
+    async with _grist_client() as c:
         r = await c.get(f"{_base(ctx)}/{path}", headers=_gh(ctx), params=_aq(ctx))
         r.raise_for_status(); return r.json()
 
 async def grist_post(ctx, path, body):
-    async with httpx.AsyncClient(timeout=15) as c:
+    async with _grist_client() as c:
         r = await c.post(f"{_base(ctx)}/{path}", headers=_gh(ctx), params=_aq(ctx),
                          content=json.dumps(body))
         r.raise_for_status(); return r.json()
 
 async def grist_patch(ctx, path, body):
-    async with httpx.AsyncClient(timeout=15) as c:
+    async with _grist_client() as c:
         r = await c.patch(f"{_base(ctx)}/{path}", headers=_gh(ctx), params=_aq(ctx),
                           content=json.dumps(body))
         r.raise_for_status(); return r.json()
 
 async def grist_put(ctx, path, body):
-    async with httpx.AsyncClient(timeout=15) as c:
+    async with _grist_client() as c:
         r = await c.put(f"{_base(ctx)}/{path}", headers=_gh(ctx), params=_aq(ctx),
                         content=json.dumps(body))
         r.raise_for_status(); return r.json()
 
 async def grist_delete(ctx, path):
-    async with httpx.AsyncClient(timeout=15) as c:
+    async with _grist_client() as c:
         r = await c.delete(f"{_base(ctx)}/{path}", headers=_gh(ctx), params=_aq(ctx))
         r.raise_for_status()
         return r.json() if r.content else {"ok": True}
 
 async def grist_apply(ctx, actions: list) -> dict:
     """Applique des user actions Grist via POST /apply."""
-    async with httpx.AsyncClient(timeout=15) as c:
+    async with _grist_client() as c:
         r = await c.post(f"{_base(ctx)}/apply", headers=_gh(ctx), params=_aq(ctx),
                          content=json.dumps(actions))
         r.raise_for_status(); return r.json()
+
+# ── PUBLICATION AUTONOME (custom-widget-builder) ─────────────────────────────
+# Un artefact "publie" est fige dans les options de sa section Grist via le
+# widget galerie @berhalak/custom-widget-builder : le code vit dans le doc,
+# aucune dependance au serveur MCP au runtime. L API grist n est disponible
+# que dans le champ _js du builder — les <script> inline sont extraits de
+# _html et deplaces dans _js.
+
+_BUILDER_WIDGET_ID = "@berhalak/custom-widget-builder"
+_BUILDER_DEF_FALLBACK = {
+    "name": "Custom widget builder",
+    "url": "https://gristgouv.github.io/gristlabs-widgets/custom-widget-builder/index.html",
+    "widgetId": _BUILDER_WIDGET_ID,
+    "published": True,
+    "accessLevel": "none",
+    "renderAfterReady": True,
+    "description": "Build custom widgets with HTML and JavaScript, right inside Grist.",
+    "isGristLabsMaintained": False,
+    "authors": [{"name": "berhalak", "url": "https://github.com/berhalak"}],
+}
+
+async def _fetch_builder_def(ctx) -> dict:
+    """widgetDef du builder depuis la galerie de l instance (fallback statique)."""
+    try:
+        root = urllib.parse.urlsplit(ctx.site_url or "")
+        base = f"{root.scheme}://{root.netloc}"
+        async with _grist_client() as c:
+            r = await c.get(f"{base}/api/widgets")
+            r.raise_for_status()
+            for w in r.json():
+                if w.get("widgetId") == _BUILDER_WIDGET_ID:
+                    return w
+    except Exception:
+        pass
+    return dict(_BUILDER_DEF_FALLBACK)
+
+_SCRIPT_RE = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>",
+                        re.IGNORECASE | re.DOTALL)
+
+def _split_html_js(code: str) -> tuple[str, str]:
+    """Separe un artefact HTML en (_html, _js) pour le custom-widget-builder.
+
+    Les <script> inline (sans src) sont retires du markup et concatenes dans
+    _js, seul contexte ou l API grist est definie. Les <script src=...> CDN
+    restent dans _html. grist.ready() est prefixe si absent."""
+    js_parts = [m.group(1) for m in _SCRIPT_RE.finditer(code)]
+    html = _SCRIPT_RE.sub("", code)
+    js = "\n\n".join(p.strip() for p in js_parts if p.strip())
+    if "grist.ready" not in js:
+        js = "grist.ready({ requiredAccess: 'full' });\n" + js
+    return html.strip(), js.strip()
 
 # ── PROJECT META PERSISTENCE ──────────────────────────────────────────────────
 # The "need" (user's project intention) is the only piece of plan state that
@@ -957,6 +1022,25 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {}},
      "annotations": {"idempotentHint": True}},
 
+    {"name": "artefact_publish",
+     "description": (
+         "LIVRAISON — fige un artefact HTML en widget 100% autonome, stocke DANS le doc Grist "
+         "(widget galerie 'Custom widget builder'). Apres publication : aucune dependance au "
+         "serveur MCP au runtime — le widget survit a l arret du serveur et voyage avec le doc. "
+         "Sans section_ref : cree une page dediee (table_id requis). "
+         "Avec section_ref : reconfigure une section custom existante (id depuis grist_views_list). "
+         "Les <script> inline sont extraits automatiquement vers le champ _js du builder "
+         "(seul contexte ou l API grist est disponible). Types supportes : html, svg. "
+         "La source reste la table Artefacts : modifier puis republier pour mettre a jour."
+     ),
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "artefact":    {"type": "string",  "description": "Nom de l artefact a publier (table Artefacts)"},
+                         "section_ref": {"type": "integer", "description": "Section custom existante a reconfigurer. Absent = nouvelle page."},
+                         "table_id":    {"type": "string",  "description": "Table source de la nouvelle page (requis si pas de section_ref)"},
+                         "page_name":   {"type": "string",  "description": "Nom de la nouvelle page (defaut : nom de l artefact)"}},
+                     "required": ["artefact"]}},
+
     # Grist lecture
     {"name": "grist_schema",
      "description": "Schema du document : tables et colonnes avec types, formules, refs. APRES : lire docs/artefacts avant canvas_write, ou examples/{domain} si domaine identifie.",
@@ -1103,7 +1187,7 @@ CONTEXT_TOOLS: dict[str, set | None] = {
     "designing":   _DESIGNING_TOOLS,
     "building":    None,   # all tools
     "verifying":   None,   # all tools
-    "done":        _QUALIFYING_TOOLS,
+    "done":        _QUALIFYING_TOOLS | {"artefact_publish", "grist_views_list"},
 }
 
 def _tools_for_context(context: str) -> list:
@@ -5242,6 +5326,116 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 "widget_url": widget_url,
                 "hint": f"Page '{page_name}' creee : grille {table_id} + widget custom lies.",
                 "_next": _next,
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    if name == "artefact_publish":
+        artefact    = (args.get("artefact") or "").strip()
+        section_ref = int(args.get("section_ref") or 0)
+        table_id    = args.get("table_id") or ""
+        page_name   = args.get("page_name") or artefact
+        if not artefact:
+            return {"error": "artefact requis"}
+        try:
+            # 1. Lire la source dans la table Artefacts
+            rows = await grist_post(ctx, "sql", {
+                "sql": "SELECT id, Nom, Type, Code FROM Artefacts WHERE Nom = ?",
+                "args": [artefact]})
+            recs = rows.get("records", [])
+            if not recs:
+                return {"error": f"Artefact '{artefact}' introuvable dans la table Artefacts"}
+            art_row  = recs[0]["fields"]
+            art_type = (art_row.get("Type") or "html").lower()
+            code     = art_row.get("Code") or ""
+            if not code.strip():
+                return {"error": f"Artefact '{artefact}' : Code vide dans Grist — "
+                                 "sauvegarder l artefact (canvas_write + Save) avant de publier"}
+            if art_type not in ("html", "svg"):
+                return {"error": f"Type '{art_type}' non publiable en widget autonome "
+                                 "(supportes : html, svg). Convertir l artefact en html d abord."}
+
+            # 2. Transformer : markup -> _html, scripts inline -> _js (+ grist.ready)
+            html_part, js_part = _split_html_js(code)
+
+            # 3. widgetDef du builder (galerie de l instance, fallback statique)
+            builder_def = await _fetch_builder_def(ctx)
+            custom_view = json.dumps({
+                "mode": "url", "url": None, "access": "full",
+                "widgetDef": builder_def, "pluginId": "", "sectionId": "",
+                "renderAfterReady": True, "widgetId": builder_def.get("widgetId", _BUILDER_WIDGET_ID),
+                "widgetOptions": {"_html": html_part, "_js": js_part},
+                "columnsMapping": None,
+            })
+
+            view_ref = None
+            if section_ref:
+                # Reconfigurer une section existante en preservant ses autres options
+                sect = await grist_post(ctx, "sql", {
+                    "sql": "SELECT options FROM _grist_Views_section WHERE id = ?",
+                    "args": [section_ref]})
+                sect_recs = sect.get("records", [])
+                if not sect_recs:
+                    return {"error": f"Section {section_ref} introuvable (voir grist_views_list)"}
+                try:
+                    options = json.loads(sect_recs[0]["fields"].get("options") or "{}")
+                except Exception:
+                    options = {}
+                options["customView"] = custom_view
+                await grist_apply(ctx, [["UpdateRecord", "_grist_Views_section", section_ref,
+                                         {"options": json.dumps(options)}]])
+            else:
+                # Nouvelle page dediee : une seule section custom pleine page
+                if not table_id:
+                    return {"error": "table_id requis pour creer une nouvelle page "
+                                     "(ou fournir section_ref pour une section existante)"}
+                tables_meta = await grist_get(ctx, "tables/_grist_Tables/records")
+                table_ref = next((r["id"] for r in tables_meta.get("records", [])
+                                  if r["fields"].get("tableId") == table_id), None)
+                if not table_ref:
+                    return {"error": f"Table '{table_id}' non trouvee dans le document"}
+                await grist_apply(ctx, [["CreateViewSection", table_ref, 0, "custom", None, None]])
+                views_resp = await grist_get(ctx, "tables/_grist_Views/records")
+                view_ref = max((r["id"] for r in views_resp.get("records", [])), default=0)
+                sects_resp = await grist_get(ctx, "tables/_grist_Views_section/records")
+                custom_sections = [r for r in sects_resp.get("records", [])
+                                   if r["fields"].get("parentId") == view_ref
+                                   and r["fields"].get("parentKey") == "custom"]
+                section_ref = max((r["id"] for r in custom_sections), default=0)
+                if not section_ref:
+                    return {"error": "Section custom non trouvee apres creation de la page"}
+                options = json.dumps({
+                    "verticalGridlines": True, "horizontalGridlines": True,
+                    "zebraStripes": False, "numFrozen": 0,
+                    "customView": custom_view,
+                })
+                await grist_apply(ctx, [
+                    ["UpdateRecord", "_grist_Views_section", section_ref, {"options": options}],
+                    ["UpdateRecord", "_grist_Views", view_ref,
+                     {"name": page_name,
+                      "layoutSpec": json.dumps({"children": [{"leaf": section_ref}], "collapsed": []})}],
+                ])
+
+            # 4. Tracer la publication sur l artefact source (best-effort)
+            try:
+                await grist_patch(ctx, "tables/Artefacts/records", {"records": [
+                    {"id": art_row.get("id"),
+                     "fields": {"Output": json.dumps({
+                         "published": {"section": section_ref, "view": view_ref,
+                                       "at": int(time.time())}})}}]})
+            except Exception:
+                pass
+
+            _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
+            return {
+                "ok": True, "artefact": artefact,
+                "section_ref": section_ref, "view_ref": view_ref,
+                "page_name": page_name if view_ref else None,
+                "autonomous": True,
+                "hint": ("Widget fige dans le doc (options de section, builder galerie). "
+                         "Plus aucune dependance au serveur MCP au runtime."),
+                "_next": "Recharger la page Grist pour verifier le rendu. "
+                         "Pour mettre a jour : modifier l artefact source puis republier.",
             }
         except Exception as e:
             return {"error": str(e)}
