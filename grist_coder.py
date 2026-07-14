@@ -8,7 +8,7 @@ LLM via MCP : schema relationnel + artefacts + pages structurées.
 AUTH  : widget -> grist.docApi.getAccessToken() -> POST /register -> gc-xxx
         Claude Desktop -> Bearer <grist_key> -> uid:user_id stable
 TOOLS : sessions(3) plan(1) canvas(7) wizard(2) context(1) chat(2) subagent(1)
-        artefact(2) grist-r(3) grist-w(3) doc(5) webhooks(1) = 31
+        artefact(2) grist-r(3) grist-w(3) validate(1) doc(5) webhooks(1) = 32
 MCP   : sampling/createMessage (client capability) -> subagent_call + chat auto-reply
 """
 
@@ -202,6 +202,7 @@ OUTILS (31)
                                        (code copie dans les options de section, builder galerie —
                                        zero dependance au serveur MCP au runtime)
   Grist R  : grist_schema, grist_records, grist_sql
+  Validate : grist_validate        <- PRE-VOL avant grist_apply (Ref forward, formats) — evite les 500 sandbox
   Grist W  : grist_records_add, grist_records_patch, grist_upsert
   Document : grist_apply, grist_views_list, grist_view_create,
              grist_section_configure, grist_view_add_widget
@@ -1216,6 +1217,21 @@ TOOLS = [
                                      "items": {}}},
                      "required": ["actions"]}},
 
+    {"name": "grist_validate",
+     "description": (
+         "PRE-VOL — valide une liste de UserActions AVANT grist_apply, sans rien ecrire. "
+         "Detecte les erreurs frequentes : colonne Ref: vers une table creee PLUS TARD dans le meme batch "
+         "(cause classique de sandbox error a l insert), formats d action invalides. Rappelle les visibleCol "
+         "a definir. Retourne {ok, errors, warnings}. A appeler avant tout grist_apply comportant plusieurs "
+         "AddTable avec des colonnes Ref entre elles."
+     ),
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "actions": {"type": "array", "items": {},
+                                     "description": "Les UserActions a valider (meme format que grist_apply)"}},
+                     "required": ["actions"]},
+     "annotations": {"readOnlyHint": True}},
+
     {"name": "grist_views_list",
      "description": "Liste les pages (vues) du document avec leurs sections.",
      "inputSchema": {"type": "object", "properties": {}},
@@ -1276,7 +1292,7 @@ _QUALIFYING_TOOLS = {
     "sessions_list", "session_select", "session_info",
     "canvas_wizard", "canvas_wizard_close", "canvas_context_update",
     "plan_update", "subagent_call", "artefact_init", "chat_reply", "wait_for_chat",
-    "grist_schema", "grist_records", "grist_sql",
+    "grist_schema", "grist_records", "grist_sql", "grist_validate",
 }
 _ASSESSING_TOOLS = _QUALIFYING_TOOLS | {
     "canvas_select", "canvas_read", "canvas_screenshot", "grist_views_list",
@@ -4452,6 +4468,61 @@ def _apply_next(actions):
 _META_TABLE_HINT = ("Tables meta _grist_Views* : ne JAMAIS utiliser grist_records_patch (REST) "
                     "-> crash frontend. Utiliser grist_apply(['UpdateRecord', '_grist_Views_section', id, {...}]).")
 
+def _ref_target(coltype):
+    """Retourne la table cible d une colonne Ref:/RefList:, ou None."""
+    t = str(coltype or "")
+    for pfx in ("RefList:", "Ref:"):
+        if t.startswith(pfx):
+            return t[len(pfx):]
+    return None
+
+def _validate_actions(actions, existing_tables):
+    """Pre-vol : detecte les erreurs frequentes AVANT grist_apply.
+
+    - Ref: vers une table creee PLUS TARD dans le meme batch (ou inexistante) -> sandbox error a l insert
+    - formats d action invalides
+    - rappelle les visibleCol a definir sur les Ref
+    existing_tables : ids des tables deja presentes dans le doc."""
+    errors, warnings = [], []
+    if not isinstance(actions, list):
+        return {"ok": False, "errors": ["'actions' doit etre une liste de UserActions"], "warnings": []}
+    known = set(existing_tables)  # tables qui existeront au moment de chaque action du batch
+    for i, a in enumerate(actions):
+        if not isinstance(a, list) or not a:
+            errors.append(f"action {i}: format invalide (liste [verbe, ...] attendue)")
+            continue
+        verb = a[0]
+        if verb == "AddTable":
+            tname = a[1] if len(a) > 1 else None
+            cols = a[2] if len(a) > 2 and isinstance(a[2], list) else []
+            for c in cols:
+                if not isinstance(c, dict):
+                    continue
+                tgt = _ref_target(c.get("type"))
+                if tgt and tgt not in known and tgt != tname:
+                    errors.append(
+                        f"action {i} (AddTable '{tname}'): la colonne '{c.get('id')}' reference la table "
+                        f"'{tgt}' qui n'existe pas encore a ce point du batch. Creer '{tgt}' AVANT cette "
+                        f"AddTable, ou ajouter la colonne Ref via AddColumn apres. Sinon : sandbox error "
+                        f"\"NoneType object has no attribute 'table_id'\" au premier insert.")
+                if tgt:
+                    warnings.append(f"colonne Ref '{c.get('id')}' de '{tname}' -> penser a definir visibleCol apres creation")
+            if tname:
+                known.add(tname)
+        elif verb == "AddColumn":
+            tname = a[1] if len(a) > 1 else None
+            spec = a[3] if len(a) > 3 and isinstance(a[3], dict) else {}
+            tgt = _ref_target(spec.get("type"))
+            if tgt and tgt not in known:
+                errors.append(f"action {i} (AddColumn sur '{tname}'): reference la table '{tgt}' inexistante a ce point.")
+            if tgt:
+                warnings.append(f"colonne Ref ajoutee sur '{tname}' -> definir visibleCol")
+        elif verb == "RemoveTable":
+            tname = a[1] if len(a) > 1 else None
+            if tname:
+                known.discard(tname)
+    return {"ok": not errors, "errors": errors, "warnings": warnings}
+
 async def call_tool(uid_key, mcp_sid, name, args):
     if name == "sessions_list":
         s = registry.list_sessions(uid_key)
@@ -5245,11 +5316,27 @@ async def call_tool(uid_key, mcp_sid, name, args):
 
     # ── Document structure
     if name == "grist_apply":
+        actions = args.get("actions")
+        # Pre-vol automatique des batches STRUCTURELS (AddTable/AddColumn) : echouer proprement
+        # avec un message actionnable plutot que de subir un 500 sandbox (ex: Ref forward).
+        has_structural = isinstance(actions, list) and any(
+            isinstance(a, list) and a and a[0] in ("AddTable", "AddColumn") for a in actions)
+        if has_structural:
+            try:
+                schema = await grist_get(ctx, "tables")
+                existing = {t["id"] for t in schema.get("tables", [])}
+            except Exception:
+                existing = set()
+            check = _validate_actions(actions, existing)
+            if not check["ok"]:
+                return {"error": "Validation pre-vol echouee (rien applique).",
+                        "validation_errors": check["errors"],
+                        "_hint": "Corriger l'ordre/les references puis re-appeler. Voir grist_validate."}
         try:
-            result = await grist_apply(ctx, args["actions"])
+            result = await grist_apply(ctx, actions)
             _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
             resp = {"ok": True, "result": result}
-            nxt = _apply_next(args.get("actions"))
+            nxt = _apply_next(actions)
             if nxt:
                 resp["_next"] = nxt
             return resp
@@ -5295,6 +5382,22 @@ async def call_tool(uid_key, mcp_sid, name, args):
             return {"error": f"action inconnue: {action}"}
         except Exception as e:
             return {"error": str(e)}
+
+    if name == "grist_validate":
+        actions = args.get("actions")
+        try:
+            schema = await grist_get(ctx, "tables")
+            existing = {t["id"] for t in schema.get("tables", [])}
+        except Exception:
+            existing = set()
+        result = _validate_actions(actions, existing)
+        if result["ok"]:
+            result["_next"] = ("Validation OK -> grist_apply(actions). Ensuite : visibleCol sur les Ref "
+                               "(UpdateRecord _grist_Tables_column) + BulkAddRecord (3-5 lignes) + page metier.")
+        else:
+            result["_next"] = ("Corriger les 'errors' avant grist_apply — surtout l'ordre des AddTable : "
+                               "creer les tables cibles des Ref AVANT les tables qui les referencent.")
+        return result
 
     if name == "grist_views_list":
         try:
@@ -6193,6 +6296,24 @@ async def llm_proxy(path: str, request: Request):
         return JSONResponse({"error": _scrub_secrets(str(e))}, status_code=502)
 
 
+HARNESS_DIR = Path(__file__).parent / "harness"
+_HARNESS_MIME = {".js": "application/javascript", ".css": "text/css",
+                 ".json": "application/json", ".map": "application/json"}
+
+@app.get("/harness/{filename:path}")
+async def harness_file(filename: str):
+    """Sert les modules JS du harness agent embarque (widget). Meme origine que le widget."""
+    # Anti path-traversal : nom de fichier simple, pas de séparateur ni '..'
+    if not filename or "/" in filename or "\\" in filename or ".." in filename:
+        return JSONResponse({"error": "nom de fichier invalide"}, status_code=400)
+    target = (HARNESS_DIR / filename).resolve()
+    if not str(target).startswith(str(HARNESS_DIR.resolve())) or not target.is_file():
+        return JSONResponse({"error": "fichier introuvable"}, status_code=404)
+    mime = _HARNESS_MIME.get(target.suffix.lower(), "text/plain")
+    return Response(target.read_bytes(), media_type=mime,
+                    headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/", response_class=HTMLResponse)
 async def widget_html():
     if WIDGET_PATH.exists():
@@ -6202,4 +6323,7 @@ async def widget_html():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("grist_coder:app", host="0.0.0.0", port=8742, reload=True)
+    uvicorn.run("grist_coder:app",
+                host=os.getenv("HOST", "0.0.0.0"),
+                port=int(os.getenv("PORT", "8742")),
+                reload=os.getenv("RELOAD", "true").lower() == "true")

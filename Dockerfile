@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY grist_coder.py .
 COPY widget.html .
+COPY harness/ ./harness/
 
 # Port du service
 EXPOSE 8742
