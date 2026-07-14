@@ -87,9 +87,10 @@ CYCLE GUIDE — 4 PHASES
     10. plan_update(need, tables, artefacts, pages, status="designing")
         -> _next_resources indique les ressources a lire avant conception
 
-  NOTE CONTEXTES : les outils disponibles evoluent avec le status du plan (tools/list_changed).
+  NOTE CONTEXTES : TOUS les outils sont toujours disponibles — le status du plan ne verrouille rien.
     qualifying -> assessing -> designing -> building -> verifying -> done
-    Chaque transition debloque les outils necessaires a la phase suivante.
+    Le status est un GUIDE DE SEQUENCEMENT (quel outil est optimal a quel moment), pas une barriere.
+    plan_update(status=...) met a jour ce guide et le bandeau de progression cote widget.
 
   PHASE 2 — CONCEVOIR (valider le plan avec l utilisateur)
     1. canvas_wizard(source="doc-overview") si tables existantes -> vue complete 3 onglets
@@ -235,6 +236,9 @@ RESSOURCES — niveaux de contexte
     docs/services-data     -> donnees ouvertes (SIRENE, DVF, data.gouv, API Geo)
     docs/services-ai       -> patterns IA (sync canvas_exec, async webhook, bridge, subagent)
     examples/{domain}      -> schema + donnees exemple pour un domaine metier
+
+  LIVRAISON (avant artefact_publish)
+    docs/publication       -> figer un artefact en widget autonome dans le doc (html/svg, split script)
 
 STANDARDS QUALITE (non-negotiables)
   Donnees  : types corrects (Text/Numeric/Date/Bool/Choice/Ref:Table), FK via Ref:, formules
@@ -1128,8 +1132,9 @@ TOOLS = [
          "Sans section_ref : cree une page dediee (table_id requis). "
          "Avec section_ref : reconfigure une section custom existante (id depuis grist_views_list). "
          "Les <script> inline sont extraits automatiquement vers le champ _js du builder "
-         "(seul contexte ou l API grist est disponible). Types supportes : html, svg. "
-         "La source reste la table Artefacts : modifier puis republier pour mettre a jour."
+         "(seul contexte ou l API grist est disponible). Types supportes : html, svg (react/app refuses). "
+         "La source reste la table Artefacts : modifier puis republier pour mettre a jour. "
+         "LIRE docs/publication avant premiere utilisation."
      ),
      "inputSchema": {"type": "object",
                      "properties": {
@@ -1402,9 +1407,11 @@ def _prompt_messages(name, args):
             "1. resources/read grist-coder://docs/schema -> types, Ref:, visibleCol, formules\n"
             "2. grist_schema() -> tables existantes\n"
             "3. Proposer schema complet (tables, colonnes, refs, formules)\n"
-            "4. Creer Phase 1 (sans refs) via grist_records_add\n"
-            "5. Creer Phase 2 (Ref:) via grist_records_add sur colonnes\n"
-            "6. Configurer Phase 3 (visibleCol) via grist_records_patch"
+            "4. Creer les tables : grist_apply([['AddTable','Nom',[{id,type,widgetOptions?}]], ...])\n"
+            "   Colonnes derivables -> isFormula:true. Colonnes Ref: -> type 'Ref:AutreTable'.\n"
+            "5. Definir visibleCol sur chaque Ref: via grist_apply(['UpdateRecord','_grist_Tables_column',...])\n"
+            "6. Donnees exemple : grist_apply([['BulkAddRecord','Nom',[...],{...}]]) — min 3-5 lignes\n"
+            "7. Verifier context/{token} (_quality) : Ref avec visibleCol, chaque table -> une page"
         )}}]
     if name == "evolve-app":
         direction = args.get("direction", "")
@@ -3053,7 +3060,55 @@ STATIC_RESOURCES = [
      "name":        "Services IA",
      "description": "Integrer l IA dans une app Grist : 4 patterns (canvas_exec sync, webhook async, bridge artefact, subagent MCP). Anthropic/OpenAI/Ollama.",
      "mimeType":    "text/plain"},
+
+    {"uri":         "grist-coder://docs/publication",
+     "name":        "Publication autonome",
+     "description": "LIRE AVANT artefact_publish. Fige un artefact en widget autonome DANS le doc (zero dependance serveur). Contraintes html/svg, split script, page vs section.",
+     "mimeType":    "text/plain"},
 ]
+
+DOCS_PUBLICATION = """GRIST CODER - Publication autonome (artefact_publish)
+=====================================================
+Fige un artefact HTML termine en widget custom 100% autonome, stocke DANS le
+document Grist. Apres publication : AUCUNE dependance au serveur MCP au runtime
+— le widget survit a l arret du serveur et voyage avec le doc (copies, exports).
+
+## Quand publier
+En PHASE 4 (livraison), pour chaque artefact html finalise que l utilisateur
+veut garder comme application autonome. La source reste dans la table Artefacts
+(re-editable via l atelier) ; la publication est un SNAPSHOT fige.
+
+## Comment ca marche
+Le code est copie dans les options de la section Grist via le widget de la
+galerie "Custom widget builder" (@berhalak/custom-widget-builder), publie sur
+l instance. Deux champs :
+  _html : le markup + styles (les <script> inline y sont INERTES, pas d API grist)
+  _js   : la logique — SEUL endroit ou l API `grist` est disponible
+artefact_publish fait le split automatiquement : il extrait les <script> inline
+vers _js, garde les <script src=...> CDN dans _html, et prefixe grist.ready().
+
+## Contraintes (IMPORTANT)
+- Types publiables : html, svg UNIQUEMENT. Un artefact `react`/`app` est REFUSE
+  (Babel ne survit pas au split) -> le convertir en html (React.createElement ou
+  HTML+JS vanilla) AVANT de publier.
+- L artefact doit avoir un Code non vide sauvegarde dans Grist (canvas_write + Save).
+- Le code doit utiliser grist.docApi.fetchTable (pas onRecord seul) pour etre robuste.
+
+## Usage
+- Nouvelle page dediee :   artefact_publish(artefact="Dashboard", table_id="Chantiers")
+- Section existante :       artefact_publish(artefact="Dashboard", section_ref=8)
+  (section_ref depuis grist_views_list)
+
+## Mettre a jour un widget publie
+Modifier l artefact source (atelier) PUIS re-appeler artefact_publish : le
+snapshot dans la section est remplace. Recharger la page Grist pour voir le rendu.
+
+## A savoir
+- A l ajout manuel d une URL custom inconnue, l instance affiche un dialogue de
+  confiance (one-shot). Les widgets de la galerie n y sont pas soumis.
+- Republier sur une section AFFICHEE : le rendu peut necessiter un reload complet
+  de la page Grist (le builder hot-reload mais son pont grist reste transitoire).
+""".strip()
 
 DOCS_SERVICES_AI = """GRIST CODER - Intégrer l'IA dans une App Grist
 ================================================
@@ -3662,6 +3717,9 @@ async def _read_resource(uid_key, mcp_sid, uri):
 
     if uri == "grist-coder://docs/services-ai":
         return {"uri": uri, "mimeType": "text/plain", "text": DOCS_SERVICES_AI}
+
+    if uri == "grist-coder://docs/publication":
+        return {"uri": uri, "mimeType": "text/plain", "text": DOCS_PUBLICATION}
 
     if uri.startswith("grist-coder://examples/"):
         domain = uri.split("/")[-1]
@@ -4353,6 +4411,46 @@ def _schema_to_mermaid(schema: dict) -> str:
             lines.append("  }")
     lines.extend(relations)
     return "\n".join(lines)
+
+# ── GUIDAGE — rappels de savoir-faire injectes dans les reponses d ecriture ────
+
+def _apply_next(actions):
+    """Analyse des UserActions et retourne un rappel _next contextuel (ou None).
+
+    Remet le savoir-faire au point de decision : apres un AddTable, rappeler
+    visibleCol sur les Ref, les donnees exemple, la creation de page."""
+    if not isinstance(actions, list):
+        return None
+    has_add_table = has_ref_col = has_bulk = False
+    for a in actions:
+        if not isinstance(a, list) or not a:
+            continue
+        verb = a[0]
+        if verb == "AddTable":
+            has_add_table = True
+            cols = a[2] if len(a) > 2 and isinstance(a[2], list) else []
+            for c in cols:
+                if isinstance(c, dict) and str(c.get("type", "")).startswith("Ref"):
+                    has_ref_col = True
+        elif verb == "AddColumn":
+            spec = a[3] if len(a) > 3 and isinstance(a[3], dict) else {}
+            if str(spec.get("type", "")).startswith("Ref"):
+                has_ref_col = True
+        elif verb in ("BulkAddRecord", "AddRecord", "BulkAddOrReplaceRecord"):
+            has_bulk = True
+    tips = []
+    if has_add_table and not has_bulk:
+        tips.append("ajouter 3-5 lignes exemple (BulkAddRecord) pour rendre l app vivante")
+    if has_ref_col:
+        tips.append("definir visibleCol sur chaque colonne Ref: "
+                    "(UpdateRecord _grist_Tables_column, sinon champ vide dans l UI)")
+    if has_add_table:
+        tips.append("colonnes derivables (totaux, statuts, jours restants) -> isFormula:true, jamais saisie")
+        tips.append("creer la page metier : grist_view_create(table, artefact) ; verifier ensuite context/{token} (_quality)")
+    return " ; ".join(tips) if tips else None
+
+_META_TABLE_HINT = ("Tables meta _grist_Views* : ne JAMAIS utiliser grist_records_patch (REST) "
+                    "-> crash frontend. Utiliser grist_apply(['UpdateRecord', '_grist_Views_section', id, {...}]).")
 
 async def call_tool(uid_key, mcp_sid, name, args):
     if name == "sessions_list":
@@ -5116,20 +5214,31 @@ async def call_tool(uid_key, mcp_sid, name, args):
 
     # ── Grist ecriture
     if name == "grist_records_add":
-        result = await grist_post(ctx, f"tables/{args['table_id']}/records",
+        table_id = args["table_id"]
+        # Garde-fou pedagogique : ecrire dans une meta-table via REST casse le frontend
+        if table_id.startswith("_grist_"):
+            return {"error": f"Ecriture REST interdite sur la meta-table {table_id}. {_META_TABLE_HINT}"}
+        result = await grist_post(ctx, f"tables/{table_id}/records",
                                   {"records": args["records"]})
         ids = [r["id"] for r in result.get("records", [])]
         _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
-        return {"ok": True, "created": len(ids), "ids": ids}
+        return {"ok": True, "created": len(ids), "ids": ids,
+                "_next": f"Verifier context/{ctx.token} (_quality) ; toute table metier -> une page Grist."}
 
     if name == "grist_records_patch":
-        await grist_patch(ctx, f"tables/{args['table_id']}/records",
+        table_id = args["table_id"]
+        if table_id.startswith("_grist_"):
+            return {"error": f"Patch REST interdit sur la meta-table {table_id}. {_META_TABLE_HINT}"}
+        await grist_patch(ctx, f"tables/{table_id}/records",
                           {"records": args["records"]})
         _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
         return {"ok": True, "updated": len(args["records"])}
 
     if name == "grist_upsert":
-        await grist_put(ctx, f"tables/{args['table_id']}/records",
+        table_id = args["table_id"]
+        if table_id.startswith("_grist_"):
+            return {"error": f"Upsert REST interdit sur la meta-table {table_id}. {_META_TABLE_HINT}"}
+        await grist_put(ctx, f"tables/{table_id}/records",
                         {"records": args["records"]})
         _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
         return {"ok": True, "upserted": len(args["records"])}
@@ -5139,9 +5248,24 @@ async def call_tool(uid_key, mcp_sid, name, args):
         try:
             result = await grist_apply(ctx, args["actions"])
             _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
-            return {"ok": True, "result": result}
+            resp = {"ok": True, "result": result}
+            nxt = _apply_next(args.get("actions"))
+            if nxt:
+                resp["_next"] = nxt
+            return resp
         except Exception as e:
-            return {"error": str(e)}
+            # Erreur pedagogique : orienter vers la cause probable plutot qu un dump brut
+            msg = str(e)
+            hint = None
+            if "not blank" in msg or "required" in msg.lower():
+                hint = "Une colonne requise/formule est peut-etre saisie manuellement. Verifier docs/schema."
+            elif "400" in msg:
+                hint = ("Verifier : casse exacte des colonnes (grist_schema), "
+                        "type des valeurs, et que les tables meta passent bien par UpdateRecord.")
+            out = {"error": msg}
+            if hint:
+                out["_hint"] = hint
+            return out
 
     if name == "grist_webhooks":
         action = args["action"]
@@ -5415,7 +5539,10 @@ async def call_tool(uid_key, mcp_sid, name, args):
                                  "sauvegarder l artefact (canvas_write + Save) avant de publier"}
             if art_type not in ("html", "svg"):
                 return {"error": f"Type '{art_type}' non publiable en widget autonome "
-                                 "(supportes : html, svg). Convertir l artefact en html d abord."}
+                                 "(supportes : html, svg).",
+                        "_hint": ("Convertir l artefact en html avant de publier : React.createElement "
+                                  "ou HTML+JS vanilla (le JSX/Babel de react|app ne survit pas au split). "
+                                  "Lire docs/publication.")}
 
             # 2. Transformer : markup -> _html, scripts inline -> _js (+ grist.ready)
             html_part, js_part = _split_html_js(code)
