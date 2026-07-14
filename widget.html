@@ -71,28 +71,47 @@ body{display:flex;flex-direction:column}
   font-size:12px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,.2);
   animation:ti .2s ease;pointer-events:none}
 @keyframes ti{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
-/* ── WIZARD MULTI-CARD ──────────────────────────────────────────────── */
-#wizardOverlay{position:absolute;inset:0;z-index:50;background:var(--bg2);
-  flex-direction:column;overflow:hidden;
-  animation:ti .18s ease}
-/* Bottom-sheet mode quand toutes les cards sont non-bloquantes (progress/info/plan passif) */
-#wizardOverlay.wz-nb-mode{top:auto;bottom:0;max-height:46%;
-  border-top:2px solid var(--border);box-shadow:0 -4px 16px rgba(0,0,0,.10);}
-/* thread layout */
-#wz-chips{display:flex;flex-wrap:wrap;gap:5px;padding:7px 12px;
-  border-bottom:1px solid var(--border);flex-shrink:0;background:var(--bg2);min-height:0}
-.wz-chip{display:flex;align-items:center;gap:5px;padding:4px 12px;border-radius:20px;
-  border:1px solid var(--border);background:#fff;font-size:.73rem;color:var(--text2);
-  font-family:inherit;cursor:default;transition:all .15s;font-weight:500}
-.wz-chip.active{border-color:#3e5de7;color:#3e5de7;background:#eef2ff;
-  box-shadow:0 1px 4px rgba(62,93,231,.12);font-weight:600}
-#wz-thread{flex:1;overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;
-  gap:12px;min-height:0;scroll-behavior:smooth;
-  mask-image:linear-gradient(to bottom,transparent 0,#000 12px,#000 calc(100% - 12px),transparent 100%);
-  -webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 12px,#000 calc(100% - 12px),transparent 100%)}
-#wz-chat-section{flex-shrink:0;border-top:1px solid var(--border);background:var(--bg2);display:none}
-#wz-chat-section.active{display:block}
-#wz-msgs{max-height:140px;overflow-y:auto;padding:6px 12px;display:flex;
+/* ── ZONE 1 — PLAN BANNER ──────────────────────────────────────────── */
+#planBanner{flex-shrink:0;background:#fff;border-bottom:1px solid var(--border);
+  z-index:60;font-size:.78rem;position:relative}
+.pb-main{display:flex;align-items:center;gap:8px;padding:8px 14px;cursor:pointer;
+  transition:background .12s;user-select:none}
+.pb-main:hover{background:#f8fafc}
+.pb-chip{font-size:.68rem;font-weight:700;padding:3px 10px;border-radius:14px;
+  background:#eef2ff;color:#3e5de7;border:1px solid rgba(62,93,231,.2);white-space:nowrap}
+.pb-bar{flex:1;height:5px;background:#e2e8f0;border-radius:3px;overflow:hidden;min-width:60px}
+.pb-fill{height:100%;background:linear-gradient(90deg,#3e5de7,#6c8cff);border-radius:3px;
+  transition:width .5s ease}
+.pb-stats{font-size:.7rem;color:var(--text2);white-space:nowrap}
+.pb-toggle{font-size:.6rem;color:var(--text2);transition:transform .2s}
+.pb-main.expanded .pb-toggle{transform:rotate(180deg)}
+.pb-detail{padding:0 14px 10px;border-top:1px solid var(--border);
+  display:flex;flex-direction:column;gap:5px}
+.pb-section{display:flex;gap:8px;align-items:baseline;font-size:.74rem;
+  padding:5px 10px;border-radius:6px}
+.pb-section.default{background:transparent}
+.pb-section.success{background:rgba(16,185,129,.08);color:#059669}
+.pb-section.info{background:rgba(59,130,246,.07);color:#2563eb}
+.pb-section.warn{background:rgba(245,158,11,.08);color:#d97706}
+.pb-section.code{background:#f1f5f9;color:#334155;font-family:monospace;font-size:.7rem;
+  border:1px solid #e2e8f0}
+.pb-label{font-weight:600;flex-shrink:0;opacity:.8}
+.pb-content{line-height:1.4}
+/* ── ZONE 2 — MODAL BACKDROP ──────────────────────────────────────── */
+#wizardBackdrop{position:absolute;inset:0;z-index:50;
+  background:rgba(15,23,42,.35);backdrop-filter:blur(2px);
+  display:flex;align-items:center;justify-content:center;
+  animation:wz-fade-in .2s ease}
+@keyframes wz-fade-in{from{opacity:0}to{opacity:1}}
+#wizardModal{width:92%;max-width:480px;max-height:85%;overflow-y:auto;
+  display:flex;flex-direction:column}
+/* ── ZONE 3 — STATUS PANEL + CHAT ─────────────────────────────────── */
+#statusPanel{flex-shrink:0;border-top:1px solid var(--border);background:var(--bg2);
+  z-index:60;max-height:40%;overflow-y:auto;position:relative}
+#statusCards{padding:8px 12px;display:flex;flex-direction:column;gap:8px}
+#chatSection{display:none;border-top:1px solid var(--border);background:var(--bg2)}
+#chatSection.active{display:block}
+#chatMsgs{max-height:120px;overflow-y:auto;padding:6px 12px;display:flex;
   flex-direction:column;gap:4px}
 .wz-msg{display:flex;gap:6px;align-items:flex-end;animation:ti .15s ease}
 .wz-msg.user{flex-direction:row-reverse}
@@ -105,29 +124,27 @@ body{display:flex;flex-direction:column}
 .wz-msg.user .wz-msg-bubble{background:#3e5de7;color:#fff;border-bottom-right-radius:3px}
 .wz-msg.assistant .wz-msg-bubble{background:#fff;color:var(--text);
   border:1px solid var(--border);border-bottom-left-radius:3px}
-#wz-chat-bar{display:flex;gap:7px;align-items:flex-end;padding:8px 12px}
-#wz-chat-input{flex:1;padding:7px 10px;border-radius:8px;border:1px solid var(--border);
+#chatBar{display:flex;gap:7px;align-items:flex-end;padding:8px 12px}
+#chatInput{flex:1;padding:7px 10px;border-radius:8px;border:1px solid var(--border);
   font-size:.8rem;font-family:inherit;color:var(--text);background:#fff;
-  outline:none;resize:none;line-height:1.45;max-height:90px;overflow-y:auto;
+  outline:none;resize:none;line-height:1.45;max-height:80px;overflow-y:auto;
   transition:border-color .12s}
-#wz-chat-input:focus{border-color:#3e5de7;box-shadow:0 0 0 3px rgba(62,93,231,.07)}
-#wz-chat-input:disabled{opacity:.45;cursor:not-allowed}
-#wz-chat-send{width:32px;height:32px;flex-shrink:0;background:#3e5de7;color:#fff;
+#chatInput:focus{border-color:#3e5de7;box-shadow:0 0 0 3px rgba(62,93,231,.07)}
+#chatInput:disabled{opacity:.45;cursor:not-allowed}
+#chatSend{width:32px;height:32px;flex-shrink:0;background:#3e5de7;color:#fff;
   border:none;border-radius:8px;cursor:pointer;font-size:1rem;
   display:flex;align-items:center;justify-content:center;transition:all .12s}
-#wz-chat-send:hover:not(:disabled){background:#2845c1}
-#wz-chat-send:disabled{opacity:.4;cursor:not-allowed}
-/* card container */
+#chatSend:hover:not(:disabled){background:#2845c1}
+#chatSend:disabled{opacity:.4;cursor:not-allowed}
+/* card container — used in both modal (Zone 2) and status panel (Zone 3) */
 .wz-card{background:#fff;border-radius:12px;border:1px solid var(--border);
   box-shadow:0 2px 8px rgba(0,0,0,.06),0 0 1px rgba(0,0,0,.08);overflow:hidden;flex-shrink:0;
   animation:wz-ci .3s cubic-bezier(.34,1.15,.64,1)}
-.wz-card.card-blocking{border-color:rgba(62,93,231,.35);
-  box-shadow:0 4px 24px rgba(62,93,231,.12),0 0 0 1px rgba(62,93,231,.1)}
-.wz-card.card-plan{border-left:3px solid #3e5de7;
-  background:linear-gradient(135deg,rgba(62,93,231,.03) 0%,#fff 50%)}
-.wz-card.card-exit{animation:wz-co .22s ease forwards;pointer-events:none}
-@keyframes wz-ci{from{opacity:0;transform:translateY(12px) scale(.97)}to{opacity:1;transform:translateY(0) scale(1)}}
-@keyframes wz-co{from{opacity:1;transform:translateY(0) scale(1)}to{opacity:0;transform:translateY(-8px) scale(.96)}}
+.wz-card.card-blocking{border-color:rgba(62,93,231,.25);
+  box-shadow:0 8px 40px rgba(0,0,0,.15),0 0 0 1px rgba(62,93,231,.1)}
+.wz-card.card-exit{animation:wz-co .2s ease forwards;pointer-events:none}
+@keyframes wz-ci{from{opacity:0;transform:translateY(16px) scale(.96)}to{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes wz-co{from{opacity:1;transform:translateY(0)}to{opacity:0;transform:translateY(-10px) scale(.97)}}
 /* card structure */
 .wz-hd{padding:14px 16px 12px;border-bottom:1px solid var(--border);flex-shrink:0;
   display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
@@ -220,22 +237,7 @@ textarea.wz-input{resize:vertical;min-height:62px;line-height:1.5}
 .wz-btn.danger{background:#ef4444;color:#fff;border-color:#ef4444;
   box-shadow:0 2px 8px rgba(239,68,68,.25)}
 .wz-btn.danger:hover{background:#dc2626;border-color:#dc2626;transform:translateY(-1px)}
-/* ── PLAN CARD (ctx-* classes used inside .card-plan) ───────────────── */
-.ctx-progress{height:6px;border-radius:3px;background:#e2e8f0;overflow:hidden;
-  box-shadow:inset 0 1px 2px rgba(0,0,0,.06)}
-.ctx-progress-fill{height:100%;border-radius:3px;
-  background:linear-gradient(90deg,#3e5de7,#6c8cff);transition:width .5s ease}
-.ctx-sections{display:flex;flex-direction:column;gap:6px;margin-top:4px}
-.ctx-section{display:flex;gap:8px;align-items:baseline;font-size:.76rem;
-  padding:7px 10px;border-radius:8px}
-.ctx-section.default{background:transparent}
-.ctx-section.success{background:rgba(16,185,129,.08);color:#059669}
-.ctx-section.info{background:rgba(59,130,246,.07);color:#2563eb}
-.ctx-section.warn{background:rgba(245,158,11,.08);color:#d97706}
-.ctx-section.code{background:#f1f5f9;color:#334155;font-family:monospace;font-size:.72rem;
-  border:1px solid #e2e8f0;border-radius:6px}
-.ctx-label{font-weight:600;flex-shrink:0;white-space:nowrap;color:inherit;opacity:.8}
-.ctx-content{color:inherit;line-height:1.45}
+/* ctx-* classes removed — plan card replaced by #planBanner (Zone 1) */
 /* ── WIZARD INPUT ─────────────────────────────────────────────────────── */
 .wz-request-ta{min-height:100px;font-size:.85rem;line-height:1.65;resize:vertical}
 .wz-suggestions{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
@@ -286,8 +288,35 @@ textarea.wz-input{resize:vertical;min-height:62px;line-height:1.5}
 </nav>
 <div id="appBody">
   <div id="previewPane">
+    <!-- Zone 1 — Plan banner (persistent, compact, above iframe) -->
+    <div id="planBanner" style="display:none">
+      <div class="pb-main" onclick="togglePlanDetail()">
+        <span class="pb-chip" id="pbChip">●</span>
+        <div class="pb-bar"><div class="pb-fill" id="pbFill"></div></div>
+        <span class="pb-stats" id="pbStats"></span>
+        <span class="pb-toggle">▾</span>
+      </div>
+      <div class="pb-detail" id="pbDetail" style="display:none">
+        <div id="pbSections"></div>
+      </div>
+    </div>
+    <!-- Zone 2 — Preview iframe + Modal overlay for blocking cards -->
     <iframe id="renderFrame" sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups"></iframe>
-    <div id="wizardOverlay" style="display:none"></div>
+    <div id="wizardBackdrop" style="display:none" onclick="event.target===this&&void 0">
+      <div id="wizardModal"></div>
+    </div>
+    <!-- Zone 3 — Status panel + Chat (bottom, collapsible) -->
+    <div id="statusPanel" style="display:none">
+      <div id="statusCards"></div>
+      <div id="chatSection">
+        <div id="chatMsgs"></div>
+        <div id="chatBar">
+          <textarea id="chatInput" rows="1" placeholder="Message…"
+            onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat();}"></textarea>
+          <button id="chatSend" onclick="sendChat()" title="Envoyer">↑</button>
+        </div>
+      </div>
+    </div>
   </div>
   <div id="splitter"></div>
   <div id="editorPane">
@@ -565,7 +594,7 @@ const _DISPLAY_ART = new URLSearchParams(window.location.search).get('a') || '';
 const _DISPLAY_MODE = !!_DISPLAY_ART;
 // DSFR — not auto-injected. Artefacts import it themselves via CDN <link> tag.
 // The SERVER_INSTRUCTIONS and docs/artefacts resource document the pattern.
-var _registered=false, _registering=false, _token=null, _mcpId=1, _es=null, _refreshTimer=null;
+var _registered=false, _registering=false, _token=null, _mcpId=1, _es=null, _refreshTimer=null, _standalone=false;
 var _artefacts=[], _artefactsMap={}, _currentArt=null, _sharedState={};
 var _artefactsLoaded=false; // true après loadArtefacts() — bloque onRecord auto-select avant init
 var _canvasLockUntil=0;    // timestamp ms — onRecord auto-select ignoré pendant canvas_updated (fallback)
@@ -655,8 +684,10 @@ grist.onRecord(function(record) {
     // Re-render iframe with fresh __APP_STATE__.record on every selection change
     if (_currentArt) renderArt(_currentArt);
   } else {
-    // IDE mode: auto-select artefact if linked to Artefacts table (record has Nom field)
-    // Ignorer avant loadArtefacts() et pendant un canvas_updated en cours
+    // IDE mode: auto-select artefact ONLY if the user has already selected one.
+    // When _currentArt is null (home view), don't auto-switch to the first record.
+    // _canvasTargetArt locks on the currently active artefact (set by dropdown or SSE).
+    if (!_currentArt) return; // Stay on home view — don't auto-switch
     var _lockedOnOther = _canvasTargetArt && record.Nom !== _canvasTargetArt;
     if (_artefactsLoaded && !_lockedOnOther && record.Nom && _artefactsMap[record.Nom]) {
       var sel = document.getElementById('artSelect');
@@ -712,11 +743,23 @@ async function doRegister(msg) {
         }
       } catch(_) {}
     }
-    var res = await fetch(BASE+'/register', {method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({accessToken:tk.token,docId,docTitle,siteUrl,userId})});
-    var data = await res.json();
-    if (data.error) { showToast('Erreur: '+data.error,'error'); return; }
+    // Tentative /register — si l'host ne supporte pas (GitHub Pages, etc.),
+    // on tombe en mode standalone : pas de SSE MCP, mais chargement artefacts OK.
+    var data = null;
+    try {
+      var res = await fetch(BASE+'/register', {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({accessToken:tk.token,docId,docTitle,siteUrl,userId})});
+      if (res.ok) data = await res.json();
+    } catch(_) {}
+    if (!data || data.error) {
+      // Mode standalone (hébergement statique sans MCP) — on charge les artefacts
+      // directement depuis Grist, sans session MCP ni SSE.
+      _standalone = true;
+      document.getElementById('sbDoc').textContent = docTitle;
+      await loadArtefacts();
+      return;
+    }
     _registered = true; _token = data.token;
     var dot = document.getElementById('dot');
     dot.className = 'on'; dot.title = 'Connecté · cliquer pour copier token MCP';
@@ -1391,69 +1434,125 @@ function debounce(fn, delay) {
   return function() { clearTimeout(timer); timer = setTimeout(fn, delay); };
 }
 
-// ── WIZARD MULTI-CARD ─────────────────────────────────────────────────────────
+// ── WIZARD 3-ZONE ARCHITECTURE ───────────────────────────────────────────────
+// Zone 1: #planBanner — persistent plan progress (compact bar)
+// Zone 2: #wizardBackdrop + #wizardModal — centered modal for blocking cards
+// Zone 3: #statusPanel + #chatSection — bottom panel for non-blocking cards + chat
 var _wzCards = {};       // id → {step, token}
-var _wzOrder = [];       // card display order (non-blocking first, blocking last)
+var _wzOrder = [];       // card display order
 var _wzDiState = {};     // data-import state: cid → {step, data:[], selected:Set}
 
-function _wzEnsureOverlay() {
-  if (document.getElementById('wz-thread')) return;
-  var ov = document.getElementById('wizardOverlay');
-  ov.innerHTML =
-    '<div id="wz-chips"></div>' +
-    '<div id="wz-thread"></div>' +
-    '<div id="wz-chat-section">' +
-      '<div id="wz-msgs"></div>' +
-      '<div id="wz-chat-bar">' +
-        '<textarea id="wz-chat-input" rows="1" placeholder="Message…" ' +
-          'onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();sendChat();}"></textarea>' +
-        '<button id="wz-chat-send" onclick="sendChat()" title="Envoyer">↑</button>' +
-      '</div>' +
-    '</div>';
-  updatePlanChip(_currentContext);
+// ── ZONE 1 — Plan Banner ────────────────────────────────────────────────────
+function updatePlanBanner(step) {
+  var banner = document.getElementById('planBanner');
+  if (!step || (!step.title && !step.progress && !(step.sections||[]).length)) {
+    banner.style.display = 'none'; return;
+  }
+  banner.style.display = 'block';
+  // Progress bar
+  var fill = document.getElementById('pbFill');
+  fill.style.width = (step.progress || 0) + '%';
+  // Phase chip
+  var chip = document.getElementById('pbChip');
+  var phaseLabels = {qualifying:'Qualif.',assessing:'Explore',designing:'Design',
+    building:'Build',verifying:'Vérif.',done:'Livré'};
+  var ctx = _currentContext || 'qualifying';
+  chip.textContent = phaseLabels[ctx] || ctx;
+  // Stats (from sections)
+  var stats = document.getElementById('pbStats');
+  var secs = step.sections || [];
+  var parts = [];
+  secs.forEach(function(s) {
+    if (s.style === 'code') parts.push(s.content);
+  });
+  stats.textContent = parts.join(' · ') || ((step.progress||0) + '%');
+  // Detail sections
+  var detail = document.getElementById('pbSections');
+  detail.innerHTML = secs.map(function(s) {
+    return '<div class="pb-section '+(s.style||'default')+'"><span class="pb-label">'
+      + _wzEsc(s.label||'') + '</span> <span class="pb-content">'
+      + _wzEsc(s.content||'') + '</span></div>';
+  }).join('');
 }
 
+function togglePlanDetail() {
+  var detail = document.getElementById('pbDetail');
+  var main = document.querySelector('.pb-main');
+  if (detail.style.display === 'none') {
+    detail.style.display = 'block'; main.classList.add('expanded');
+  } else {
+    detail.style.display = 'none'; main.classList.remove('expanded');
+  }
+}
+
+// ── ZONE 2 & 3 — Card routing ───────────────────────────────────────────────
 function _ctxToCard(panel, token) {
   if (!panel || (!panel.title && !(panel.sections||[]).length)) {
-    closeWizardCard('ctx-plan'); return;
+    // Clear plan banner
+    document.getElementById('planBanner').style.display = 'none'; return;
   }
-  showWizardCard({id:'ctx-plan', type:'plan', title:panel.title,
+  // Plan updates → Zone 1 (banner), not a card
+  var step = {id:'ctx-plan-progress', type:'plan', title:panel.title,
     sections:panel.sections, progress:panel.progress,
-    actions:panel.actions, input:panel.input}, token);
+    actions:panel.actions, input:panel.input};
+  // If plan has blocking actions/input, show as modal
+  if ((panel.actions||[]).length > 0 || !!panel.input) {
+    showWizardCard(step, token);
+  } else {
+    updatePlanBanner(step);
+  }
 }
 
 function showWizardCard(step, token) {
   if (!step || !step.id) return;
-  _wzEnsureOverlay();
-  var id = step.id, isNew = !_wzCards[id];
+  var id = step.id;
   _wzCards[id] = {step:step, token:token||_token};
-  if (isNew) {
-    if (_wzIsBlocking(step)) _wzOrder.push(id);
-    else { var li = _wzLastNB(); _wzOrder.splice(li+1, 0, id); }
+  if (_wzOrder.indexOf(id) < 0) _wzOrder.push(id);
+
+  // Route plan/progress cards to Zone 1 (banner) if non-blocking
+  if ((step.type === 'plan' || step.type === 'progress' || id === 'ctx-plan-progress') && !_wzIsBlocking(step)) {
+    updatePlanBanner(step);
+    return;
   }
-  _wzRebuild();
-  _wzUpdateOverlayMode();
-  _wzUpdateChatState();
-  var ov = document.getElementById('wizardOverlay');
-  ov.style.display = 'flex';
-  // scroll to newest / blocking card in thread
-  if (_wzIsBlocking(step)) setTimeout(function(){
-    var el = document.querySelector('#wz-thread .card-blocking');
-    if (el) el.scrollIntoView({behavior:'smooth', block:'nearest'});
-  }, 80);
+
+  if (_wzIsBlocking(step)) {
+    // Blocking card → Zone 2 modal
+    var backdrop = document.getElementById('wizardBackdrop');
+    var modal = document.getElementById('wizardModal');
+    modal.innerHTML = _wzBuildCard(id, step);
+    // Activate mermaid iframes if present
+    modal.querySelectorAll('iframe[data-srcdoc-b64]').forEach(function(fr) {
+      try { fr.srcdoc = decodeURIComponent(escape(atob(fr.getAttribute('data-srcdoc-b64')))); } catch(e) {}
+    });
+    backdrop.style.display = 'flex';
+    _updateChatVisibility();
+  } else {
+    // Non-blocking card → Zone 3 status panel
+    _rebuildStatusCards();
+    document.getElementById('statusPanel').style.display = 'block';
+    _updateChatVisibility();
+  }
 }
 
-function _wzLastNB() {
-  var li = -1;
-  for (var i = 0; i < _wzOrder.length; i++) {
-    var c = _wzCards[_wzOrder[i]];
-    if (c && !_wzIsBlocking(c.step)) li = i;
-  }
-  return li;
+function _rebuildStatusCards() {
+  var container = document.getElementById('statusCards');
+  if (!container) return;
+  var html = '';
+  _wzOrder.forEach(function(id) {
+    var c = _wzCards[id]; if (!c) return;
+    // Skip cards routed to Zone 1 (plan banner) or Zone 2 (modal)
+    if (_wzIsBlocking(c.step)) return;
+    if (c.step.type === 'plan' || c.step.type === 'progress' || id === 'ctx-plan-progress') return;
+    html += _wzBuildCard(id, c.step);
+  });
+  container.innerHTML = html;
+  // Show/hide status panel
+  document.getElementById('statusPanel').style.display = html ? 'block' : 'none';
 }
 
 function closeWizardCard(id) {
-  var el = document.querySelector('#wz-thread .wz-card[data-wid="'+id+'"]');
+  // Animate exit in whichever zone
+  var el = document.querySelector('.wz-card[data-wid="'+_wzEsc(id)+'"]');
   if (el) {
     el.classList.add('card-exit');
     setTimeout(function() { _wzRemove(id); }, 200);
@@ -1463,53 +1562,40 @@ function closeWizardCard(id) {
 function _wzRemove(id) {
   _wzOrder = _wzOrder.filter(function(x){return x!==id;});
   delete _wzCards[id];
-  _wzUpdateChatState();
+  // Close backdrop if no blocking cards remain
+  var hasBlocking = _wzOrder.some(function(xid) {
+    var c = _wzCards[xid]; return c && _wzIsBlocking(c.step);
+  });
+  if (!hasBlocking) {
+    document.getElementById('wizardBackdrop').style.display = 'none';
+    document.getElementById('wizardModal').innerHTML = '';
+  }
+  _rebuildStatusCards();
+  _updateChatVisibility();
+  // If nothing left, hide all
   if (_wzOrder.length === 0) {
-    var ov = document.getElementById('wizardOverlay');
-    ov.style.display = 'none'; ov.innerHTML = '';
-  } else { _wzRebuild(); _wzUpdateOverlayMode(); }
-}
-
-function _wzUpdateOverlayMode() {
-  var ov = document.getElementById('wizardOverlay');
-  if (!ov) return;
-  var hasBlocking = _wzOrder.some(function(id){ var c=_wzCards[id]; return c && _wzIsBlocking(c.step); });
-  if (hasBlocking) ov.classList.remove('wz-nb-mode');
-  else ov.classList.add('wz-nb-mode');
+    document.getElementById('statusPanel').style.display = 'none';
+  }
 }
 
 function closeWizard() {
   _wzCards = {}; _wzOrder = [];
-  var ov = document.getElementById('wizardOverlay');
-  ov.style.display = 'none'; ov.innerHTML = '';
-  // reset: le chat se masquera à la prochaine _wzEnsureOverlay
+  document.getElementById('wizardBackdrop').style.display = 'none';
+  document.getElementById('wizardModal').innerHTML = '';
+  document.getElementById('statusPanel').style.display = 'none';
+  document.getElementById('planBanner').style.display = 'none';
+}
+
+function _updateChatVisibility() {
+  var cs = document.getElementById('chatSection');
+  // Show chat if any wizard cards are active or chat has history
+  var hasMsgs = document.getElementById('chatMsgs').children.length > 0;
+  cs.classList.toggle('active', _wzOrder.length > 0 || hasMsgs);
 }
 
 function _wzHasChatHistory() {
-  var msgs = document.getElementById('wz-msgs');
+  var msgs = document.getElementById('chatMsgs');
   return msgs && msgs.children.length > 0;
-}
-
-function _wzRebuild() {
-  var thread = document.getElementById('wz-thread');
-  if (!thread) return;
-  // preserve exit-animated cards
-  var exiting = {};
-  thread.querySelectorAll('.wz-card.card-exit').forEach(function(el){
-    exiting[el.dataset.wid] = el.outerHTML;
-  });
-  var html = '';
-  _wzOrder.forEach(function(id) {
-    var c = _wzCards[id]; if (!c) return;
-    html += _wzBuildCard(id, c.step);
-  });
-  Object.values(exiting).forEach(function(h){ html += h; });
-  thread.innerHTML = html;
-  // Direct srcdoc assignment for mermaid iframes
-  thread.querySelectorAll('iframe[data-srcdoc-b64]').forEach(function(fr) {
-    try { fr.srcdoc = decodeURIComponent(escape(atob(fr.getAttribute('data-srcdoc-b64')))); } catch(e) {}
-  });
-  _wzUpdateChatState();
 }
 
 function _wzBuildCard(id, step) {
@@ -2089,23 +2175,20 @@ function wzRevealSubmit(cid, actionId) {
 
 // ── WIZARD CHAT HELPERS ───────────────────────────────────────────────────────
 function updatePlanChip(ctx) {
-  var chips = document.getElementById('wz-chips');
-  if (!chips) return;
-  var labels = {qualifying:'🔍 Qualification',assessing:'📊 Analyse',
-    designing:'🎨 Design',building:'⚙️ Build',verifying:'✅ Vérif',done:'✓ Terminé'};
-  var lbl = labels[ctx] || ctx || '';
-  chips.innerHTML = lbl
-    ? '<span class="wz-chip active">'+_wzEsc(lbl)+'</span>'
-    : '';
+  // Phase chip is now inside the plan banner — update it there
+  var chip = document.getElementById('pbChip');
+  if (!chip) return;
+  var labels = {qualifying:'Qualif.',assessing:'Explore',designing:'Design',
+    building:'Build',verifying:'Vérif.',done:'Livré'};
+  chip.textContent = labels[ctx] || ctx || '';
 }
 
 function appendChatMsg(role, text) {
-  _wzEnsureOverlay();
-  var msgs = document.getElementById('wz-msgs');
+  var msgs = document.getElementById('chatMsgs');
   if (!msgs) return;
-  // Rendre la section chat visible
-  var sec = document.getElementById('wz-chat-section');
+  var sec = document.getElementById('chatSection');
   if (sec) sec.classList.add('active');
+  document.getElementById('statusPanel').style.display = 'block';
   var div = document.createElement('div');
   div.className = 'wz-msg ' + (role === 'user' ? 'user' : 'assistant');
   var initials = role === 'user' ? 'U' : 'AI';
@@ -2114,18 +2197,14 @@ function appendChatMsg(role, text) {
     '<div class="wz-msg-bubble">'+(role==='user'?_wzEsc(text):_wzMd(text))+'</div>';
   msgs.appendChild(div);
   msgs.scrollTop = msgs.scrollHeight;
-  // ensure overlay visible
-  var ov = document.getElementById('wizardOverlay');
-  if (ov && ov.style.display === 'none') ov.style.display = 'flex';
 }
 
 async function sendChat() {
-  var inp = document.getElementById('wz-chat-input');
+  var inp = document.getElementById('chatInput');
   if (!inp || !inp.value.trim() || inp.disabled) return;
   var text = inp.value.trim();
   inp.value = '';
   inp.style.height = '';
-  // Pas d'echo local — le serveur pousse SSE chat_message qui appellera appendChatMsg
   try {
     await fetch(BASE+'/chat/'+_token, {
       method:'POST',
@@ -2136,8 +2215,8 @@ async function sendChat() {
 }
 
 function _wzUpdateChatState() {
-  var inp = document.getElementById('wz-chat-input');
-  var btn = document.getElementById('wz-chat-send');
+  var inp = document.getElementById('chatInput');
+  var btn = document.getElementById('chatSend');
   if (!inp || !btn) return;
   var hasBlocking = _wzOrder.some(function(id){
     var c = _wzCards[id]; return c && _wzIsBlocking(c.step);

@@ -27,3 +27,5 @@ tmp_*.html
 
 # WikiChat overlay (auto-generated)
 .wikichat/
+
+.mcp.json.bak

@@ -339,10 +339,15 @@ class UserRegistry:
         if not user: return None
         sessions = user["sessions"]
         if not sessions: return None
-        if token: return sessions.get(token)
-        if len(sessions) == 1:
-            ctx = next(iter(sessions.values())); ctx.touch(); return ctx
-        return max(sessions.values(), key=lambda s: s.last_seen)
+        if token:
+            ctx = sessions.get(token)
+        elif len(sessions) == 1:
+            ctx = next(iter(sessions.values())); ctx.touch()
+        else:
+            ctx = max(sessions.values(), key=lambda s: s.last_seen)
+        if ctx and not ctx.grist_key and user.get("grist_key"):
+            ctx.grist_key = user["grist_key"]
+        return ctx
 
     def list_sessions(self, uid_key):
         user = self._users.get(uid_key)
@@ -431,15 +436,17 @@ async def grist_get(ctx, path):
         r = await c.get(f"{_base(ctx)}/{path}", headers=_gh(ctx), params=_aq(ctx))
         r.raise_for_status(); return r.json()
 
-async def grist_post(ctx, path, body):
+async def grist_post(ctx, path, body, *, no_token=False):
     async with _grist_client() as c:
-        r = await c.post(f"{_base(ctx)}/{path}", headers=_gh(ctx), params=_aq(ctx),
+        r = await c.post(f"{_base(ctx)}/{path}", headers=_gh(ctx),
+                         params={} if no_token else _aq(ctx),
                          content=json.dumps(body))
         r.raise_for_status(); return r.json()
 
-async def grist_patch(ctx, path, body):
+async def grist_patch(ctx, path, body, *, no_token=False):
     async with _grist_client() as c:
-        r = await c.patch(f"{_base(ctx)}/{path}", headers=_gh(ctx), params=_aq(ctx),
+        r = await c.patch(f"{_base(ctx)}/{path}", headers=_gh(ctx),
+                          params={} if no_token else _aq(ctx),
                           content=json.dumps(body))
         r.raise_for_status(); return r.json()
 
@@ -449,9 +456,10 @@ async def grist_put(ctx, path, body):
                         content=json.dumps(body))
         r.raise_for_status(); return r.json()
 
-async def grist_delete(ctx, path):
+async def grist_delete(ctx, path, *, no_token=False):
     async with _grist_client() as c:
-        r = await c.delete(f"{_base(ctx)}/{path}", headers=_gh(ctx), params=_aq(ctx))
+        r = await c.delete(f"{_base(ctx)}/{path}", headers=_gh(ctx),
+                           params={} if no_token else _aq(ctx))
         r.raise_for_status()
         return r.json() if r.content else {"ok": True}
 
@@ -548,21 +556,11 @@ async def _write_project_meta(ctx, need: str):
     if not ctx.doc_id or not ctx.site_url or not need:
         return
     try:
-        # Make sure Artefacts table exists (auto-init like artefact_init does)
-        try:
-            await grist_post(ctx, "sql",
-                {"sql": "SELECT 1 FROM Artefacts LIMIT 1"})
-        except Exception:
-            await grist_apply(ctx, [["AddTable", "Artefacts", [
-                {"id": "Nom",          "type": "Text"},
-                {"id": "Type",         "type": "Choice", "widgetOptions": json.dumps({"choices":["html","react","grist","app","markdown","mermaid","python","sql","svg"]})},
-                {"id": "Code",         "type": "Text"},
-                {"id": "Description",  "type": "Text"},
-                {"id": "Dependencies", "type": "Text"},
-                {"id": "IsDoc",        "type": "Bool"},
-                {"id": "Output",       "type": "Text"},
-                {"id": "UpdatedAt",    "type": "DateTime:Europe/Paris"},
-            ]]])
+        # Do NOT auto-create the Artefacts table here — if it doesn't exist,
+        # the upsert below will fail silently (fire-and-forget). Only the
+        # explicit artefact_init() tool should create the table, to avoid
+        # creating duplicates (Artefacts2) when the SQL probe fails due to
+        # WAF/network errors rather than a genuinely missing table.
         # Upsert by Nom
         await grist_put(ctx, "tables/Artefacts/records",
             {"records": [{
@@ -5090,7 +5088,7 @@ async def call_tool(uid_key, mcp_sid, name, args):
             if action == "create":
                 fields = args.get("fields", {})
                 result = await grist_post(ctx, "webhooks",
-                                          {"webhooks": [{"fields": fields}]})
+                                          {"webhooks": [{"fields": fields}]}, no_token=True)
                 return {"ok": True, "result": result}
             if action == "update":
                 wid = args.get("webhook_id")
@@ -5098,13 +5096,13 @@ async def call_tool(uid_key, mcp_sid, name, args):
                     return {"error": "webhook_id requis pour update"}
                 fields = args.get("fields", {})
                 result = await grist_patch(ctx, "webhooks",
-                                           {"webhooks": [{"id": wid, "fields": fields}]})
+                                           {"webhooks": [{"id": wid, "fields": fields}]}, no_token=True)
                 return {"ok": True, "result": result}
             if action == "delete":
                 wid = args.get("webhook_id")
                 if not wid:
                     return {"error": "webhook_id requis pour delete"}
-                result = await grist_delete(ctx, f"webhooks/{wid}")
+                result = await grist_delete(ctx, f"webhooks/{wid}", no_token=True)
                 return {"ok": True, "result": result}
             return {"error": f"action inconnue: {action}"}
         except Exception as e:
@@ -5894,6 +5892,47 @@ async def health(request: Request):
             "active_artefacts": active_arts,
         }
     return base
+
+
+# ── LLM proxy (Albert, SSPCloud, etc.) — bypasses CORS for browser widgets ──
+
+@app.api_route("/llm-proxy/{path:path}", methods=["GET", "POST", "OPTIONS"])
+async def llm_proxy(path: str, request: Request):
+    """Proxy LLM API calls to avoid CORS. Widget sends to /llm-proxy/..., we forward server-side."""
+    import httpx
+    # Get target base URL from header or query param
+    target_base = request.headers.get("X-LLM-Base") or request.query_params.get("base")
+    if not target_base:
+        return JSONResponse({"error": "Missing X-LLM-Base header or ?base= param"}, status_code=400)
+    target_base = target_base.rstrip("/")
+    target_url = f"{target_base}/{path}"
+    # Forward auth header
+    headers = {}
+    if auth := request.headers.get("authorization"):
+        headers["Authorization"] = auth
+    if request.method == "OPTIONS":
+        return Response(status_code=204, headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-LLM-Base",
+        })
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            if request.method == "GET":
+                resp = await client.get(target_url, headers=headers)
+            else:
+                body = await request.body()
+                headers["Content-Type"] = "application/json"
+                resp = await client.post(target_url, content=body, headers=headers)
+        return Response(
+            content=resp.content, status_code=resp.status_code,
+            headers={
+                "Content-Type": resp.headers.get("content-type", "application/json"),
+                "Access-Control-Allow-Origin": "*",
+            },
+        )
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
 
 
 @app.get("/", response_class=HTMLResponse)
