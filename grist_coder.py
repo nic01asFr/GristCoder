@@ -27,6 +27,12 @@ HOST_URL        = os.getenv("HOST_URL", "http://localhost:8742")
 WEBHOOK_SECRET  = os.getenv("WEBHOOK_SECRET", "")
 MCP_VER  = "2025-03-26"
 WIDGET_PATH = Path(__file__).parent / "widget.html"
+# Sessions in-memory : purge des sessions inactives au-dela de ce TTL (defaut 24h).
+SESSION_TTL     = int(os.getenv("SESSION_TTL", str(24 * 3600)))
+# /llm-proxy : liste blanche d hotes autorises (CSV). Vide = endpoint desactive (defaut).
+LLM_PROXY_ALLOWED_HOSTS = {
+    h.strip().lower() for h in os.getenv("LLM_PROXY_ALLOWED_HOSTS", "").split(",") if h.strip()
+}
 
 # Security warning: webhook receiver is unauthenticated unless WEBHOOK_SECRET is set.
 # If HOST_URL is publicly accessible (not localhost), this allows anyone to inject
@@ -276,7 +282,7 @@ class SessionCtx:
         self.plan_history: deque = deque(maxlen=50)  # [{ts, status, summary}] — timeline des transitions
         self.current_context: str = "qualifying"   # qualifying|assessing|designing|building|verifying|done
         self._active_wizard_cards: dict[str, dict] = {}  # card_id -> step dict (persist on SSE reconnect)
-        self._chat_history: list[dict] = []        # {role, content, ts} — replay sur reconnexion SSE
+        self._chat_history: deque = deque(maxlen=200)  # {role, content, ts} — replay sur reconnexion SSE
 
     def touch(self): self.last_seen = time.time()
 
@@ -353,6 +359,23 @@ class UserRegistry:
         user = self._users.get(uid_key)
         return [s.meta() for s in user["sessions"].values()] if user else []
 
+    def purge_expired(self, ttl_seconds):
+        """Supprime les sessions inactives depuis > ttl. Retourne (tokens_supprimes, uids_vides)."""
+        now = time.time()
+        removed_tokens, empty_uids = [], []
+        for uid, u in list(self._users.items()):
+            for tok, s in list(u["sessions"].items()):
+                if now - s.last_seen > ttl_seconds:
+                    del u["sessions"][tok]
+                    removed_tokens.append(tok)
+            if not u["sessions"]:
+                empty_uids.append(uid)
+        for uid in empty_uids:
+            u = self._users.pop(uid, None)
+            if u and u.get("grist_key"):
+                self._grist_key_to_uid.pop(u["grist_key"], None)
+        return removed_tokens, empty_uids
+
 
 registry  = UserRegistry()
 _token_to_uid: dict[str, str] = {}
@@ -363,9 +386,31 @@ _display_sids: set[str] = set()              # sids des widgets en display mode 
 _sampling_waiters: dict[str, asyncio.Future] = {}  # smp_id -> Future pour sampling/createMessage
 _chat_waiters: dict[str, asyncio.Future] = {}      # uid_key -> Future pour wait_for_chat
 
+# ── SECURITY HELPERS ──────────────────────────────────────────────────────────
+
+_SECRET_RE = re.compile(r'(auth=)[^&\s"\'\\]+')
+_BEARER_RE = re.compile(r'(Bearer\s+)[A-Za-z0-9._\-]+')
+
+def _scrub_secrets(text):
+    """Masque les tokens (auth=..., Bearer ...) avant de renvoyer une erreur au client."""
+    if not text:
+        return text
+    s = _SECRET_RE.sub(r'\1[redacted]', str(text))
+    return _BEARER_RE.sub(r'\1[redacted]', s)
+
+async def _read_json(request, *, default=None):
+    """Parse le body JSON en tolerant l'absence/malformation. Retourne (data, err) ; err=JSONResponse ou None."""
+    try:
+        return await request.json(), None
+    except Exception:
+        if default is not None:
+            return default, None
+        return None, JSONResponse({"error": "Corps de requete JSON invalide"}, status_code=400)
+
 # ── SSE ───────────────────────────────────────────────────────────────────────
 
 _queues: dict[str, asyncio.Queue] = {}
+_sid_uid: dict[str, str] = {}   # sid SSE -> uid_key proprietaire (routage du fan-out par user)
 
 _WIZARD_EVENT_TYPES = {"wizard_step", "wizard_close", "context_update"}
 
@@ -373,6 +418,8 @@ def _push(uid_key, event):
     event["_user"] = uid_key
     is_wizard_event = event.get("type") in _WIZARD_EVENT_TYPES
     for sid, q in _queues.items():
+        if _sid_uid.get(sid) != uid_key:
+            continue  # Router uniquement vers les SSE de ce user (pas de pollution cross-user)
         if is_wizard_event and sid in _display_sids:
             continue  # Ne pas envoyer les events wizard aux widgets en display mode
         try:
@@ -4644,7 +4691,9 @@ async def call_tool(uid_key, mcp_sid, name, args):
         ctx._wizard_events[step_id] = event
         try:
             await asyncio.wait_for(event.wait(), timeout=timeout)
-            resp = dict(ctx.wizard_responses[0]) if ctx.wizard_responses else {"status": "no_response", "step_id": step_id}
+            # Lire la reponse de CE step (pas la tete de deque, qui peut etre celle d un autre wizard)
+            resp_data = ctx._async_wizard_responses.pop(step_id, None)
+            resp = dict(resp_data) if resp_data else {"status": "no_response", "step_id": step_id}
             _enrich_wizard_response(resp, step_id, step_type, ctx)
             return resp
         except asyncio.TimeoutError:
@@ -4658,6 +4707,7 @@ async def call_tool(uid_key, mcp_sid, name, args):
         finally:
             ctx._wizard_events.pop(step_id, None)
             ctx._active_wizard_cards.pop(step_id, None)
+            ctx._async_wizard_responses.pop(step_id, None)
 
     if name == "canvas_wizard_close":
         card_id = args.get("card_id")
@@ -5473,7 +5523,8 @@ async def dispatch(uid_key, mcp_sid, method, params):
                              "Correction necessaire → canvas_patch pour ajuster."
                 }, ensure_ascii=False)},
             ]}
-        return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}]}
+        return {"content": [{"type": "text",
+                             "text": _scrub_secrets(json.dumps(result, ensure_ascii=False, indent=2))}]}
     if method == "prompts/list":
         return {"prompts": PROMPTS}
     if method == "prompts/get":
@@ -5506,13 +5557,35 @@ async def dispatch(uid_key, mcp_sid, method, params):
 
 # ── FASTAPI ───────────────────────────────────────────────────────────────────
 
+async def _purge_loop():
+    """Purge periodique des sessions inactives + nettoyage des maps annexes."""
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            tokens, uids = registry.purge_expired(SESSION_TTL)
+            for t in tokens:
+                _token_to_uid.pop(t, None)
+            for u in uids:
+                _client_capabilities.pop(u, None)
+                _mcp_client_sids.pop(u, None)
+                _chat_waiters.pop(u, None)
+            if tokens:
+                print(f"[purge] {len(tokens)} session(s) expiree(s), {len(uids)} user(s) nettoye(s)",
+                      file=sys.stderr)
+        except Exception as e:
+            print(f"[purge] erreur : {type(e).__name__}", file=sys.stderr)
+
 @asynccontextmanager
 async def lifespan(app):
-    print(f"Grist Coder v5.5 · {HOST_URL}")
+    print(f"Grist Coder v5.12 · {HOST_URL}")
     print(f"  tools: {len(TOOLS)}  prompts: {len(PROMPTS)}")
     print(f"  resources: {len(STATIC_RESOURCES)} static + {len(RESOURCE_TEMPLATES)} templates")
     print(f"  widget: {'widget.html' if WIDGET_PATH.exists() else 'MANQUANT'}")
-    yield
+    purge_task = asyncio.create_task(_purge_loop())
+    try:
+        yield
+    finally:
+        purge_task.cancel()
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
@@ -5562,7 +5635,13 @@ async def mcp_post(request: Request,
     if not uid_key:
         return JSONResponse({"error": "Token inconnu ou expire. Rechargez le widget."}, status_code=401)
     mcp_sid  = mcp_session_id or str(uuid.uuid4())
-    body     = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"jsonrpc": "2.0", "id": None,
+             "error": {"code": -32700, "message": "Parse error : corps JSON invalide"}},
+            status_code=400, headers={"Mcp-Session-Id": mcp_sid})
     is_batch = isinstance(body, list)
     reqs     = body if is_batch else [body]
     responses = []
@@ -5581,7 +5660,7 @@ async def mcp_post(request: Request,
             result = await dispatch(uid_key, mcp_sid, req.get("method",""), req.get("params",{}))
             responses.append({"jsonrpc":"2.0","id":req_id,"result":result})
         except Exception as e:
-            responses.append({"jsonrpc":"2.0","id":req_id,"error":{"code":-32603,"message":str(e)}})
+            responses.append({"jsonrpc":"2.0","id":req_id,"error":{"code":-32603,"message":_scrub_secrets(str(e))}})
     if not responses: return Response(status_code=202)
     payload = responses if is_batch else responses[0]
     return JSONResponse(payload, headers={"Mcp-Session-Id": mcp_sid})
@@ -5607,6 +5686,7 @@ async def mcp_sse(request: Request,
     sid = mcp_session_id or str(uuid.uuid4())
     is_display = request.query_params.get("display") == "1"
     _queues[sid] = asyncio.Queue(maxsize=64)
+    _sid_uid[sid] = uid_key
     if is_display:
         _display_sids.add(sid)
     if is_mcp_client:
@@ -5620,7 +5700,7 @@ async def mcp_sse(request: Request,
                 except asyncio.QueueFull: pass
         # Re-push chat history on reconnect
         if ctx_for_replay and ctx_for_replay._chat_history:
-            for msg in ctx_for_replay._chat_history[-20:]:
+            for msg in list(ctx_for_replay._chat_history)[-20:]:
                 try:
                     _queues[sid].put_nowait({
                         "type": "chat_message", "_user": uid_key,
@@ -5644,6 +5724,7 @@ async def mcp_sse(request: Request,
                     yield ": ping\n\n"
         finally:
             _queues.pop(sid, None)
+            _sid_uid.pop(sid, None)
             _display_sids.discard(sid)
             # Nettoyer le sid MCP client si c'était lui + cancel any sampling
             # waiters that were targeting this disconnected client
@@ -5663,12 +5744,14 @@ async def mcp_sse(request: Request,
 @app.delete("/mcp")
 async def mcp_delete(mcp_session_id: str | None = Header(default=None, alias="Mcp-Session-Id")):
     _queues.pop(mcp_session_id, None)
+    _sid_uid.pop(mcp_session_id, None)
     return Response(status_code=204)
 
 
 @app.post("/register")
 async def register(request: Request):
-    data         = await request.json()
+    data, err = await _read_json(request)
+    if err: return err
     access_token = data.get("accessToken", "").strip()
     grist_key    = data.get("gristKey", "").strip()
     site_url     = data.get("siteUrl", "").rstrip("/")
@@ -5704,7 +5787,8 @@ async def register(request: Request):
 @app.post("/run")
 async def run_python(request: Request):
     """Execute Python canvas with Grist tables injected as context."""
-    body    = await request.json()
+    body, err = await _read_json(request)
+    if err: return err
     token   = body.get("token", "")
     record  = body.get("record") or {}
 
@@ -5770,7 +5854,8 @@ async def run_python(request: Request):
 
 @app.post("/screenshot")
 async def screenshot(request: Request):
-    data  = await request.json()
+    data, err = await _read_json(request)
+    if err: return err
     token = data.get("token", "")
     image = data.get("image", "")
     fut   = _screenshot_waiters.pop(token, None)
@@ -5789,19 +5874,21 @@ async def wizard_response(token: str, request: Request):
     ctx = registry.resolve(uid_key, token)
     if not ctx:
         return JSONResponse({"error": "session introuvable"}, status_code=404)
-    body = await request.json()
+    body, err = await _read_json(request)
+    if err: return err
     response = {**body, "ts": time.time()}
-    ctx.wizard_responses.appendleft(response)
+    ctx.wizard_responses.appendleft(response)  # conserve pour compat session_info
     step_id = body.get("step_id")
-    # Si card async : stocker la réponse par card_id pour polling via session_info
-    if step_id and ctx._active_wizard_cards.get(step_id, {}).get("_is_async"):
-        ctx._async_wizard_responses[step_id] = response
-    # Débloquer l'event si existant (mode bloquant)
-    if step_id and step_id in ctx._wizard_events:
-        ctx._wizard_events[step_id].set()
-    else:
-        for ev in list(ctx._wizard_events.values()):
-            ev.set()
+    if not step_id:
+        # Sans step_id on ne peut router la reponse a aucun wizard precis :
+        # ignorer plutot que debloquer tous les wizards en attente (corruption de flux).
+        return {"ok": True, "warning": "step_id manquant — reponse ignoree"}
+    # Stocker la reponse indexee par step_id (mode bloquant ET async) AVANT de debloquer,
+    # pour que le lecteur bloquant lise exactement la reponse de SON step.
+    ctx._async_wizard_responses[step_id] = response
+    ev = ctx._wizard_events.get(step_id)
+    if ev:
+        ev.set()
     return {"ok": True}
 
 
@@ -5814,7 +5901,8 @@ async def chat_message(token: str, request: Request):
     ctx = registry.resolve(uid_key, token)
     if not ctx:
         return JSONResponse({"error": "session introuvable"}, status_code=404)
-    body    = await request.json()
+    body, err = await _read_json(request)
+    if err: return err
     message = body.get("message", "").strip()
     if not message:
         return JSONResponse({"error": "message vide"}, status_code=400)
@@ -5898,24 +5986,37 @@ async def health(request: Request):
 
 @app.api_route("/llm-proxy/{path:path}", methods=["GET", "POST", "OPTIONS"])
 async def llm_proxy(path: str, request: Request):
-    """Proxy LLM API calls to avoid CORS. Widget sends to /llm-proxy/..., we forward server-side."""
+    """Proxy LLM API calls to avoid CORS. Widget sends to /llm-proxy/..., we forward server-side.
+
+    SECURITE : la cible doit figurer dans LLM_PROXY_ALLOWED_HOSTS (CSV en .env).
+    Sans allowlist configuree, l endpoint est desactive (evite open-proxy / SSRF)."""
     import httpx
-    # Get target base URL from header or query param
-    target_base = request.headers.get("X-LLM-Base") or request.query_params.get("base")
-    if not target_base:
-        return JSONResponse({"error": "Missing X-LLM-Base header or ?base= param"}, status_code=400)
-    target_base = target_base.rstrip("/")
-    target_url = f"{target_base}/{path}"
-    # Forward auth header
-    headers = {}
-    if auth := request.headers.get("authorization"):
-        headers["Authorization"] = auth
     if request.method == "OPTIONS":
         return Response(status_code=204, headers={
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type, Authorization, X-LLM-Base",
         })
+    if not LLM_PROXY_ALLOWED_HOSTS:
+        return JSONResponse(
+            {"error": "llm-proxy desactive : definir LLM_PROXY_ALLOWED_HOSTS dans .env"},
+            status_code=403)
+    # Get target base URL from header or query param
+    target_base = request.headers.get("X-LLM-Base") or request.query_params.get("base")
+    if not target_base:
+        return JSONResponse({"error": "Missing X-LLM-Base header or ?base= param"}, status_code=400)
+    target_base = target_base.rstrip("/")
+    parsed = urllib.parse.urlsplit(target_base)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return JSONResponse({"error": "URL cible invalide"}, status_code=400)
+    if parsed.hostname.lower() not in LLM_PROXY_ALLOWED_HOSTS:
+        return JSONResponse(
+            {"error": f"Hote non autorise : {parsed.hostname}"}, status_code=403)
+    target_url = f"{target_base}/{path}"
+    # Forward auth header
+    headers = {}
+    if auth := request.headers.get("authorization"):
+        headers["Authorization"] = auth
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             if request.method == "GET":
@@ -5932,7 +6033,7 @@ async def llm_proxy(path: str, request: Request):
             },
         )
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=502)
+        return JSONResponse({"error": _scrub_secrets(str(e))}, status_code=502)
 
 
 @app.get("/", response_class=HTMLResponse)
