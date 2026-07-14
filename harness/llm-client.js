@@ -81,6 +81,12 @@
     if (data.error && typeof data.error === "object") {              // format OpenAI
       return data.error.message || data.error.type || JSON.stringify(data.error);
     }
+    // format FastAPI / SSPCloud : {"detail": "Model not found"} ou [{msg,...}]
+    if (typeof data.detail === "string") return data.detail;
+    if (Array.isArray(data.detail) && data.detail.length) {
+      var d0 = data.detail[0];
+      return (d0 && (d0.msg || d0.message)) || JSON.stringify(data.detail).slice(0, 200);
+    }
     if (typeof data.message === "string") return data.message;       // format Anthropic
     if (data._text) return String(data._text).slice(0, 400);
     return "";
@@ -123,6 +129,10 @@
       "X-LLM-Base": opts.baseUrl || "",
       "Authorization": "Bearer " + (opts.apiKey || "")
     };
+    // Anthropic exige anthropic-version ; le proxy le relaie (liste blanche).
+    if (opts.provider === "anthropic") {
+      headers["anthropic-version"] = "2023-06-01";
+    }
 
     // AbortController interne (timeout) chaine avec un signal externe optionnel.
     var ctrl = new AbortController();

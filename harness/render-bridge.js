@@ -109,8 +109,61 @@
     } catch (e) { _log('echoUser a echoue', e); }
   }
 
+  // _normalizeCard(step) : garantit qu'une carte issue du LLM (ask_user) est
+  // TOUJOURS repondable. Un LLM peut mal former une carte (choix manquants,
+  // type absent) ; sans ca la carte bloquante n'aurait aucun controle et
+  // l'utilisateur serait coince. On infere le type et on replie en saisie
+  // libre si les choix/champs sont invalides.
+  function _normChoices(arr) {
+    if (!Array.isArray(arr)) return null;
+    var out = [];
+    for (var i = 0; i < arr.length; i++) {
+      var c = arr[i];
+      if (c == null) continue;
+      if (typeof c === 'string') { out.push({ id: c, label: c }); continue; }
+      if (typeof c === 'object') {
+        var id = (c.id != null) ? c.id : (c.value != null ? c.value : (c.label != null ? c.label : String(i)));
+        var label = (c.label != null) ? c.label : (c.text != null ? c.text : String(id));
+        var o = { id: String(id), label: String(label) };
+        if (c.icon) o.icon = c.icon;
+        if (c.desc || c.description) o.desc = c.desc || c.description;
+        out.push(o);
+      }
+    }
+    return out.length ? out : null;
+  }
+
+  function _normalizeCard(step) {
+    var s = step;
+    if (!s.title && s.text) s.title = String(s.text).slice(0, 120);
+    if (!s.title) s.title = 'Question';
+    var VALID = { choice: 1, form: 1, confirm: 1, info: 1, input: 1, preview: 1, 'data-import': 1 };
+    var choices = _normChoices(s.choices || s.options || s.choix);
+    var t = (s.type || '').toLowerCase();
+    if (!VALID[t]) {
+      if (choices) t = 'choice';
+      else if (Array.isArray(s.fields) && s.fields.length) t = 'form';
+      else if (Array.isArray(s.actions) && s.actions.length) t = 'confirm';
+      else t = 'input';
+    }
+    if (t === 'choice') {
+      if (choices) { s.choices = choices; }
+      else { t = 'input'; }               // choix demandes mais invalides -> saisie libre
+    }
+    if (t === 'form' && !(Array.isArray(s.fields) && s.fields.length)) t = 'input';
+    if (t === 'confirm') {
+      if (!Array.isArray(s.actions) || !s.actions.length) {
+        s.actions = [{ id: 'ok', label: 'OK', style: 'primary' }, { id: 'cancel', label: 'Annuler' }];
+      }
+      if (!s.content) s.content = s.text || s.subtitle || s.title;
+    }
+    if (t === 'input' && !s.placeholder) s.placeholder = 'Votre reponse…';
+    s.type = t;
+    return s;
+  }
+
   // renderCard(step) -> Promise<{type, values}>
-  //   - assigne step.id si absent ('h-...')
+  //   - normalise la carte (toujours repondable), assigne step.id si absent
   //   - enregistre un waiter local dans _local[step.id]
   //   - delegue le rendu a showWizardCard(step, token) : routage Zone1/2/3,
   //     blocking, mermaid, tous types (plan|choice|form|confirm|info|input|
@@ -120,6 +173,7 @@
     if (!step || typeof step !== 'object') {
       return Promise.reject(new Error('renderCard: step invalide'));
     }
+    step = _normalizeCard(step);
     if (!step.id) step.id = _genId();
     var w = _ensureWaiter(step.id);
     try {

@@ -340,6 +340,11 @@
 
     _busy = true;
     _stopped = false;
+    // Relit la config a chaud : un Enregistrer dans le panneau s'applique au prochain
+    // message sans avoir a re-Lancer l'agent.
+    if (window.HarnessConfig && typeof window.HarnessConfig.get === 'function') {
+      try { _cfg = window.HarnessConfig.get() || _cfg; } catch (_) {}
+    }
     _memAdd({ role: 'user', content: String(text) });
 
     var iter = 0;        // tours d'outils "productifs" (>=1 outil non ask_user)

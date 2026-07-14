@@ -43,20 +43,38 @@
     {
       name: 'ask_user',
       description:
-        'Pose une question a l\'utilisateur en affichant une carte interactive (wizard) et ' +
-        'attend sa reponse. Utilise pour clarifier un besoin, proposer des choix, faire ' +
-        'confirmer une action, ou collecter des donnees via un formulaire. Renvoie la ' +
-        'reponse de l\'utilisateur (type + valeurs).',
+        'Pose une question a l\'utilisateur via une carte interactive (wizard) et attend sa reponse. ' +
+        'Carte BLOQUANTE. Formats de card selon le besoin :\n' +
+        '  - choix : {"type":"choice","title":"...","choices":[{"id":"a","label":"Option A"},...]} -> reponse {selected:id}\n' +
+        '  - confirmation : {"type":"confirm","title":"...","content":"markdown","actions":[{"id":"ok","label":"Valider"}]}\n' +
+        '  - formulaire : {"type":"form","title":"...","fields":[{"id":"nom","type":"text","label":"Nom"}]}\n' +
+        '  - texte libre : {"type":"input","title":"...","placeholder":"..."} -> reponse {text}\n' +
+        'Pour un choix, TOUJOURS fournir choices en tableau d\'objets {id,label}.',
       inputSchema: {
         type: 'object',
         properties: {
           card: {
             type: 'object',
-            description:
-              'Etape wizard a afficher. Champ "type" parmi : choice | form | confirm | ' +
-              'info | input | preview | data-import. Selon le type : title, text, ' +
-              'choices[], fields[], mermaid, etc. La carte est bloquante : l\'appel ne ' +
-              'rend la main qu\'une fois l\'utilisateur ayant soumis.'
+            description: 'Carte wizard. Recommande : {type, title, choices|fields|actions|placeholder}.',
+            properties: {
+              type: { type: 'string', enum: ['choice', 'form', 'confirm', 'info', 'input'] },
+              title: { type: 'string' },
+              content: { type: 'string', description: 'Markdown (confirm/info)' },
+              placeholder: { type: 'string', description: 'input : texte d\'aide' },
+              choices: {
+                type: 'array', description: 'choice : options',
+                items: { type: 'object', properties: { id: { type: 'string' }, label: { type: 'string' }, desc: { type: 'string' } } }
+              },
+              fields: {
+                type: 'array', description: 'form : champs',
+                items: { type: 'object', properties: { id: { type: 'string' }, type: { type: 'string' }, label: { type: 'string' } } }
+              },
+              actions: {
+                type: 'array', description: 'confirm : boutons',
+                items: { type: 'object', properties: { id: { type: 'string' }, label: { type: 'string' } } }
+              }
+            },
+            required: ['type', 'title']
           }
         },
         required: ['card']
@@ -204,33 +222,9 @@
     return _tools.slice();
   }
 
-  // ── defsFor(provider) : conversion vers le format attendu par l'API LLM ─────
-  function defsFor(provider) {
-    var p = (provider || 'openai').toLowerCase();
-    var out = [];
-    for (var i = 0; i < _tools.length; i++) {
-      var t = _tools[i];
-      var schema = t.inputSchema || { type: 'object', properties: {} };
-      if (p === 'anthropic') {
-        out.push({
-          name: t.name,
-          description: t.description || '',
-          input_schema: schema
-        });
-      } else {
-        // openai (Albert / etalab compatible)
-        out.push({
-          type: 'function',
-          function: {
-            name: t.name,
-            description: t.description || '',
-            parameters: schema
-          }
-        });
-      }
-    }
-    return out;
-  }
+  // NB : la conversion des definitions d'outils vers le format natif (openai/anthropic)
+  // est faite par HarnessLLM (adapter.buildBody). Le loop passe list() (defs brutes avec
+  // inputSchema) ; pas de conversion ici pour eviter une double logique.
 
   // ── Serialisation bornee d'un retour d'outil (pour reinjection au LLM) ──────
   function _serialize(value) {
@@ -333,7 +327,6 @@
 
   global.HarnessTools = {
     load: load,
-    defsFor: defsFor,
     execute: execute,
     list: list,
     has: has,

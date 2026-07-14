@@ -6273,10 +6273,15 @@ async def llm_proxy(path: str, request: Request):
         return JSONResponse(
             {"error": f"Hote non autorise : {parsed.hostname}"}, status_code=403)
     target_url = f"{target_base}/{path}"
-    # Forward auth header
+    # Relaye l'auth + les headers utiles aux API LLM (Anthropic exige anthropic-version).
+    # Liste blanche pour ne pas propager d'en-tetes navigateur non pertinents.
     headers = {}
     if auth := request.headers.get("authorization"):
         headers["Authorization"] = auth
+    for h in ("anthropic-version", "anthropic-beta", "openai-organization", "x-api-key"):
+        v = request.headers.get(h)
+        if v:
+            headers[h] = v
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             if request.method == "GET":
