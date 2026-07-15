@@ -231,6 +231,87 @@
     });
   }
 
+  // ── Sous-agents specialistes (WS0) ─────────────────────────────────────────
+  // Reutilise les prompts de roles du core SANS duplication : subagent_call en
+  // fallback_mode renvoie {system_prompt, task}, puis on fait un appel LLM dedie
+  // (hors memoire principale, sans outils). Roles : data-architect, ui-designer,
+  // page-architect, ux-navigator, data-analyst, integrator, assistant.
+  function _extractJson(text) {
+    if (typeof text !== 'string') return null;
+    // Tente le premier objet JSON equilibre dans le texte (gemma prefixe parfois).
+    var start = text.indexOf('{');
+    if (start < 0) return null;
+    var depth = 0, inStr = false, esc = false;
+    for (var i = start; i < text.length; i++) {
+      var ch = text[i];
+      if (esc) { esc = false; continue; }
+      if (ch === '\\') { esc = true; continue; }
+      if (ch === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (ch === '{') depth++;
+      else if (ch === '}') { depth--; if (depth === 0) {
+        try { return JSON.parse(text.slice(start, i + 1)); } catch (_) { return null; }
+      } }
+    }
+    return null;
+  }
+
+  // _askSpecialist(role, task, context?) -> Promise<objet structure | {response} | {error}>
+  function _askSpecialist(role, task, context) {
+    role = role || 'assistant';
+    var toolFn = window.tool;
+    if (typeof toolFn !== 'function') {
+      return Promise.resolve({ error: 'fonction tool() indisponible' });
+    }
+    return Promise.resolve()
+      .then(function () {
+        return toolFn('subagent_call', { role: role, task: String(task || ''), context: String(context || '') });
+      })
+      .then(function (res) {
+        // Chemin sampling (client MCP capable) : reponse deja produite par le core.
+        if (res && res.structured) return res.structured;
+        if (res && res.response) {
+          return _extractJson(res.response) || { response: String(res.response) };
+        }
+        // Chemin fallback (navigateur, defaut) : on execute nous-memes le prompt.
+        var sys = res && res.system_prompt;
+        if (!sys) return { error: 'subagent_call: pas de system_prompt pour role ' + role };
+        var userMsg = res.task || String(task || '');
+        return _callLLM([
+          { role: 'system', content: sys },
+          { role: 'user', content: userMsg }
+        ], [], 1536).then(function (r) {
+          var text = (r && (r.text != null ? r.text : r.content)) || '';
+          return _extractJson(text) || { response: String(text) };
+        });
+      })
+      .catch(function (e) {
+        return { error: (e && e.message) ? e.message : String(e) };
+      });
+  }
+
+  // _askSpecialistsParallel([{role,task,context?}, ...]) -> Promise<Array>
+  // SSPCloud illimite -> consultation en parallele. Cap prudent (6 concurrents)
+  // pour ne pas saturer le proxy ; au-dela, on met en file par lots.
+  function _askSpecialistsParallel(specs, concurrency) {
+    specs = Array.isArray(specs) ? specs : [];
+    var cap = concurrency || 6;
+    var out = new Array(specs.length);
+    var idx = 0;
+    function worker() {
+      if (idx >= specs.length) return Promise.resolve();
+      var my = idx++;
+      var s = specs[my] || {};
+      return _askSpecialist(s.role, s.task, s.context).then(function (r) {
+        out[my] = r;
+        return worker();
+      });
+    }
+    var starters = [];
+    for (var k = 0; k < Math.min(cap, specs.length); k++) starters.push(worker());
+    return Promise.all(starters).then(function () { return out; });
+  }
+
   // ── Compaction : resume court via un appel LLM sans outils ─────────────────
   function _summarize(payload) {
     var content;
@@ -509,6 +590,9 @@
     stop: stop,
     isBusy: isBusy,
     isStarted: isStarted,
+    // Sous-agents specialistes (WS0) : reutilisent les prompts de roles du core.
+    askSpecialist: _askSpecialist,
+    askSpecialistsParallel: _askSpecialistsParallel,
     // Constantes exposees pour reglage/diagnostic depuis le panneau de config.
     MAX_ITERATIONS: MAX_ITERATIONS,
     TIMEOUT_MS: TIMEOUT_MS,
