@@ -98,6 +98,24 @@
         },
         required: ['text']
       }
+    },
+    {
+      name: 'plan_design',
+      description:
+        'Consulte EN PARALLELE des sous-agents specialistes (architecte de donnees, ' +
+        'designer UI, architecte de pages) pour obtenir un design de qualite AVANT de ' +
+        'construire une application non triviale. Retourne un plan structure : schema de ' +
+        'tables, artefacts interactifs recommandes, layout de pages. A utiliser une fois, ' +
+        'apres avoir cerne le besoin, pour cadrer la construction (pas pour une modif simple).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          brief: { type: 'string', description: 'Description du besoin metier a concevoir (1-3 phrases + entites connues).' },
+          need_ui: { type: 'boolean', description: 'Consulter le designer UI (defaut true).' },
+          need_pages: { type: 'boolean', description: 'Consulter l\'architecte de pages (defaut true).' }
+        },
+        required: ['brief']
+      }
     }
   ];
 
@@ -249,6 +267,36 @@
       if (typeof text !== 'string') text = _serialize(text);
       R.say(text);
       return { ok: true };
+    }
+
+    if (name === 'plan_design') {
+      var A = global.HarnessAgent;
+      if (!A || typeof A.askSpecialistsParallel !== 'function') {
+        return { error: 'sous-agents specialistes indisponibles (HarnessAgent.askSpecialistsParallel)' };
+      }
+      var brief = String((args && args.brief) || '').trim();
+      if (!brief) return { error: 'plan_design : "brief" (description du besoin) requis' };
+      var wantUi = (args.need_ui !== false);
+      var wantPages = (args.need_pages !== false);
+      var specs = [{ role: 'data-architect',
+                     task: 'Concois le schema de donnees Grist optimal pour : ' + brief,
+                     context: brief }];
+      if (wantUi) specs.push({ role: 'ui-designer',
+                     task: 'Concois les artefacts INTERACTIFS (formulaires ajout/edition cables au bridge) pour : ' + brief,
+                     context: brief });
+      if (wantPages) specs.push({ role: 'page-architect',
+                     task: 'Concois le layout de pages (dashboard/fiche/liste, widget-seul si pertinent) pour : ' + brief,
+                     context: brief });
+      // Parallelise (SSPCloud illimite). Chaque entree = design d'un specialiste.
+      var results = await A.askSpecialistsParallel(specs);
+      var merged = { brief: brief };
+      for (var i = 0; i < specs.length; i++) {
+        merged[specs[i].role] = results[i] || { error: 'pas de reponse' };
+      }
+      merged._hint = 'Design consolide. Construis maintenant : tables (grist_apply AddTable) ' +
+                     'puis artefacts interactifs (grist_upsert + canvas_write) puis pages ' +
+                     '(grist_view_create, widget_only si dashboard/fiche autonome).';
+      return merged;
     }
 
     throw new Error('Outil synthetique inconnu : ' + name);
