@@ -36,7 +36,8 @@
     baseUrl: '',          // hote+prefixe passe en X-LLM-Base (sans le path adaptateur)
     model: '',
     apiKey: '',
-    maxTokens: 4096
+    maxTokens: 4096,
+    temperature: 0.25     // bas par defaut : le tool-calling gagne en determinisme
   };
 
   // Presets. Seul 'openai' (Albert) est pleinement fonctionnel via le proxy.
@@ -121,6 +122,10 @@
           if (typeof parsed.apiKey === 'string') cfg.apiKey = parsed.apiKey;
           var mt = parseInt(parsed.maxTokens, 10);
           if (isFinite(mt) && mt > 0) cfg.maxTokens = mt;
+          if (parsed.temperature != null) {
+            var tp = parseFloat(parsed.temperature);
+            if (isFinite(tp) && tp >= 0 && tp <= 2) cfg.temperature = tp;
+          }
         }
       }
     } catch (e) {
@@ -136,11 +141,16 @@
       baseUrl: (cfg && typeof cfg.baseUrl === 'string') ? cfg.baseUrl.trim() : cur.baseUrl,
       model: (cfg && typeof cfg.model === 'string') ? cfg.model.trim() : cur.model,
       apiKey: (cfg && typeof cfg.apiKey === 'string') ? cfg.apiKey : cur.apiKey,
-      maxTokens: cur.maxTokens
+      maxTokens: cur.maxTokens,
+      temperature: cur.temperature
     };
     if (cfg && cfg.maxTokens != null) {
       var mt = parseInt(cfg.maxTokens, 10);
       if (isFinite(mt) && mt > 0) next.maxTokens = mt;
+    }
+    if (cfg && cfg.temperature != null) {
+      var tp = parseFloat(cfg.temperature);
+      if (isFinite(tp) && tp >= 0 && tp <= 2) next.temperature = tp;
     }
     try {
       window.localStorage.setItem(LS_KEY, JSON.stringify(next));
@@ -249,6 +259,8 @@
       + '<input id="hcKey" type="password" placeholder="jamais loggee" autocomplete="off" spellcheck="false">'
       + '<label for="hcMaxTokens">max_tokens</label>'
       + '<input id="hcMaxTokens" type="number" min="1" step="1" placeholder="4096">'
+      + '<label for="hcTemp">temperature (bas = plus fiable pour les outils)</label>'
+      + '<input id="hcTemp" type="number" min="0" max="2" step="0.05" placeholder="0.25">'
       + '<div id="hcMsg" class="hc-msg" hidden></div>'
       + '<div class="hc-actions">'
       + '  <button type="button" id="hcSave">Enregistrer</button>'
@@ -264,7 +276,8 @@
       baseUrl: _q('hcBase') ? _q('hcBase').value.trim() : '',
       model: _q('hcModel') ? _q('hcModel').value.trim() : '',
       apiKey: _q('hcKey') ? _q('hcKey').value : '',
-      maxTokens: _q('hcMaxTokens') ? parseInt(_q('hcMaxTokens').value, 10) : DEFAULTS.maxTokens
+      maxTokens: _q('hcMaxTokens') ? parseInt(_q('hcMaxTokens').value, 10) : DEFAULTS.maxTokens,
+      temperature: _q('hcTemp') && _q('hcTemp').value !== '' ? parseFloat(_q('hcTemp').value) : DEFAULTS.temperature
     };
   }
 
@@ -274,6 +287,7 @@
     if (_q('hcModel')) _q('hcModel').value = cfg.model || '';
     if (_q('hcKey')) _q('hcKey').value = cfg.apiKey || '';
     if (_q('hcMaxTokens')) _q('hcMaxTokens').value = cfg.maxTokens || DEFAULTS.maxTokens;
+    if (_q('hcTemp')) _q('hcTemp').value = (cfg.temperature != null ? cfg.temperature : DEFAULTS.temperature);
     _syncPresetHighlight();
     _syncProviderWarning();
   }

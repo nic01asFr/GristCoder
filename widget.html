@@ -1474,7 +1474,9 @@ function updatePlanBanner(step) {
   }
   banner.style.display = 'block';
   var secs = step.sections || [];
-  var ctx = _currentContext || 'qualifying';
+  // Phase explicite du step (pilotee par le harness/contexte) prioritaire sur _currentContext.
+  var ctx = step.phase || _currentContext || 'qualifying';
+  if (step.phase) _currentContext = step.phase;  // garde la puce et le reste en phase
   // Progress bar : valeur du step, sinon derivee de la phase courante
   var pct = (typeof step.progress === 'number' && step.progress > 0)
     ? step.progress : (_PHASE_PCT[ctx] || 0);

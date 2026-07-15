@@ -202,6 +202,9 @@
         max_tokens: cfg.maxTokens || DEFAULT_MAX_TOKENS,
         stream: false
       };
+      if (typeof cfg.temperature === "number" && isFinite(cfg.temperature)) {
+        body.temperature = cfg.temperature;
+      }
       if (tools && tools.length) {
         body.tools = tools.map(function (t) {
           return {
@@ -275,6 +278,9 @@
         max_tokens: cfg.maxTokens || DEFAULT_MAX_TOKENS,
         stream: false
       };
+      if (typeof cfg.temperature === "number" && isFinite(cfg.temperature)) {
+        body.temperature = cfg.temperature;
+      }
       if (cfg.system) body.system = cfg.system;
       if (tools && tools.length) {
         body.tools = tools.map(function (t) {
@@ -348,7 +354,8 @@
       body = adapter.buildBody(opts.messages || [], opts.tools || [], {
         model: opts.model,
         maxTokens: opts.maxTokens,
-        system: opts.system
+        system: opts.system,
+        temperature: opts.temperature
       });
     } catch (e) {
       return Promise.reject(new Error("Construction requete LLM impossible : " +

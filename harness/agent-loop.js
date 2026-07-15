@@ -66,7 +66,8 @@
     "REGLES :",
     "- REUTILISE l'existant. Avant de creer, inspecte : appelle grist_schema pour les tables et regarde les artefacts deja presents. N'implemente que l'optimal et peu complexe au regard de ce qui existe. Pas de sur-architecture.",
     "- CONTEXTE ARTEFACT : les outils canvas_* operent sur 'l'artefact selectionne'. AVANT tout canvas_write/canvas_patch/canvas_read, etablis ce contexte : cree/initialise l'artefact (grist_upsert avec Code vide PUIS canvas_write, ou artefact_init) et selectionne-le (canvas_select). Ne suppose jamais qu'un artefact est deja selectionne.",
-    "- DIALOGUE : pour PARLER a l'utilisateur, appelle l'outil say. Pour lui POSER une question ou demander une decision, appelle ask_user (formulaire/choix rendus dans le widget). Pour montrer l'avancement, appelle update_plan. Ne reste jamais silencieux pendant que tu agis : accompagne tes actions d'un say bref.",
+    "- DIALOGUE : pour PARLER a l'utilisateur, appelle l'outil say. Pour lui POSER une question ou demander une decision, appelle ask_user (formulaire/choix rendus dans le widget). L'avancement est affiche AUTOMATIQUEMENT (barre de plan) : tu n'as PAS a annoncer chaque action.",
+    "- SOIS ECONOME EN MOTS : n'ecris PAS un say avant chaque outil. Enchaine les outils directement. Utilise say UNIQUEMENT pour (1) un jalon important, (2) une question via ask_user, (3) le resume final. Pas de 'je vais...', pas de 'X ajoute !', pas d'excuses.",
     "- Ne demande a l'humain que ce qui est reellement necessaire (besoin, choix structurants). Sinon, avance.",
     "- ERREUR 500 sur un outil (grist_apply, grist_records_*) : c'est le plus souvent un alea TRANSITOIRE de l'instance (WAF), PAS un document casse. Le serveur reessaie deja tout seul. Si tu la vois quand meme : attends implicitement puis REESSAIE LA MEME action une ou deux fois. Ne conclus JAMAIS que le document est casse, ne demande JAMAIS a l'utilisateur de creer un nouveau document. Persiste : cree les tables une par une si un lot echoue.",
     "- Sois concis et factuel. Reponds en francais.",
@@ -220,6 +221,7 @@
       model:    _cfg && _cfg.model,
       apiKey:   _cfg && _cfg.apiKey,
       maxTokens: maxTokensOverride || (_cfg && _cfg.maxTokens) || 2048,
+      temperature: (_cfg && typeof _cfg.temperature === 'number') ? _cfg.temperature : 0.25,
       system:   conv.system,
       messages: conv.messages,
       tools:    tools || [],
@@ -286,6 +288,65 @@
     });
   }
 
+  // ── Plan pilote par le CONTEXTE SERVEUR (context/{token} -> _inferred_plan) ─
+  // Le core calcule deja, a partir de l'etat REEL du doc, le status + la
+  // completude + les anomalies. On lit ce snapshot et on le projette sur le
+  // bandeau de plan : progression deterministe et juste, sans dependre de la
+  // discipline du LLM. Throttle pour ne pas marteler le serveur.
+  var _lastPlanFetch = 0;
+  var _planFetchInFlight = false;
+
+  function _fetchContextSnapshot() {
+    var token = window._token;
+    var base = window.BASE || (window.location && window.location.origin) || '';
+    if (!token) return Promise.resolve(null);
+    return fetch(base + '/mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 'harness-ctx', method: 'resources/read',
+        params: { uri: 'grist-coder://context/' + token }
+      })
+    }).then(function (r) { return r.json(); }).then(function (data) {
+      var c = data && data.result && data.result.contents && data.result.contents[0];
+      if (!c || !c.text) return null;
+      try { return JSON.parse(c.text); } catch (_) { return null; }
+    }).catch(function () { return null; });
+  }
+
+  function _planStepFromContext(snap) {
+    var inf = (snap && snap._inferred_plan) || {};
+    var phase = inf.status || 'building';
+    var pct = Math.round(((typeof inf.completeness === 'number') ? inf.completeness : 0) * 100);
+    var tables = (snap.tables || []).filter(function (t) { return String(t).toLowerCase() !== 'artefacts'; });
+    var arts = (snap.artefacts || []).filter(function (a) { return a && !a.isDoc; });
+    var pages = snap.pages || [];
+    var quality = snap._quality || [];
+    var sections = [
+      { label: 'Tables', style: 'code',
+        content: String(tables.length) + (tables.length ? ' — ' + tables.slice(0, 4).join(', ') + (tables.length > 4 ? '…' : '') : '') },
+      { label: 'Artefacts', style: 'code', content: String(arts.length) },
+      { label: 'Pages', style: (pages.length ? 'code' : 'warn'), content: String(pages.length) }
+    ];
+    if (quality.length) sections.push({ label: 'A finaliser', style: 'warn', content: quality.length + ' point(s)' });
+    return {
+      id: 'ctx-plan-progress', type: 'progress', phase: phase, progress: pct,
+      title: 'Plan · construction en cours', sections: sections
+    };
+  }
+
+  function _refreshPlanFromContext(force) {
+    var now = Date.now();
+    if (!force && (_planFetchInFlight || (now - _lastPlanFetch) < 1500)) return;
+    _planFetchInFlight = true; _lastPlanFetch = now;
+    _fetchContextSnapshot().then(function (snap) {
+      if (!snap) return;
+      var step = _planStepFromContext(snap);
+      var R = _render();
+      if (R && typeof R.updatePlan === 'function') { try { R.updatePlan(step); } catch (_) {} }
+    }).catch(function () {}).then(function () { _planFetchInFlight = false; });
+  }
+
   // ── API publique ──────────────────────────────────────────────────────────
 
   // start(cfg) : initialise le pilote local, charge les outils, cree la memoire,
@@ -297,7 +358,7 @@
     // 1. Pilote local : le rendu (cartes, chat) route desormais vers l'agent local.
     _setDriverLocal();
 
-    // 2. Charge les definitions d'outils MCP (+ synthetiques ask_user/update_plan/say).
+    // 2. Charge les definitions d'outils MCP (+ synthetiques ask_user/say).
     var loadP = (window.HarnessTools && typeof window.HarnessTools.load === 'function')
       ? Promise.resolve().then(function () { return window.HarnessTools.load(); })
       : Promise.resolve();
@@ -306,8 +367,13 @@
       _tools = _toolDefinitions();
 
       // 3. Memoire de conversation + system prompt.
+      //    Cle PAR SESSION (token) pour isoler les docs, + RESET a chaque Lancer :
+      //    sinon create() restaure et ACCUMULE l'ancienne conversation (system prompt
+      //    duplique, schemas de docs differents empiles, contexte gonfle a 15k+ tokens).
       if (window.HarnessMemory && typeof window.HarnessMemory.create === 'function') {
-        _mem = window.HarnessMemory.create();
+        var docKey = (typeof window._token === 'string' && window._token) ? window._token : '_default';
+        _mem = window.HarnessMemory.create(docKey);
+        if (typeof _mem.reset === 'function') { try { _mem.reset(); } catch (_) {} }
       } else {
         // Fallback minimal si le module memoire n'est pas encore charge.
         _mem = _fallbackMemory();
@@ -393,7 +459,7 @@
         });
 
         return chain.then(function () {
-          if (productive) iter++;
+          if (productive) { iter++; _refreshPlanFromContext(false); }  // plan live depuis le contexte reel
           return step(); // re-complete avec les resultats en memoire
         });
       }).catch(function (err) {
@@ -405,7 +471,7 @@
     }
 
     return step()
-      .then(function () { return _maybeCompact(); })
+      .then(function () { _refreshPlanFromContext(true); return _maybeCompact(); })  // plan final depuis l'etat reel
       .catch(function (e) {
         // Dernier filet : ne jamais laisser une exception s'echapper de la boucle.
         _say('Erreur inattendue : ' + normalizeError(e));

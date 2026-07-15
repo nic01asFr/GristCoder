@@ -3,8 +3,9 @@
  *
  * ROLE : catalogue d'outils exposes au LLM + execution.
  *   - Outils "core" : recuperes via tools/list du serveur MCP, executes via tool().
- *   - Outils "synthetiques" (locaux) : ask_user / update_plan / say, routes vers
- *     window.HarnessRender (rendu neutre au pilote, reutilise le wizard existant).
+ *   - Outils "synthetiques" (locaux) : ask_user / say, routes vers window.HarnessRender.
+ *     Le plan/avancement (Zone 1) est pilote AUTOMATIQUEMENT par le harness depuis
+ *     context/{token} (_inferred_plan) — pas un outil LLM.
  *
  * Dependances (globals installes par widget.html) :
  *   - window.tool(name, args)  -> POST /mcp tools/call, renvoie le resultat parse
@@ -78,35 +79,6 @@
           }
         },
         required: ['card']
-      }
-    },
-    {
-      name: 'update_plan',
-      description:
-        'Met a jour la banniere de plan (Zone 1) affichee a l\'utilisateur : titre, ' +
-        'sections d\'avancement et progression. Non bloquant. Utilise pour tenir ' +
-        'l\'utilisateur informe de l\'etat de la construction de l\'application.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          title: { type: 'string', description: 'Titre du plan.' },
-          sections: {
-            type: 'array',
-            description: 'Sections/etapes du plan.',
-            items: {
-              type: 'object',
-              properties: {
-                label: { type: 'string' },
-                content: { type: 'string' },
-                style: { type: 'string' }
-              }
-            }
-          },
-          progress: {
-            type: 'number',
-            description: 'Progression globale de 0 a 100.'
-          }
-        }
       }
     },
     {
@@ -266,15 +238,6 @@
       var answer = await R.renderCard(card);
       // answer = { type, values }
       return answer || {};
-    }
-
-    if (name === 'update_plan') {
-      R.updatePlan({
-        title: args.title,
-        sections: args.sections || [],
-        progress: args.progress
-      });
-      return { ok: true };
     }
 
     if (name === 'say') {
