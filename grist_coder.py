@@ -1357,7 +1357,9 @@ TOOLS = [
                          "section_ref":      {"type": "integer", "description": "ID de la section custom a configurer (depuis grist_views_list)"},
                          "artefact":         {"type": "string",  "description": "Nom de l artefact display mode (ex: 'FicheClient'). Laisse vide pour widget coding."},
                          "widget_url":       {"type": "string",  "description": "URL custom (defaut: HOST_URL/). Ignore si artefact est fourni."},
-                         "link_section_ref": {"type": "integer", "description": "Section source pour lier les selections de ligne (linkSrcSectionRef). 0 = pas de lien."}},
+                         "link_section_ref": {"type": "integer", "description": "Section source pour lier les selections de ligne (linkSrcSectionRef). 0 = pas de lien."},
+                         "link_target_col_ref": {"type": "integer", "description": "Optionnel : colonne Ref: de la table cible pour un master-detail PAR COLONNE (ex Clients->Commandes). id depuis _grist_Tables_column. 0 = lien par curseur/rowId."},
+                         "link_src_col_ref": {"type": "integer", "description": "Optionnel : colonne source du lien (defaut 0 = rowId)."}},
                      "required": ["section_ref"]}},
 
     {"name": "grist_view_add_widget",
@@ -1367,7 +1369,9 @@ TOOLS = [
                          "view_ref":         {"type": "integer", "description": "ID de la vue (depuis grist_views_list)"},
                          "table_id":         {"type": "string",  "description": "Table source du widget (meme que la grille en general)"},
                          "artefact":         {"type": "string",  "description": "Nom de l artefact a afficher (mode display)"},
-                         "grid_section_ref": {"type": "integer", "description": "ID de la section grille a lier (pour onRecord). 0 = pas de lien."}},
+                         "grid_section_ref": {"type": "integer", "description": "ID de la section grille a lier (pour onRecord). 0 = pas de lien."},
+                         "link_target_col_ref": {"type": "integer", "description": "Optionnel : colonne Ref: de la table cible pour un master-detail PAR COLONNE (Clients->Commandes). 0 = lien par curseur/rowId."},
+                         "link_src_col_ref": {"type": "integer", "description": "Optionnel : colonne source du lien (defaut 0 = rowId)."}},
                      "required": ["view_ref", "table_id"]}},
 
     {"name": "grist_view_create",
@@ -5710,8 +5714,8 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 fields: dict = {"options": _make_widget_options(artefact, widget_url)}
                 if link_section_ref:
                     fields["linkSrcSectionRef"] = link_section_ref
-                    fields["linkSrcColRef"]     = 0
-                    fields["linkTargetColRef"]  = 0
+                    fields["linkSrcColRef"]     = int(args.get("link_src_col_ref") or 0)
+                    fields["linkTargetColRef"]  = int(args.get("link_target_col_ref") or 0)  # colonne Ref: -> master-detail par colonne
                 await grist_apply(ctx, [["UpdateRecord", "_grist_Views_section", section_ref, fields]])
                 _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
                 return {"ok": True, "section_ref": section_ref,
@@ -5752,8 +5756,8 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 section_fields: dict = {"options": _make_widget_options(artefact, "")}
                 if grid_section_ref:
                     section_fields["linkSrcSectionRef"] = grid_section_ref
-                    section_fields["linkSrcColRef"]     = 0
-                    section_fields["linkTargetColRef"]  = 0
+                    section_fields["linkSrcColRef"]     = int(args.get("link_src_col_ref") or 0)
+                    section_fields["linkTargetColRef"]  = int(args.get("link_target_col_ref") or 0)  # colonne Ref: -> master-detail par colonne
                 # Layout : sections existantes a gauche + nouveau widget a droite
                 if view_sects:
                     left_children = [{"leaf": s} for s in view_sects]
@@ -5864,6 +5868,10 @@ async def call_tool(uid_key, mcp_sid, name, args):
             }
             if grid_ref:
                 section_fields["linkSrcSectionRef"] = grid_ref
+                _ltc = int(args.get("link_target_col_ref") or 0)
+                if _ltc:
+                    section_fields["linkSrcColRef"]    = int(args.get("link_src_col_ref") or 0)
+                    section_fields["linkTargetColRef"] = _ltc  # colonne Ref: -> master-detail par colonne
             await grist_apply(ctx, [["UpdateRecord", "_grist_Views_section", custom_ref, section_fields]])
 
             # Etape 4 : definir le layout et le nom via User Action UpdateRecord

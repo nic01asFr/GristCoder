@@ -389,6 +389,7 @@ const GRIST_BRIDGE_SCRIPT =
     "setOptions:function(o){return call('setOptions',[o]);}," +
     "getOptions:function(){return call('getOptions',[]);}," +
     "clearOptions:function(){return call('clearOptions',[]);}," +
+    "onOptions:function(cb){reg('onOptions',cb);}," +
     "selectedTable:{" +
       "fetch:function(f){return call('selectedTable.fetch',[f||{}]);}," +
       "create:function(r){return call('selectedTable.create',[r]);}," +
@@ -571,6 +572,11 @@ window.addEventListener('message', async function(e) {
         if (_sharedState.record) src.postMessage({type:'grist-bridge-callback',callbackId:cid,args:[_sharedState.record,null]},'*');
       } else if (action === 'onNewRecord') {
         grist.onNewRecord(function(m){ src.postMessage({type:'grist-bridge-callback',callbackId:cid,args:[m]},'*'); });
+      } else if (action === 'onOptions') {
+        // Relais des changements d'options (theme/filtres) vers l'iframe enfant,
+        // sans surcharger le handler parent ; fire immediat si options connues.
+        _bridgeOnOptionsRelays.push({cid:cid,src:src});
+        if (_lastOptions) src.postMessage({type:'grist-bridge-callback',callbackId:cid,args:[_lastOptions,null]},'*');
       }
       src.postMessage({type:'grist-bridge-response',callbackId:cid,result:result},'*');
     } catch(err) {
@@ -663,6 +669,7 @@ var _canvasTargetArt=null; // art_nom en cours de production — onRecord ne peu
 var _currentContext='qualifying'; // phase courante poussée par plan_update via context_changed SSE
 var _editor, _panelOpen=false;
 var _bridgeOnRecordRelays=[], _lastRecords=null;
+var _bridgeOnOptionsRelays=[], _lastOptions=null;
 var _lastServerCanvas=null; // Guard: prevent autoSave on server-pushed setValue
 var _serverUpdating=false;  // True while SSE-driven canvas update is in progress (blocks autoSave)
 var _autoSaveTimer=null;    // Manual debounce timer (cancellable)
@@ -771,6 +778,11 @@ grist.onRecords(function(records) {
 
 // onOptions: support artefact name via Grist widgetOptions (set in customView JSON)
 grist.onOptions(function(options) {
+  // Relais vers les artefacts abonnes (persistance theme/filtres inter-widgets).
+  _lastOptions = options;
+  _bridgeOnOptionsRelays.forEach(function(r) {
+    try { r.src.postMessage({type:'grist-bridge-callback',callbackId:r.cid,args:[options,null]},'*'); } catch(_) {}
+  });
   if (!options) return;
   if (options.artefact && !_DISPLAY_MODE && !_currentArt) {
     // Triggered by widgetOptions.artefact — switch to display mode dynamically
@@ -1210,6 +1222,7 @@ function setFrameContent(frame, html) {
 function renderArt(art) {
   if (!art) { renderEmpty(); return; }
   _bridgeOnRecordRelays = []; // Reset relays: new iframe will re-register
+  _bridgeOnOptionsRelays = [];
   var ee = document.getElementById('editorEmpty');
   if (ee) ee.style.display = 'none';
   var type = art.Type || 'html', code = art.Code || '';
