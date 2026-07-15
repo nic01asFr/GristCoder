@@ -699,14 +699,19 @@ async def _provision_coder_widget(base, doc_id, key, widget_url):
         rv = ret.get("retValues", [ret]) if isinstance(ret, dict) else [ret]
         info = rv[0] if rv and isinstance(rv[0], dict) else {}
         section_ref = info.get("sectionRef") or info.get("sectionId")
+        view_ref = info.get("viewRef") or info.get("viewId")
         if not section_ref:
             return False
         # 3. Bascule la section en custom widget + URL (options JSON string).
         opts = json.dumps({"customView": {"url": widget_url, "access": "full",
                                           "renderAfterReady": True}})
+        actions = [["UpdateRecord", "_grist_Views_section", section_ref,
+                    {"parentKey": "custom", "options": opts}]]
+        # 4. Nomme la page hote "🟢Coder" si on a le viewRef.
+        if view_ref:
+            actions.append(["UpdateRecord", "_grist_Views", view_ref, {"name": "\U0001F7E2Coder"}])
         ru = await c.post(f"{base}/api/docs/{doc_id}/apply", headers=phdr,
-                          content=json.dumps([["UpdateRecord", "_grist_Views_section", section_ref,
-                                               {"parentKey": "custom", "options": opts}]]))
+                          content=json.dumps(actions))
         ru.raise_for_status()
         return True
 

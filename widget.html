@@ -424,6 +424,13 @@ function prepareReactHTML(code, ctx) {
   var defMatch = code.match(/export\s+default\s+(?:function\s+|class\s+)?(\w+)/);
   var compName = defMatch ? defMatch[1] : null;
   var reactCode = code
+    // ROBUSTESSE : React/ReactDOM/hooks sont deja globaux (CDN). Tout 'import' ES
+    // casse Babel standalone (pas de bundler) -> rendu BLANC. On retire donc les
+    // imports/require automatiquement : l'artefact rend quel que soit le code
+    // genere par le LLM, sans que l'utilisateur ait a s'en soucier.
+    .replace(/^[ \t]*import\s+[\s\S]*?\s+from\s+['"][^'"]+['"];?[ \t]*$/gm, '')
+    .replace(/^[ \t]*import\s+['"][^'"]+['"];?[ \t]*$/gm, '')
+    .replace(/^[ \t]*(?:const|let|var)\s+[\w{},:\s]+=\s*require\(\s*['"][^'"]+['"]\s*\);?[ \t]*$/gm, '')
     .replace(/export\s+default\s+function\s+(\w+)/, 'function $1')
     .replace(/export\s+default\s+class\s+(\w+)/, 'class $1')
     .replace(/export\s+default\s+(\w+)\s*;?\s*$/, '');
@@ -962,6 +969,35 @@ async function initArtefactsTable() {
   showToast('Table Artefacts créée ✓', 'success');
 }
 
+// Renomme la page hote du widget Coder en "🟢Coder" (best-effort, guarde).
+// Ne touche QUE si la page porte encore le nom par defaut Grist ("New page" /
+// "Nouvelle page"), jamais un nom choisi par l'utilisateur. Idempotent.
+async function renameCoderPage() {
+  try {
+    var origin = window.location.origin; // ex: http://localhost:8742
+    var secs = await grist.docApi.fetchTable('_grist_Views_section');
+    var sids = secs.id || [];
+    var targetView = null;
+    for (var i = 0; i < sids.length; i++) {
+      var blob = '';
+      for (var k in secs) {
+        if (k === 'id') continue;
+        try { blob += JSON.stringify((secs[k] || [])[i]); } catch (_) {}
+      }
+      if (blob.indexOf(origin) >= 0) { targetView = (secs.parentId || [])[i]; break; }
+    }
+    if (!targetView) return;
+    var views = await grist.docApi.fetchTable('_grist_Views');
+    var vids = views.id || [], curName = '';
+    for (var j = 0; j < vids.length; j++) {
+      if (vids[j] === targetView) { curName = (views.name || [])[j] || ''; break; }
+    }
+    if (curName && !/^new page$|^nouvelle page/i.test(curName)) return; // deja nomme
+    if (curName === '🟢Coder') return;
+    await grist.docApi.applyUserActions([['UpdateRecord', '_grist_Views', targetView, { name: '🟢Coder' }]]);
+  } catch (e) { /* best-effort silencieux */ }
+}
+
 async function loadArtefacts() {
   var data;
   try {
@@ -1004,6 +1040,7 @@ async function loadArtefacts() {
     renderEmpty();
   }
   _artefactsLoaded = true; // onRecord auto-select actif seulement après init
+  if (!_DISPLAY_MODE) { renameCoderPage(); } // "🟢Coder" best-effort, non bloquant
 }
 
 var TYPE_ICONS = {html:'🌐',react:'⚛',grist:'🧮',app:'📦',markdown:'📄',mermaid:'🔀',python:'🐍',sql:'⚡',svg:'📐'};
