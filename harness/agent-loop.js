@@ -66,8 +66,8 @@
     "REGLES :",
     "- ELICITATION D'ABORD (au demarrage d'une demande de CONSTRUCTION d'app). Ne fonce PAS construire tete baissee :",
     "    1. Si le besoin n'est pas deja precis, pose 1 a 3 questions de CADRAGE via ask_user (choix ou formulaire) : nom de l'app, entites/donnees principales, qui l'utilise, besoin de tableau de bord et/ou de saisie/edition. Pose UNIQUEMENT l'essentiel qui change le plan ; n'inonde pas de questions.",
-    "    2. PUIS, AVANT d'ecrire la moindre table/artefact, presente le PLAN via ask_user (type confirm) : liste concise des tables (avec colonnes cles), des artefacts et des pages que tu vas creer. Demande validation. Adapte le plan a la reponse.",
-    "    3. Ne construis qu'APRES validation du plan.",
+    "    2. PUIS, AVANT d'ecrire la moindre table/artefact, presente le PLAN via ask_user (type confirm) : liste concise des tables (avec colonnes cles), des artefacts et des pages que tu vas creer. La carte DOIT etre AJUSTABLE, pas seulement validable : fournis TOUJOURS au moins deux actions, par ex. actions:[{id:'valider',label:'Valider et construire'},{id:'ajuster',label:'Ajuster le plan'}], et precise dans le texte que l'utilisateur peut aussi taper directement ses modifications dans le chat. Si l'utilisateur choisit 'ajuster' ou decrit un changement, REVISE le plan et re-presente une carte. Boucle jusqu'a validation.",
+    "    3. Ne construis qu'APRES validation explicite du plan.",
     "  Echappatoire : si l'utilisateur a deja tout precise, ou dit 'fais au mieux' / 'vas-y' / 'peu importe', n'insiste pas — propose un plan par defaut (ou construis directement pour une demande simple et sans ambiguite).",
     "- DESIGN EXPERT (facultatif, apps non triviales) : apres validation du plan, tu PEUX appeler UNE fois plan_design(brief) pour consulter en parallele des specialistes (donnees, UI interactive, pages) et obtenir un design consolide avant de construire. Inutile pour une modification simple ou une petite app evidente — n'en abuse pas.",
     "- REUTILISE l'existant PERTINENT. Avant de creer, inspecte : appelle grist_schema pour les tables et regarde les artefacts deja presents. N'implemente que l'optimal et peu complexe au regard de ce qui existe. Pas de sur-architecture.",
@@ -536,6 +536,7 @@
 
         // Execute chaque outil en sequence, append chaque resultat.
         var productive = false;
+        var userAnswered = false; // une carte ask_user a recu une reponse => nouveau mandat
         var chain = Promise.resolve();
         resp.toolCalls.forEach(function (tc) {
           chain = chain.then(function () {
@@ -544,6 +545,7 @@
             var args = tc.args || tc.arguments || {};
             if (name !== 'ask_user') productive = true;
             return _execTool(name, args).then(function (res) {
+              if (name === 'ask_user') userAnswered = true;
               _memAdd({ role: 'tool', toolCallId: tc.id, name: name, content: _stringifyResult(res) });
             }).catch(function (err) {
               // Un echec d'outil n'arrete pas la boucle : on renvoie l'erreur au LLM.
@@ -554,6 +556,11 @@
 
         return chain.then(function () {
           if (productive) { iter++; _refreshPlanFromContext(false); }  // plan live depuis le contexte reel
+          // L'utilisateur vient de repondre a une carte (cadrage, validation de plan) :
+          // c'est un nouveau mandat explicite. On rafraichit le budget d'etapes pour que
+          // la phase de construction ne soit pas affamee par l'elicitation faite en amont
+          // dans le meme tour. Un humain garde chaque ask_user, pas de boucle CPU infinie.
+          if (userAnswered) { iter = 0; completions = 0; }
           return step(); // re-complete avec les resultats en memoire
         });
       }).catch(function (err) {
