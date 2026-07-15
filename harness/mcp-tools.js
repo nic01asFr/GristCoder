@@ -28,7 +28,11 @@
     plan_update: 1,
     canvas_context_update: 1,
     chat_reply: 1,
-    wait_for_chat: 1
+    wait_for_chat: 1,
+    // Les specialistes sont pilotes par le harness (HarnessAgent.askSpecialist),
+    // pas par le LLM : en fallback_mode subagent_call renvoie un system_prompt
+    // (echo) que le LLM ne saurait pas exploiter. On le retire de sa palette.
+    subagent_call: 1
   };
 
   // Prefixes des familles d'outils conservees (garde-fou secondaire, informatif).

@@ -5157,11 +5157,17 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 "fr-alert, fr-badge, fr-tag, fr-input-group, fr-callout, fr-tile). "
                 "PAS de Tailwind, PAS de CSS custom sauf ajustements mineurs. "
                 "Pour un composant DSFR inconnu, chercher dans la collection Albert DSFR (id:142091). "
+                "INTERACTIVITE OBLIGATOIRE : un artefact d application n est JAMAIS un affichage passif. "
+                "Des que l utilisateur doit agir sur les donnees, prevois des interactions REELLES cablees au "
+                "bridge Grist : formulaire d ajout (grist.docApi.applyUserActions [['BulkAddRecord',table,[null],{...}]]), "
+                "edition en ligne (['UpdateRecord',table,rowId,{...}]), chargement via grist.docApi.fetchTable, "
+                "re-render via grist.onRecords. Depuis le navigateur : BulkAddRecord (pas BulkAddOrReplaceRecord). "
                 "IMPORTANT : Reponds TOUJOURS en JSON valide avec ces cles exactes :\n"
-                '{"artefacts":[{"name":"X","type":"react|html","description":"role UX","dsfr_components":["fr-card","fr-table"]}],'
+                '{"artefacts":[{"name":"X","type":"react|html","description":"role UX","dsfr_components":["fr-card","fr-table"],'
+                '"interactions":[{"kind":"add|edit|filter|delete","table":"T","fields":["col1"],"action":"BulkAddRecord|UpdateRecord"}]}],'
                 '"pages":[{"name":"X","widgets":["grid","custom"]}],'
                 '"styles":{"palette":"DSFR default (#000091/#e3e3fd)","layout":"fr-grid-row"},'
-                '"notes":"decisions design cles"}'
+                '"notes":"decisions design cles + justification des interactions"}'
             ),
             "page-architect": (
                 "Tu es un architecte de pages Grist expert. "
