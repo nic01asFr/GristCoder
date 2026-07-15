@@ -355,10 +355,26 @@ const GRIST_BRIDGE_SCRIPT =
   "function reg(a,cb){var id=++_id;_cbs.set(id,cb);" +
     "var t=window.parent===window?window:window.parent;" +
     "t.postMessage({type:'grist-bridge',action:a,callbackId:id},'*');}" +
+  // Helpers de conversion exposes a TOUS les artefacts (grist.util.*) : evite au
+  // LLM de les reecrire et corrige les pieges classiques (colonnaire, dates s/ms,
+  // RefList prefixee 'L', XSS). Voir skills/data-conversion (widgets-grist).
+  "var util={" +
+    "toRows:function(d){if(!d||!d.id)return[];var n=d.id.length,r=[];for(var i=0;i<n;i++){var o={id:d.id[i]};for(var k in d){if(k!=='id'){var col=d[k];o[k]=(col&&col[i]!=null)?col[i]:null;}}r.push(o);}return r;}," +
+    "toDate:function(t){return t?new Date(t*1000):null;}," +
+    "fromDate:function(x){if(x==null)return null;if(typeof x==='string')x=new Date(x);return Math.floor(x.getTime()/1000);}," +
+    "refIds:function(l){return(l&&l[0]==='L')?l.slice(1):(Array.isArray(l)?l:[]);}," +
+    "toRefList:function(a){return(a&&a.length)?['L'].concat(a.map(function(i){return parseInt(i,10);})):null;}," +
+    "esc:function(t){var d=document.createElement('div');d.textContent=(t==null?'':String(t));return d.innerHTML;}" +
+  "};" +
   "window.grist={" +
     "ready:function(){return Promise.resolve();}," +
+    "util:util," +
     "docApi:{fetchTable:function(n){return call('fetchTable',[n]);}," +
       "applyUserActions:function(a){return call('applyUserActions',[a]);}," +
+      // Ecrit PUIS re-fetch la table impactee et renvoie les lignes converties.
+      // Refresh deterministe independant de la table liee du widget (onRecords ne
+      // se declenche pas pour une table que l'artefact ecrit lui-meme).
+      "applyAndFetch:function(a,tbl){return call('applyUserActions',[a]).then(function(){return call('fetchTable',[tbl]);}).then(function(d){return util.toRows(d);});}," +
       "listTables:function(){return call('listTables',[]);}," +
       "getAccessToken:function(o){return call('getAccessToken',[o||{}]);}}," +
     "onRecords:function(cb){reg('onRecords',cb);}," +
