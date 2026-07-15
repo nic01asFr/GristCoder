@@ -662,6 +662,54 @@ def _split_html_js(code: str) -> tuple[str, str]:
         js = "grist.ready({ requiredAccess: 'full' });\n" + js
     return html.strip(), js.strip()
 
+# ── PROVISIONING : creation d'un nouveau document + widget Coder ──────────────
+# Cree un document vierge dans un workspace via une cle API de provisioning
+# (owner du workspace) stockee cote serveur (.env). Personnel : URL widget =
+# celle de CE serveur (localhost par defaut). L'injection du widget est
+# best-effort et entierement gardee : un echec ne compromet pas la creation.
+
+async def _provision_coder_widget(base, doc_id, key, widget_url):
+    """Ajoute au nouveau doc une page avec une section Custom Widget pointant vers
+    widget_url (ce serveur). Retourne True si l'API confirme, False sinon. Ne leve
+    pas : l'appelant garde deja, mais on reste defensif."""
+    phdr = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    async with _grist_client() as c:
+        # 1. Table cible : la Table1 creee par defaut dans un doc vierge.
+        r = await c.get(f"{base}/api/docs/{doc_id}/tables", headers=phdr)
+        r.raise_for_status()
+        tables = (r.json() or {}).get("tables", [])
+        if not tables:
+            return False
+        # rowId meta de la table (necessaire a CreateViewSection) : via SQL sur _grist_Tables.
+        table_str_id = tables[0].get("id")
+        rs = await c.post(f"{base}/api/docs/{doc_id}/sql", headers=phdr,
+                          content=json.dumps({"sql": "SELECT id FROM _grist_Tables WHERE tableId = ? LIMIT 1",
+                                              "args": [table_str_id]}))
+        rs.raise_for_status()
+        recs = (rs.json() or {}).get("records", [])
+        table_ref = (recs[0].get("fields", {}) or {}).get("id") if recs else None
+        if not table_ref:
+            return False
+        # 2. Nouvelle page + section pour la table.
+        ra = await c.post(f"{base}/api/docs/{doc_id}/apply", headers=phdr,
+                          content=json.dumps([["CreateViewSection", table_ref, 0, "record", None, None]]))
+        ra.raise_for_status()
+        ret = ra.json()
+        # retValues[0] = {viewRef, sectionRef} selon la version de Grist.
+        rv = ret.get("retValues", [ret]) if isinstance(ret, dict) else [ret]
+        info = rv[0] if rv and isinstance(rv[0], dict) else {}
+        section_ref = info.get("sectionRef") or info.get("sectionId")
+        if not section_ref:
+            return False
+        # 3. Bascule la section en custom widget + URL (options JSON string).
+        opts = json.dumps({"customView": {"url": widget_url, "access": "full",
+                                          "renderAfterReady": True}})
+        ru = await c.post(f"{base}/api/docs/{doc_id}/apply", headers=phdr,
+                          content=json.dumps([["UpdateRecord", "_grist_Views_section", section_ref,
+                                               {"parentKey": "custom", "options": opts}]]))
+        ru.raise_for_status()
+        return True
+
 # ── PROJECT META PERSISTENCE ──────────────────────────────────────────────────
 # The "need" (user's project intention) is the only piece of plan state that
 # can't be inferred from the live Grist document. We persist it as a single
@@ -901,6 +949,23 @@ TOOLS = [
      "inputSchema": {"type": "object",
                      "properties": {"token": {"type": "string"}},
                      "required": ["token"]}},
+
+    {"name": "grist_doc_create",
+     "description": (
+         "Cree un NOUVEAU document Grist vierge dans un workspace, le nomme, y ajoute "
+         "(best-effort) une page avec le widget Coder, et retourne le lien cliquable. "
+         "Necessite une cle de provisioning cote serveur (.env : GRIST_PROVISION_KEY + "
+         "GRIST_PROVISION_WORKSPACE_ID). Si workspace_id absent, retourne la liste des "
+         "workspaces disponibles. Utiliser pour demarrer un projet sur un document propre "
+         "plutot que d'encombrer un document existant."
+     ),
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "name": {"type": "string", "description": "Nom du nouveau document."},
+                         "workspace_id": {"type": "integer", "description": "Id numerique du workspace cible (sinon GRIST_PROVISION_WORKSPACE_ID)."},
+                         "add_coder_widget": {"type": "boolean", "description": "Ajouter une page widget Coder (defaut true, best-effort)."}
+                     },
+                     "required": ["name"]}},
 
     {"name": "session_info",
      "description": (
@@ -4586,6 +4651,79 @@ async def call_tool(uid_key, mcp_sid, name, args):
             "_debug_caller_uid": uid_key,
             "_debug_all_uids": all_uids,
         }
+
+    if name == "grist_doc_create":
+        doc_name = (args.get("name") or "").strip()
+        if not doc_name:
+            return {"ok": False, "error": "name requis (nom du nouveau document a creer)."}
+        prov_key = os.getenv("GRIST_PROVISION_KEY", "").strip()
+        if not prov_key:
+            return {"ok": False, "error": (
+                "Provisioning non configure. Definir dans .env : GRIST_PROVISION_KEY "
+                "(cle API Grist owner du workspace), GRIST_PROVISION_WORKSPACE_ID (id numerique "
+                "du workspace cible). Optionnel : GRIST_PROVISION_ORG (defaut 'docs'), "
+                "GRIST_CODER_WIDGET_URL (URL publique de ce serveur, defaut http://localhost:8742), "
+                "GRIST_SITE_URL (si aucune session widget active).")}
+        # Base du site : depuis une session active de l'uid, sinon env.
+        site_url = os.getenv("GRIST_SITE_URL", "").strip()
+        try:
+            _sl = registry.list_sessions(uid_key)
+            if _sl:
+                _c0 = registry.resolve(uid_key, _sl[0]["token"])
+                if _c0 and _c0.site_url:
+                    site_url = _c0.site_url
+        except Exception:
+            pass
+        root = urllib.parse.urlsplit(site_url)
+        if not root.netloc:
+            return {"ok": False, "error": "URL du site Grist introuvable (aucune session active et GRIST_SITE_URL absent)."}
+        base = f"{root.scheme}://{root.netloc}"
+        org = (os.getenv("GRIST_PROVISION_ORG", "docs").strip() or "docs")
+        ws_id = str(args.get("workspace_id") or os.getenv("GRIST_PROVISION_WORKSPACE_ID", "")).strip()
+        phdr = {"Authorization": f"Bearer {prov_key}", "Content-Type": "application/json"}
+        async with _grist_client() as c:
+            if not ws_id:
+                wss = []
+                try:
+                    r = await c.get(f"{base}/api/orgs/{org}/workspaces", headers=phdr)
+                    r.raise_for_status()
+                    wss = [{"id": w.get("id"), "name": w.get("name")} for w in (r.json() or [])]
+                except Exception:
+                    pass
+                return {"ok": False,
+                        "error": "workspace_id manquant. Fournir args.workspace_id ou definir GRIST_PROVISION_WORKSPACE_ID.",
+                        "workspaces_disponibles": wss}
+            try:
+                r = await c.post(f"{base}/api/workspaces/{ws_id}/docs", headers=phdr,
+                                 content=json.dumps({"name": doc_name}))
+                r.raise_for_status()
+                doc_id = (r.text or "").strip().strip('"')
+            except httpx.HTTPStatusError as e:
+                return {"ok": False, "error": _scrub_secrets(
+                    f"Echec creation du document (HTTP {e.response.status_code}). "
+                    f"Verifier GRIST_PROVISION_KEY et workspace_id. Detail: {e.response.text[:200]}")}
+            except Exception as e:
+                return {"ok": False, "error": _scrub_secrets(f"Echec creation du document : {e}")}
+        slug = (re.sub(r'[^a-zA-Z0-9]+', '-', doc_name).strip('-').lower() or "document")
+        doc_url = f"{base}/o/{org}/{doc_id}/{slug}"
+        out = {"ok": True, "doc_id": doc_id, "name": doc_name, "url": doc_url,
+               "workspace_id": ws_id, "_next": f"Document cree. Ouvrir : {doc_url}"}
+        if args.get("add_coder_widget", True):
+            widget_url = (os.getenv("GRIST_CODER_WIDGET_URL", "").strip() or "http://localhost:8742")
+            out["coder_widget_url"] = widget_url
+            try:
+                added = await _provision_coder_widget(base, doc_id, prov_key, widget_url)
+                out["coder_widget_added"] = bool(added)
+                if not added:
+                    out["coder_widget_hint"] = (
+                        f"Widget non injecte automatiquement. Dans le doc, ajouter une page "
+                        f"'Custom' et coller l'URL {widget_url}.")
+            except Exception as e:
+                out["coder_widget_added"] = False
+                out["coder_widget_hint"] = _scrub_secrets(
+                    f"Injection auto du widget echouee ({e}). Ajouter manuellement une page "
+                    f"Custom Widget avec l'URL {widget_url}.")
+        return out
 
     if name == "session_select":
         ctx = registry.resolve(uid_key, args["token"])
