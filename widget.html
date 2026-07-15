@@ -482,6 +482,42 @@ const WIZARD_PREVIEW_SCRIPT =
   "};" +
   "})('__CARD_ID__');";
 
+// ── Normalisation defensive des UserActions issues d'un artefact ─────────────
+// Grist attend, pour Bulk*Record, des valeurs de colonnes en TABLEAUX alignes
+// sur rowIds ({Nom:['Dupont']}), sinon "IndexError list index out of range".
+// Les artefacts generes par LLM ecrivent souvent des scalaires ({Nom:'Dupont'}).
+// On corrige ici, de facon deterministe, pour que l'ecriture reussisse sans que
+// l'artefact ait a connaitre le modele colonnaire de Grist.
+function _normalizeUserActions(actions) {
+  if (!Array.isArray(actions)) return actions;
+  var BULK = { BulkAddRecord: 1, BulkUpdateRecord: 1, BulkAddOrReplaceRecord: 1 };
+  return actions.map(function (a) {
+    if (!Array.isArray(a) || a.length < 4 || !BULK[a[0]]) return a;
+    var cols = a[3];
+    if (!cols || typeof cols !== 'object' || Array.isArray(cols)) return a;
+    var rowIds = a[2];
+    var keys = Object.keys(cols);
+    var n = Array.isArray(rowIds) ? rowIds.length : 1;
+    keys.forEach(function (k) { if (Array.isArray(cols[k])) n = Math.max(n, cols[k].length); });
+    if (n < 1) n = 1;
+    var newRowIds = Array.isArray(rowIds) ? rowIds.slice() : [];
+    while (newRowIds.length < n) newRowIds.push(null);
+    var newCols = {};
+    keys.forEach(function (k) {
+      var v = cols[k];
+      if (Array.isArray(v)) {
+        var arr = v.slice();
+        while (arr.length < n) arr.push(arr.length ? arr[arr.length - 1] : null);
+        newCols[k] = arr;
+      } else {
+        var filled = []; for (var i = 0; i < n; i++) filled.push(v);
+        newCols[k] = filled;
+      }
+    });
+    return [a[0], a[1], newRowIds, newCols];
+  });
+}
+
 // ── GristBridgeParent ───────────────────────────────────────────────────────
 window.addEventListener('message', async function(e) {
   var m = e.data; if (!m) return;
@@ -490,7 +526,7 @@ window.addEventListener('message', async function(e) {
     try {
       var result = null;
       if (action === 'fetchTable')          result = await grist.docApi.fetchTable(args[0]);
-      else if (action === 'applyUserActions') result = await grist.docApi.applyUserActions(args[0]);
+      else if (action === 'applyUserActions') result = await grist.docApi.applyUserActions(_normalizeUserActions(args[0]));
       else if (action === 'listTables')     result = await grist.docApi.listTables();
       else if (action === 'getAccessToken') result = await grist.docApi.getAccessToken(args[0]||{});
       else if (action === 'setCursorPos')   grist.setCursorPos(args[0]);
