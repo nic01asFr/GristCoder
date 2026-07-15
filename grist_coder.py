@@ -12,7 +12,7 @@ TOOLS : sessions(3) plan(1) canvas(7) wizard(2) context(1) chat(2) subagent(1)
 MCP   : sampling/createMessage (client capability) -> subagent_call + chat auto-reply
 """
 
-import asyncio, base64, hashlib, json, os, re, secrets, subprocess, sys, time, uuid, urllib.parse
+import asyncio, base64, difflib, hashlib, json, os, re, secrets, subprocess, sys, time, uuid, urllib.parse
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -4590,17 +4590,52 @@ def _ref_target(coltype):
             return t[len(pfx):]
     return None
 
-def _validate_actions(actions, existing_tables):
+_FORMULA_REF_RE = re.compile(r'\$([A-Za-z_][A-Za-z0-9_]*)')
+
+def _validate_formula(formula, colset):
+    """Heuristique (PAS de dry-run sandbox) : detecte dans une formule Grist les
+    references $Colonne mal casees ou inexistantes vis-a-vis de colset.
+    Retourne {valid, corrected_formula|None, issues:[{type:'case'|'unknown',found,correct?/suggestion?}]}.
+    - 'case' : la colonne existe avec une autre casse -> SUR, auto-corrigeable (le piege 500 #1).
+    - 'unknown' : reference introuvable -> incertain (difflib), a signaler en WARNING seulement."""
+    if not formula or not isinstance(formula, str):
+        return {"valid": True, "corrected_formula": None, "issues": []}
+    variants = {c.lower(): c for c in colset}
+    ids = list(colset)
+    issues, fixed = [], formula
+    for ref in _FORMULA_REF_RE.findall(formula):
+        if ref in colset:
+            continue
+        low = ref.lower()
+        if low in variants and variants[low] != ref:
+            correct = variants[low]
+            issues.append({"type": "case", "found": ref, "correct": correct})
+            fixed = re.sub(r'\$' + re.escape(ref) + r'\b', '$' + correct, fixed)
+        else:
+            near = difflib.get_close_matches(ref, ids, 1, 0.6)
+            issues.append({"type": "unknown", "found": ref, "suggestion": near[0] if near else None})
+    return {"valid": not any(x["type"] == "case" for x in issues),
+            "corrected_formula": fixed if fixed != formula else None,
+            "issues": issues}
+
+def _validate_actions(actions, existing_tables, existing_cols=None):
     """Pre-vol : detecte les erreurs frequentes AVANT grist_apply.
 
     - Ref: vers une table creee PLUS TARD dans le meme batch (ou inexistante) -> sandbox error a l insert
+    - formule avec $Colonne mal casee/inconnue (dans une table du batch) -> 500 sandbox opaque
     - formats d action invalides
     - rappelle les visibleCol a definir sur les Ref
-    existing_tables : ids des tables deja presentes dans le doc."""
+    existing_tables : ids des tables deja presentes dans le doc.
+    existing_cols (optionnel) : {table: {colId,...}} pour valider aussi les formules
+    ajoutees sur des tables PRE-existantes (sinon on ne juge que les tables du batch)."""
     errors, warnings = [], []
     if not isinstance(actions, list):
         return {"ok": False, "errors": ["'actions' doit etre une liste de UserActions"], "warnings": []}
     known = set(existing_tables)  # tables qui existeront au moment de chaque action du batch
+    existing_cols = existing_cols or {}
+    table_cols = {t: set(cs) for t, cs in existing_cols.items()}  # colset connu par table
+    complete = set(existing_cols.keys())  # tables dont on connait TOUTES les colonnes
+    formulas = []  # (idx, table, colId, formula) a valider en 2e passe
     for i, a in enumerate(actions):
         if not isinstance(a, list) or not a:
             errors.append(f"action {i}: format invalide (liste [verbe, ...] attendue)")
@@ -4609,9 +4644,12 @@ def _validate_actions(actions, existing_tables):
         if verb == "AddTable":
             tname = a[1] if len(a) > 1 else None
             cols = a[2] if len(a) > 2 and isinstance(a[2], list) else []
+            tcols = table_cols.setdefault(tname, set())
             for c in cols:
                 if not isinstance(c, dict):
                     continue
+                if c.get("id"):
+                    tcols.add(c.get("id"))
                 tgt = _ref_target(c.get("type"))
                 if tgt and tgt not in known and tgt != tname:
                     errors.append(
@@ -4621,20 +4659,45 @@ def _validate_actions(actions, existing_tables):
                         f"\"NoneType object has no attribute 'table_id'\" au premier insert.")
                 if tgt:
                     warnings.append(f"colonne Ref '{c.get('id')}' de '{tname}' -> penser a definir visibleCol apres creation")
+                if c.get("isFormula") or c.get("formula"):
+                    formulas.append((i, tname, c.get("id"), c.get("formula")))
             if tname:
-                known.add(tname)
+                known.add(tname); complete.add(tname)
         elif verb == "AddColumn":
             tname = a[1] if len(a) > 1 else None
+            colid = a[2] if len(a) > 2 and isinstance(a[2], str) else None
             spec = a[3] if len(a) > 3 and isinstance(a[3], dict) else {}
+            if not colid and isinstance(spec, dict):
+                colid = spec.get("id")
+            if tname and colid:
+                table_cols.setdefault(tname, set()).add(colid)
             tgt = _ref_target(spec.get("type"))
             if tgt and tgt not in known:
                 errors.append(f"action {i} (AddColumn sur '{tname}'): reference la table '{tgt}' inexistante a ce point.")
             if tgt:
                 warnings.append(f"colonne Ref ajoutee sur '{tname}' -> definir visibleCol")
+            if spec.get("isFormula") or spec.get("formula"):
+                formulas.append((i, tname, colid, spec.get("formula")))
         elif verb == "RemoveTable":
             tname = a[1] if len(a) > 1 else None
             if tname:
                 known.discard(tname)
+    # 2e passe : valider les formules quand la colset de la table est COMPLETE
+    # (table creee dans ce batch, ou colonnes fournies via existing_cols).
+    for (i, tname, colid, formula) in formulas:
+        if tname not in complete:
+            continue  # colset incomplet -> on ne juge pas (evite les faux positifs)
+        res = _validate_formula(formula, table_cols.get(tname, set()))
+        for iss in res["issues"]:
+            if iss["type"] == "case":
+                errors.append(
+                    f"action {i} (formule de '{tname}.{colid}'): $%s mal casee -> $%s. "
+                    f"Formule corrigee : %s" % (iss["found"], iss["correct"], res["corrected_formula"]))
+            elif iss["type"] == "unknown":
+                sug = f" (proche : ${iss['suggestion']})" if iss.get("suggestion") else ""
+                warnings.append(
+                    f"action {i} (formule de '{tname}.{colid}'): $%s introuvable dans '{tname}'%s" %
+                    (iss["found"], sug))
     return {"ok": not errors, "errors": errors, "warnings": warnings}
 
 async def call_tool(uid_key, mcp_sid, name, args):
