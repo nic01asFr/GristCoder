@@ -568,12 +568,48 @@ async def grist_delete(ctx, path, *, no_token=False):
         r.raise_for_status()
         return r.json() if r.content else {"ok": True}
 
+def _rewrite_browser_actions(actions):
+    """Sessions widget (access token, sans cle API) : certaines UserActions sont
+    restreintes cote navigateur ('not controlled'). BulkAddOrReplaceRecord y est
+    bloque -> le reecrire en BulkAddRecord (add-only, rowIds auto) pour que
+    l'insertion de donnees exemple fonctionne sans privilege API."""
+    if not isinstance(actions, list):
+        return actions
+    out = []
+    for a in actions:
+        if isinstance(a, list) and a and a[0] == "BulkAddOrReplaceRecord" and len(a) >= 4:
+            n = len(a[2]) if isinstance(a[2], list) else 0
+            a = ["BulkAddRecord", a[1], [None] * n, a[3]]
+        elif isinstance(a, list) and a and a[0] == "AddOrReplaceRecord" and len(a) >= 3:
+            a = ["AddRecord", a[1], None, a[2]] if len(a) == 3 else ["AddRecord", a[1], None, a[3]]
+        out.append(a)
+    return out
+
 async def grist_apply(ctx, actions: list) -> dict:
-    """Applique des user actions Grist via POST /apply."""
-    async with _grist_client() as c:
-        r = await c.post(f"{_base(ctx)}/apply", headers=_gh(ctx), params=_aq(ctx),
-                         content=json.dumps(actions))
-        r.raise_for_status(); return r.json()
+    """Applique des user actions Grist via POST /apply.
+
+    Resilience : les 5xx (WAF Incapsula qui bloque parfois les /apply en rafale)
+    sont rejoues avec backoff. Le WAF bloque AVANT que Grist n'applique l'action,
+    donc rejouer est sur (l'action n'a pas ete partiellement appliquee)."""
+    # Session navigateur (pas de cle API) : reecrire les UserActions restreintes.
+    if not ctx.grist_key:
+        actions = _rewrite_browser_actions(actions)
+    body = json.dumps(actions)
+    last = None
+    for attempt in range(3):
+        try:
+            async with _grist_client() as c:
+                r = await c.post(f"{_base(ctx)}/apply", headers=_gh(ctx), params=_aq(ctx),
+                                 content=body)
+                r.raise_for_status(); return r.json()
+        except httpx.HTTPStatusError as e:
+            if e.response is not None and e.response.status_code >= 500 and attempt < 2:
+                last = e
+                await asyncio.sleep(0.8 * (attempt + 1))  # backoff : 0.8s puis 1.6s
+                continue
+            raise
+    if last:
+        raise last
 
 # ── PUBLICATION AUTONOME (custom-widget-builder) ─────────────────────────────
 # Un artefact "publie" est fige dans les options de sa section Grist via le
