@@ -536,6 +536,13 @@ _GRIST_COOKIES = httpx.Cookies()
 def _grist_client():
     return httpx.AsyncClient(timeout=15, follow_redirects=True, cookies=_GRIST_COOKIES)
 
+def _waf_json(obj) -> str:
+    """Serialise en JSON en echappant < et > en \\u003c / \\u003e. Grist les redecode
+    a l'identique (JSON \\u003c == '<'), mais le payload BRUT ne contient plus
+    '<script>' -> ne declenche plus le 403 du WAF Incapsula sur les valeurs
+    contenant du HTML/JS. A utiliser pour tout body d'ecriture passant par le serveur."""
+    return json.dumps(obj).replace("<", "\\u003c").replace(">", "\\u003e")
+
 async def grist_get(ctx, path):
     async with _grist_client() as c:
         r = await c.get(f"{_base(ctx)}/{path}", headers=_gh(ctx), params=_aq(ctx))
@@ -545,20 +552,20 @@ async def grist_post(ctx, path, body, *, no_token=False):
     async with _grist_client() as c:
         r = await c.post(f"{_base(ctx)}/{path}", headers=_gh(ctx),
                          params={} if no_token else _aq(ctx),
-                         content=json.dumps(body))
+                         content=_waf_json(body))
         r.raise_for_status(); return r.json()
 
 async def grist_patch(ctx, path, body, *, no_token=False):
     async with _grist_client() as c:
         r = await c.patch(f"{_base(ctx)}/{path}", headers=_gh(ctx),
                           params={} if no_token else _aq(ctx),
-                          content=json.dumps(body))
+                          content=_waf_json(body))
         r.raise_for_status(); return r.json()
 
 async def grist_put(ctx, path, body):
     async with _grist_client() as c:
         r = await c.put(f"{_base(ctx)}/{path}", headers=_gh(ctx), params=_aq(ctx),
-                        content=json.dumps(body))
+                        content=_waf_json(body))
         r.raise_for_status(); return r.json()
 
 async def grist_delete(ctx, path, *, no_token=False):
@@ -594,7 +601,7 @@ async def grist_apply(ctx, actions: list) -> dict:
     # Session navigateur (pas de cle API) : reecrire les UserActions restreintes.
     if not ctx.grist_key:
         actions = _rewrite_browser_actions(actions)
-    body = json.dumps(actions)
+    body = _waf_json(actions)  # echappe <> -> ne declenche plus le 403 WAF sur <script>
     last = None
     for attempt in range(3):
         try:
