@@ -1305,7 +1305,8 @@ TOOLS = [
                          "table_id":   {"type": "string", "description": "Table source (ex: 'Batiments')"},
                          "page_name":  {"type": "string", "description": "Nom de la page dans Grist"},
                          "widget_url": {"type": "string", "description": "URL du widget custom (defaut: HOST_URL/)"},
-                         "artefact":   {"type": "string", "description": "Nom d un artefact a afficher automatiquement dans le widget (mode display). Ex: 'FicheClient'. Ajoute ?a=NomArtefact a l URL."}},
+                         "artefact":   {"type": "string", "description": "Nom d un artefact a afficher automatiquement dans le widget (mode display). Ex: 'FicheClient'. Ajoute ?a=NomArtefact a l URL."},
+                         "widget_only":{"type": "boolean", "description": "Si true : page = widget SEUL, sans la grille native Grist a cote. Recommande pour un dashboard/artefact autonome (ne pas melanger natif et non-natif). Defaut false (grille + widget lies)."}},
                      "required": ["table_id"]}},
 
     {"name": "grist_webhooks",
@@ -5565,6 +5566,8 @@ async def call_tool(uid_key, mcp_sid, name, args):
         page_name  = args.get("page_name") or table_id
         widget_url = args.get("widget_url", HOST_URL + "/")
         artefact   = args.get("artefact")
+        # Page widget-seul (dashboard/fiche) : pas de grille native Grist a cote du widget.
+        widget_only = bool(args.get("widget_only")) or args.get("layout") == "widget_only"
         if artefact:
             sep = "&" if "?" in widget_url else "?"
             widget_url = widget_url + sep + "a=" + artefact
@@ -5579,31 +5582,45 @@ async def call_tool(uid_key, mcp_sid, name, args):
             if not table_ref:
                 return {"error": f"Table '{table_id}' non trouvee dans le document"}
 
-            # Etape 1 : creer page avec section grille
-            await grist_apply(ctx, [["CreateViewSection", table_ref, 0, "record", None, None]])
+            if widget_only:
+                # Une unique section custom = la page est le widget, sans grille native.
+                await grist_apply(ctx, [["CreateViewSection", table_ref, 0, "custom", None, None]])
+                views_resp = await grist_get(ctx, "tables/_grist_Views/records")
+                view_ref = max((r["id"] for r in views_resp.get("records",[])), default=0)
+                sects_resp = await grist_get(ctx, "tables/_grist_Views_section/records")
+                custom_sections = [r for r in sects_resp.get("records",[])
+                                   if r["fields"].get("parentId") == view_ref
+                                   and r["fields"].get("parentKey") == "custom"]
+                custom_ref = max((r["id"] for r in custom_sections), default=0)
+                grid_ref = 0
+                if not custom_ref:
+                    return {"error": "Section custom non trouvee apres creation (widget_only)"}
+            else:
+                # Etape 1 : creer page avec section grille
+                await grist_apply(ctx, [["CreateViewSection", table_ref, 0, "record", None, None]])
 
-            # Trouver la nouvelle vue (max viewRef)
-            views_resp = await grist_get(ctx, "tables/_grist_Views/records")
-            view_ref = max((r["id"] for r in views_resp.get("records",[])), default=0)
+                # Trouver la nouvelle vue (max viewRef)
+                views_resp = await grist_get(ctx, "tables/_grist_Views/records")
+                view_ref = max((r["id"] for r in views_resp.get("records",[])), default=0)
 
-            # Trouver la section grille creee
-            sects_resp = await grist_get(ctx, "tables/_grist_Views_section/records")
-            grid_sections = [r for r in sects_resp.get("records",[])
-                             if r["fields"].get("parentId") == view_ref
-                             and r["fields"].get("parentKey") == "record"]
-            grid_ref = max((r["id"] for r in grid_sections), default=0)
+                # Trouver la section grille creee
+                sects_resp = await grist_get(ctx, "tables/_grist_Views_section/records")
+                grid_sections = [r for r in sects_resp.get("records",[])
+                                 if r["fields"].get("parentId") == view_ref
+                                 and r["fields"].get("parentKey") == "record"]
+                grid_ref = max((r["id"] for r in grid_sections), default=0)
 
-            # Etape 2 : ajouter section custom widget sur la meme vue
-            await grist_apply(ctx, [["CreateViewSection", table_ref, view_ref, "custom", None, None]])
+                # Etape 2 : ajouter section custom widget sur la meme vue
+                await grist_apply(ctx, [["CreateViewSection", table_ref, view_ref, "custom", None, None]])
 
-            # Trouver la nouvelle section custom
-            sects_resp2 = await grist_get(ctx, "tables/_grist_Views_section/records")
-            custom_sections = [r for r in sects_resp2.get("records",[])
-                               if r["fields"].get("parentId") == view_ref
-                               and r["fields"].get("parentKey") == "custom"]
-            custom_ref = max((r["id"] for r in custom_sections), default=0)
-            if not custom_ref:
-                return {"error": "Section custom non trouvee apres creation"}
+                # Trouver la nouvelle section custom
+                sects_resp2 = await grist_get(ctx, "tables/_grist_Views_section/records")
+                custom_sections = [r for r in sects_resp2.get("records",[])
+                                   if r["fields"].get("parentId") == view_ref
+                                   and r["fields"].get("parentKey") == "custom"]
+                custom_ref = max((r["id"] for r in custom_sections), default=0)
+                if not custom_ref:
+                    return {"error": "Section custom non trouvee apres creation"}
 
             # Etape 3 : configurer URL + lier a la grille via User Action
             # IMPORTANT: grist_patch sur _grist_Views_section stocke options comme objet
@@ -5633,10 +5650,13 @@ async def call_tool(uid_key, mcp_sid, name, args):
             # Etape 4 : definir le layout et le nom via User Action UpdateRecord
             # IMPORTANT: grist_patch sur _grist_Views stocke les JSON strings comme objets
             # ce qui casse le parsing cote Grist frontend. UpdateRecord via /apply est correct.
-            layout_spec = json.dumps({
-                "children": [{"children": [{"leaf": grid_ref}, {"leaf": custom_ref}]}],
-                "collapsed": []
-            })
+            if widget_only:
+                layout_spec = json.dumps({"children": [{"leaf": custom_ref}], "collapsed": []})
+            else:
+                layout_spec = json.dumps({
+                    "children": [{"children": [{"leaf": grid_ref}, {"leaf": custom_ref}]}],
+                    "collapsed": []
+                })
             update_fields: dict = {"layoutSpec": layout_spec}
             if page_name:
                 update_fields["name"] = page_name
@@ -5647,9 +5667,11 @@ async def call_tool(uid_key, mcp_sid, name, args):
                      "PAS de grist_section_configure — page entierement configuree.")
             return {
                 "ok": True, "view_ref": view_ref, "page_name": page_name,
-                "grid_section": grid_ref, "widget_section": custom_ref,
-                "widget_url": widget_url,
-                "hint": f"Page '{page_name}' creee : grille {table_id} + widget custom lies.",
+                "grid_section": grid_ref or None, "widget_section": custom_ref,
+                "widget_url": widget_url, "widget_only": widget_only,
+                "hint": (f"Page '{page_name}' creee : widget seul (pas de grille native)."
+                         if widget_only else
+                         f"Page '{page_name}' creee : grille {table_id} + widget custom lies."),
                 "_next": _next,
             }
         except Exception as e:
