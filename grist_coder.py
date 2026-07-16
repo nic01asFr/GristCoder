@@ -592,15 +592,35 @@ def _rewrite_browser_actions(actions):
         out.append(a)
     return out
 
-async def grist_apply(ctx, actions: list) -> dict:
-    """Applique des user actions Grist via POST /apply.
+# Taille max de lignes par lot pour les Bulk*Record (imports massifs). Au-dela,
+# grist_apply decoupe en sous-lots sequentiels pour rester sous les limites de
+# taille du WAF Incapsula. Configurable via env.
+_BULK_MAX_ROWS = int(os.getenv("GRIST_BULK_MAX_ROWS", "200"))
 
-    Resilience : les 5xx (WAF Incapsula qui bloque parfois les /apply en rafale)
-    sont rejoues avec backoff. Le WAF bloque AVANT que Grist n'applique l'action,
-    donc rejouer est sur (l'action n'a pas ete partiellement appliquee)."""
-    # Session navigateur (pas de cle API) : reecrire les UserActions restreintes.
-    if not ctx.grist_key:
-        actions = _rewrite_browser_actions(actions)
+def _split_bulk_actions(actions, max_rows=None):
+    """Decoupe les Bulk*Record de plus de max_rows lignes en sous-actions, en
+    PRESERVANT l'ordre (les Ref: forward et AddTable-avant-insert restent valides).
+    Les autres actions sont inchangees. Retourne (flat, split_bool)."""
+    max_rows = max_rows or _BULK_MAX_ROWS
+    if not isinstance(actions, list) or max_rows < 1:
+        return actions, False
+    flat, split = [], False
+    for a in actions:
+        if (isinstance(a, list) and len(a) >= 4 and isinstance(a[0], str)
+                and a[0].startswith("Bulk") and isinstance(a[2], list)
+                and isinstance(a[3], dict) and len(a[2]) > max_rows):
+            verb, tbl, rowids, cols = a[0], a[1], a[2], a[3]
+            for i in range(0, len(rowids), max_rows):
+                sl = slice(i, i + max_rows)
+                flat.append([verb, tbl, rowids[sl],
+                             {k: (v[sl] if isinstance(v, list) else v) for k, v in cols.items()}])
+            split = True
+        else:
+            flat.append(a)
+    return flat, split
+
+async def _grist_apply_post(ctx, actions) -> dict:
+    """POST /apply d'UN lot d'actions, avec retry-5xx + backoff + echappement WAF."""
     body = _waf_json(actions)  # echappe <> -> ne declenche plus le 403 WAF sur <script>
     last = None
     for attempt in range(3):
@@ -617,6 +637,32 @@ async def grist_apply(ctx, actions: list) -> dict:
             raise
     if last:
         raise last
+
+async def grist_apply(ctx, actions: list) -> dict:
+    """Applique des user actions Grist via POST /apply.
+
+    Resilience : les 5xx (WAF Incapsula qui bloque parfois les /apply en rafale)
+    sont rejoues avec backoff. Le WAF bloque AVANT que Grist n'applique l'action,
+    donc rejouer est sur. Les gros Bulk*Record (> _BULK_MAX_ROWS lignes) sont
+    decoupes en lots SEQUENTIELS (ordre preserve) pour rester sous les limites WAF ;
+    chaque lot beneficie du retry. Les timeouts ne sont PAS rejoues (evite le double
+    insert add-only). NB : le decoupage sacrifie l'atomicite (import partiel possible)
+    au profit du passage sous le WAF -- c'est le bon compromis pour les imports massifs."""
+    # Session navigateur (pas de cle API) : reecrire les UserActions restreintes.
+    if not ctx.grist_key:
+        actions = _rewrite_browser_actions(actions)
+    flat, split = _split_bulk_actions(actions)
+    if not split:
+        return await _grist_apply_post(ctx, actions)
+    # Import massif : appliquer chaque sous-lot sequentiellement (ordre Ref preserve).
+    last = None
+    for idx, sub in enumerate(flat):
+        try:
+            last = await _grist_apply_post(ctx, [sub])
+        except Exception as e:
+            raise RuntimeError(_scrub_secrets(
+                f"Import partiel : {idx} lot(s) applique(s) sur {len(flat)} avant echec. {e}")) from e
+    return last if last is not None else {"ok": True, "batched": len(flat)}
 
 # ── PUBLICATION AUTONOME (custom-widget-builder) ─────────────────────────────
 # Un artefact "publie" est fige dans les options de sa section Grist via le
