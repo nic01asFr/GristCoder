@@ -370,6 +370,10 @@ const GRIST_BRIDGE_SCRIPT =
     "ready:function(){return Promise.resolve();}," +
     "util:util," +
     "docApi:{fetchTable:function(n){return call('fetchTable',[n]);}," +
+      // Charge une table et renvoie DIRECTEMENT un tableau d'objets [{id,col},...]
+      // pret a afficher (fetchTable renvoie du colonnaire {id:[...],col:[...]} que
+      // les LLM convertissent souvent mal). A utiliser pour remplir une liste.
+      "loadTable:function(n){return call('fetchTable',[n]).then(function(d){return util.toRows(d);});}," +
       "applyUserActions:function(a){return call('applyUserActions',[a]);}," +
       // Ecrit PUIS re-fetch la table impactee et renvoie les lignes converties.
       // Refresh deterministe independant de la table liee du widget (onRecords ne
@@ -565,6 +569,20 @@ window.addEventListener('message', async function(e) {
         var recRelay = {cid:cid,src:src};
         _bridgeOnRecordRelays.push(recRelay);
         if (_lastRecords) src.postMessage({type:'grist-bridge-callback',callbackId:cid,args:[_lastRecords,null]},'*');
+        else {
+          // grist.onRecords pas encore declenche (frequent en mode display) : on livre
+          // proactivement la table de la section, convertie en tableau d'objets, pour que
+          // les artefacts qui affichent leur liste via onRecords ne restent pas vides.
+          try {
+            grist.fetchSelectedTable().then(function(d){
+              var rows = _bridgeToRows(d);
+              if (rows.length) {
+                _lastRecords = rows;
+                try { src.postMessage({type:'grist-bridge-callback',callbackId:cid,args:[rows,null]},'*'); } catch(_) {}
+              }
+            }).catch(function(){});
+          } catch(_) {}
+        }
       } else if (action === 'onRecord') {
         // Register relay without overriding parent handler; fire immediately if record available
         var recRelay = {cid:cid,src:src};
@@ -670,6 +688,13 @@ var _currentContext='qualifying'; // phase courante poussée par plan_update via
 var _editor, _panelOpen=false;
 var _bridgeOnRecordRelays=[], _lastRecords=null;
 var _bridgeOnOptionsRelays=[], _lastOptions=null;
+// Colonnaire Grist {id:[...],col:[...]} -> tableau d'objets [{id,col},...] (format onRecords).
+function _bridgeToRows(d){
+  if(!d||!d.id)return[];
+  var n=d.id.length,r=[];
+  for(var i=0;i<n;i++){var o={id:d.id[i]};for(var k in d){if(k!=='id'){var c=d[k];o[k]=(c&&c[i]!=null)?c[i]:null;}}r.push(o);}
+  return r;
+}
 var _lastServerCanvas=null; // Guard: prevent autoSave on server-pushed setValue
 var _serverUpdating=false;  // True while SSE-driven canvas update is in progress (blocks autoSave)
 var _autoSaveTimer=null;    // Manual debounce timer (cancellable)
