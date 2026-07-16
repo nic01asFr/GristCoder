@@ -379,6 +379,12 @@ const GRIST_BRIDGE_SCRIPT =
       // Refresh deterministe independant de la table liee du widget (onRecords ne
       // se declenche pas pour une table que l'artefact ecrit lui-meme).
       "applyAndFetch:function(a,tbl){return call('applyUserActions',[a]).then(function(){return call('fetchTable',[tbl]);}).then(function(d){return util.toRows(d);});}," +
+      // CRUD foolproof : construisent la bonne UserAction (le format colonnaire /
+      // le verbe correct sont geres) ET renvoient la liste A JOUR (tableau d'objets).
+      // addRow(t,{col:val}) ajoute ; updateRow(t,id,{col:val}) modifie ; deleteRow(t,id) supprime.
+      "addRow:function(t,f){return this.applyAndFetch([['BulkAddRecord',t,[null],f]],t);}," +
+      "updateRow:function(t,id,f){return this.applyAndFetch([['UpdateRecord',t,id,f]],t);}," +
+      "deleteRow:function(t,id){return this.applyAndFetch([['RemoveRecord',t,id]],t);}," +
       "listTables:function(){return call('listTables',[]);}," +
       "getAccessToken:function(o){return call('getAccessToken',[o||{}]);}}," +
     "onRecords:function(cb){reg('onRecords',cb);}," +

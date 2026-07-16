@@ -5633,7 +5633,21 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 existing = {t["id"] for t in schema.get("tables", [])}
             except Exception:
                 existing = set()
-            check = _validate_actions(actions, existing)
+            # Colonnes des tables EXISTANTES touchees (AddColumn/ModifyColumn/UpdateRecord)
+            # -> permet de valider la casse des colonnes et les $refs de formule AVANT
+            # d'ecrire (evite le 500 sandbox opaque en EDITION d'app deja construite).
+            existing_cols = {}
+            touched = {a[1] for a in actions
+                       if isinstance(a, list) and len(a) >= 2 and isinstance(a[1], str)
+                       and a[0] in ("AddColumn", "ModifyColumn", "UpdateRecord")
+                       and a[1] in existing}
+            for t in touched:
+                try:
+                    cols = await grist_get(ctx, f"tables/{t}/columns")
+                    existing_cols[t] = {c["id"] for c in cols.get("columns", [])}
+                except Exception:
+                    pass
+            check = _validate_actions(actions, existing, existing_cols or None)
             if not check["ok"]:
                 return {"error": "Validation pre-vol echouee (rien applique).",
                         "validation_errors": check["errors"],
