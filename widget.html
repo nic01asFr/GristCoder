@@ -382,7 +382,9 @@ const GRIST_BRIDGE_SCRIPT =
       // CRUD foolproof : construisent la bonne UserAction (le format colonnaire /
       // le verbe correct sont geres) ET renvoient la liste A JOUR (tableau d'objets).
       // addRow(t,{col:val}) ajoute ; updateRow(t,id,{col:val}) modifie ; deleteRow(t,id) supprime.
-      "addRow:function(t,f){return this.applyAndFetch([['BulkAddRecord',t,[null],f]],t);}," +
+      // addRow = 1 ligne : chaque valeur (listes ChoiceList/RefList ['L',...] incluses)
+      // enveloppee dans un tableau 1-element -> 1 cellule, jamais N lignes.
+      "addRow:function(t,f){var c={};for(var k in f){if(Object.prototype.hasOwnProperty.call(f,k))c[k]=[f[k]];}return this.applyAndFetch([['BulkAddRecord',t,[null],c]],t);}," +
       "updateRow:function(t,id,f){return this.applyAndFetch([['UpdateRecord',t,id,f]],t);}," +
       "deleteRow:function(t,id){return this.applyAndFetch([['RemoveRecord',t,id]],t);}," +
       "listTables:function(){return call('listTables',[]);}," +

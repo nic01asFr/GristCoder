@@ -114,7 +114,16 @@
   }
 
   // CRUD foolproof : bonne UserAction construite + liste à jour renvoyée.
-  function addRow(table, fields)        { return applyAndFetch([['BulkAddRecord', table, [null], fields]], table); }
+  // addRow = UNE ligne : on construit le colonnaire nous-mêmes en enveloppant CHAQUE
+  // valeur (listes incluses) dans un tableau 1-élément -> une cellule ChoiceList/RefList
+  // ['L',v1,v2] devient [['L',v1,v2]] = 1 cellule-liste, pas N lignes (sinon corruption
+  // des champs multi-choix). NE PAS déléguer la mise en colonnaire à normalizeUserActions
+  // qui ne peut pas distinguer « liste-cellule » de « N valeurs par ligne ».
+  function addRow(table, fields) {
+    var cols = {};
+    for (var k in fields) { if (Object.prototype.hasOwnProperty.call(fields, k)) cols[k] = [fields[k]]; }
+    return applyAndFetch([['BulkAddRecord', table, [null], cols]], table);
+  }
   function updateRow(table, id, fields) { return applyAndFetch([['UpdateRecord', table, id, fields]], table); }
   function deleteRow(table, id)         { return applyAndFetch([['RemoveRecord', table, id]], table); }
 
