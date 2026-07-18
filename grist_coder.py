@@ -4750,6 +4750,54 @@ def _validate_actions(actions, existing_tables, existing_cols=None):
                     (iss["found"], sug))
     return {"ok": not errors, "errors": errors, "warnings": warnings}
 
+# ── SURVEY MANIFEST : conformité schéma Grist <-> manifest (convergence CEREMA) ─
+# Contrat partage (cf. docs/survey-manifest-consumption.md §5) : mapping des types
+# canoniques du Survey Manifest vers le type de BASE Grist attendu dans la table Reponses.
+_SURVEY_TYPE_TO_GRIST = {
+    "likert5": "Int", "choice": "Choice", "choice_list": "ChoiceList",
+    "bool": "Bool", "text": "Text", "datetime": "DateTime",
+    "rank_place": "Choice", "geojson": "Text", "int": "Int", "numeric": "Numeric",
+}
+# Colonnes meta/audit tolerees (ecrites par le bridge/runtime, hors questions).
+_SURVEY_META_COLS = {"Horodatage", "DureeSecondes", "manifest_version",
+                     "_audit_hash", "previous_hash", "integrity_hash"}
+
+def _survey_expected_columns(manifest: dict) -> dict:
+    """Survey Manifest -> {colId: type_grist_attendu} pour la table Reponses.
+    Inclut les colonnes de questions + les gates (Bool)."""
+    cols = {}
+    for sec in (manifest.get("sections") or []):
+        if not isinstance(sec, dict):
+            continue
+        gate = sec.get("gate")
+        if gate:
+            cols[gate] = "Bool"
+        for q in (sec.get("questions") or []):
+            if not isinstance(q, dict):
+                continue
+            cid = q.get("colId")
+            if cid:
+                cols[cid] = _SURVEY_TYPE_TO_GRIST.get(q.get("type", "text"), "Text")
+    return cols
+
+def _survey_schema_diff(manifest: dict, actual_cols: dict) -> dict:
+    """Diffe le schema attendu (depuis le manifest) vs le schema Grist reel de Reponses.
+    Compare le type de BASE (avant ':') pour tolerer Ref:X / DateTime:TZ / Choice sous-types.
+    Retourne {ok, schema_diff:{missing, type_mismatch, extra}}."""
+    expected = _survey_expected_columns(manifest)
+    missing, mismatch = [], []
+    for cid, exp in expected.items():
+        act = actual_cols.get(cid)
+        if act is None:
+            missing.append(cid)
+            continue
+        if str(act).split(":", 1)[0] != exp:
+            mismatch.append({"colId": cid, "expected": exp, "actual": act})
+    extra = [c for c in actual_cols
+             if c not in expected and c not in _SURVEY_META_COLS and not c.startswith("gristHelper_")]
+    return {"ok": not missing and not mismatch,
+            "schema_diff": {"missing": missing, "type_mismatch": mismatch, "extra": extra}}
+
 async def call_tool(uid_key, mcp_sid, name, args):
     if name == "sessions_list":
         s = registry.list_sessions(uid_key)
@@ -6585,6 +6633,61 @@ async def health(request: Request):
             "active_artefacts": active_arts,
         }
     return base
+
+
+# ── SURVEY SCHEMA-CHECK — conformité schéma Grist <-> Survey Manifest ──────────
+# Appelé server-to-server par le publish de qgis-sspcloud (_check_publish_ready) pour
+# valider, AVANT publication d'un livrable d'enquête, que la table Reponses du doc Grist
+# est alignée sur le manifest. Contrat convergence CEREMA (#survey-manifest).
+@app.get("/survey/{doc_id}/schema-check")
+async def survey_schema_check(doc_id: str, request: Request):
+    manifest_url = request.query_params.get("manifest_url")
+    table = request.query_params.get("table", "Reponses")
+    if not manifest_url:
+        return JSONResponse({"ok": False, "error": "manifest_url requis"}, status_code=400)
+    # Auth : Bearer <grist_key> fourni par l'appelant, sinon clé de service server-side.
+    auth = request.headers.get("Authorization", "")
+    key = auth.split("Bearer ", 1)[1].strip() if auth.startswith("Bearer ") else ""
+    if not key:
+        key = os.getenv("GRIST_PROVISION_KEY", "").strip()
+    if not key:
+        return JSONResponse({"ok": False, "error": "auth requise : header Authorization: Bearer "
+                             "<grist_key>, ou GRIST_PROVISION_KEY configuree server-side."}, status_code=401)
+    # site_url : env, sinon une session widget active.
+    site_url = os.getenv("GRIST_SITE_URL", "").strip()
+    if not site_url:
+        for u in registry._users.values():
+            for sctx in u.get("sessions", {}).values():
+                if getattr(sctx, "site_url", ""):
+                    site_url = sctx.site_url
+                    break
+            if site_url:
+                break
+    if not site_url:
+        return JSONResponse({"ok": False, "error": "GRIST_SITE_URL introuvable (ni env ni session active)."},
+                            status_code=500)
+    # 1) récupérer le manifest (contrat déclaratif).
+    try:
+        async with _grist_client() as c:
+            rm = await c.get(manifest_url)
+            rm.raise_for_status()
+            manifest = rm.json()
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": _scrub_secrets(f"manifest injoignable : {e}")}, status_code=502)
+    # 2) récupérer les colonnes réelles de la table Reponses.
+    ctx = SessionCtx(doc_id, "", site_url, grist_key=key)
+    try:
+        cols_resp = await grist_get(ctx, f"tables/{table}/columns")
+        actual = {c["id"]: (c.get("fields", {}) or {}).get("type", "")
+                  for c in (cols_resp.get("columns", []) or [])}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": _scrub_secrets(
+            f"lecture schéma Grist échouée (doc {doc_id}, table {table}) : {e}")}, status_code=502)
+    # 3) diff manifest <-> schéma réel.
+    result = _survey_schema_diff(manifest, actual)
+    result["doc_id"] = doc_id
+    result["table"] = table
+    return JSONResponse(result)
 
 
 # ── LLM proxy (Albert, SSPCloud, etc.) — bypasses CORS for browser widgets ──
