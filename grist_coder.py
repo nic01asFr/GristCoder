@@ -900,8 +900,14 @@ def _infer_status_from_snapshot(snapshot: dict) -> tuple[str, float, list[str]]:
     return ("building", score, next_actions)
 
 async def fetch_grist_user_profile(site_url, bearer_token):
+    """Resout le profil Grist d'une cle Bearer (mapping cle -> uid:{grist_user_id}).
+
+    IMPORTANT : utilise _grist_client() (follow_redirects + cookie jar Incapsula
+    partages). Un client nu echoue par intermittence sur le challenge 302 du WAF
+    -> profil None -> le client MCP retombe sur un uid key:{sha1} SANS sessions
+    (compte parallele vide) alors que les sessions widget vivent sous uid:{id}."""
     try:
-        async with httpx.AsyncClient(timeout=5) as c:
+        async with _grist_client() as c:
             r = await c.get(f"{site_url}/api/profile/user",
                             headers={"Authorization": f"Bearer {bearer_token}"})
             if r.status_code == 200: return r.json()
@@ -6243,6 +6249,22 @@ async def _resolve_uid_key(raw_bearer, x_grist_site):
             registry.provision(uid_key, grist_key=raw_bearer, site=x_grist_site.rstrip("/"))
         return uid_key
     site = (x_grist_site or "").rstrip("/")
+    if not site:
+        # La passerelle (ex: connecteur claude.ai) n'envoie generalement PAS le header
+        # X-Grist-Site -> sans repli, le lookup profil n'etait JAMAIS tente et la cle
+        # retombait sur un uid key:{sha1} vide. Replis : env, puis site d'un user connu.
+        site = os.getenv("GRIST_SITE_URL", "").strip().rstrip("/")
+    if not site:
+        for udata in registry._users.values():
+            s = (udata.get("site") or "").rstrip("/")
+            if not s:
+                for sctx in udata["sessions"].values():
+                    if getattr(sctx, "site_url", ""):
+                        s = sctx.site_url
+                        break
+            if s:
+                site = s
+                break
     if site:
         profile = await fetch_grist_user_profile(site, raw_bearer)
         if profile and profile.get("id"):
