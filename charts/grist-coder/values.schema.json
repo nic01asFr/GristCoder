@@ -1,0 +1,111 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "app": {
+      "type": "object",
+      "title": "Serveur GristCoder",
+      "description": "Parametres du serveur MCP.",
+      "properties": {
+        "host": {
+          "type": "string",
+          "title": "Domaine public",
+          "description": "Hostname public du serveur (TLS auto). Renseigne par Onyxia.",
+          "default": "",
+          "x-onyxia": {
+            "overwriteDefaultWith": "grist-coder-{{k8s.randomSubdomain}}.user-{{user.idep}}.lab.sspcloud.fr"
+          }
+        },
+        "ownerLock": {
+          "type": "string",
+          "title": "Verrou proprietaire",
+          "description": "on = seul le 1er compte Grist enregistre peut utiliser ce pod (recommande). off = pod partage.",
+          "default": "on",
+          "enum": ["on", "off"]
+        },
+        "logLevel": {
+          "type": "string",
+          "title": "Niveau de log",
+          "default": "info",
+          "enum": ["error", "warn", "info", "debug"]
+        }
+      }
+    },
+    "onyxia_user": {
+      "type": "string",
+      "title": "Identifiant Onyxia",
+      "description": "Renseigne automatiquement.",
+      "default": "",
+      "x-onyxia": {
+        "overwriteDefaultWith": "{{user.idep}}"
+      }
+    },
+    "grist": {
+      "type": "object",
+      "title": "Instance Grist",
+      "properties": {
+        "siteUrl": {
+          "type": "string",
+          "title": "URL de l'instance Grist",
+          "default": "https://grist.numerique.gouv.fr"
+        },
+        "apiKey": {
+          "type": "string",
+          "title": "Cle API Grist (optionnelle)",
+          "description": "Utile pour les clients MCP (Claude Desktop/Code) et les webhooks. Le widget n'en a pas besoin. Reste sur ton pod.",
+          "default": "",
+          "render": "password"
+        }
+      }
+    },
+    "llm": {
+      "type": "object",
+      "title": "Modele de langage (LLM)",
+      "properties": {
+        "autoFromDatalab": {
+          "type": "boolean",
+          "title": "Recuperer la cle depuis le datalab SSPCloud",
+          "description": "Lit automatiquement la config AI Assistant du datalab (necessite le service lance avec le role Kubernetes 'edit'). Sinon, renseigner la cle ci-dessous.",
+          "default": true
+        },
+        "baseUrl": {
+          "type": "string",
+          "title": "Endpoint LLM",
+          "default": "https://llm.lab.sspcloud.fr/api"
+        },
+        "model": {
+          "type": "string",
+          "title": "Modele",
+          "default": "gemma3-27b-it"
+        },
+        "apiKey": {
+          "type": "string",
+          "title": "Cle API LLM (repli)",
+          "description": "Laisser vide si recuperation auto depuis le datalab.",
+          "default": "",
+          "render": "password"
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "title": "Ressources",
+      "properties": {
+        "requests": {
+          "type": "object",
+          "properties": {
+            "cpu": { "type": "string", "title": "CPU", "default": "100m" },
+            "memory": { "type": "string", "title": "RAM", "default": "256Mi" }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "properties": {
+            "cpu": { "type": "string", "title": "CPU max", "default": "1000m" },
+            "memory": { "type": "string", "title": "RAM max", "default": "1Gi" }
+          }
+        }
+      }
+    }
+  }
+}

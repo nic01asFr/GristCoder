@@ -685,6 +685,11 @@ window.addEventListener('message', async function(e) {
 const BASE = window.location.origin;
 const _DISPLAY_ART = new URLSearchParams(window.location.search).get('a') || '';
 const _DISPLAY_MODE = !!_DISPLAY_ART;
+// Garde du pod (deploiement Onyxia par-user) : jeton lu dans l'URL du widget
+// (?app_token=...), configure par le proprietaire du pod. Vide en dev/local.
+// Presente au serveur sur /register, le flux SSE et le proxy LLM.
+const APP_TOKEN = new URLSearchParams(window.location.search).get('app_token') || '';
+window.__APP_TOKEN__ = APP_TOKEN;  // expose au harness (llm-client -> /llm-proxy)
 // DSFR — not auto-injected. Artefacts import it themselves via CDN <link> tag.
 // The SERVER_INSTRUCTIONS and docs/artefacts resource document the pattern.
 var _registered=false, _registering=false, _token=null, _mcpId=1, _es=null, _refreshTimer=null, _standalone=false;
@@ -853,9 +858,11 @@ async function doRegister(msg) {
     // on tombe en mode standalone : pas de SSE MCP, mais chargement artefacts OK.
     var data = null;
     try {
+      var _regHeaders = {'Content-Type':'application/json'};
+      if (APP_TOKEN) _regHeaders['X-App-Token'] = APP_TOKEN;
       var res = await fetch(BASE+'/register', {method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({accessToken:tk.token,docId,docTitle,siteUrl,userId})});
+        headers:_regHeaders,
+        body: JSON.stringify({accessToken:tk.token,docId,docTitle,siteUrl,userId,appToken:APP_TOKEN})});
       if (res.ok) data = await res.json();
     } catch(_) {}
     if (!data || data.error) {
@@ -901,7 +908,8 @@ function _armSSEWatchdog() {
 function listenSSE() {
   if (!_token) return;
   if (_es) { _es.close(); _es = null; }
-  var _sseUrl = BASE+'/mcp?token='+encodeURIComponent(_token)+(_DISPLAY_MODE?'&display=1':'');
+  var _sseUrl = BASE+'/mcp?token='+encodeURIComponent(_token)+(_DISPLAY_MODE?'&display=1':'')
+    +(APP_TOKEN?'&app_token='+encodeURIComponent(APP_TOKEN):'');
   _es = new EventSource(_sseUrl);
   _armSSEWatchdog();
   _es.onmessage = function(e) {
@@ -1005,6 +1013,7 @@ function listenSSE() {
           renderArtSelect();
         }
         if (ev.type === 'screenshot_request') captureScreenshot();
+        if (ev.type === 'apply_request') applyFromServer(ev.actions, ev.token);
         if (ev.type === 'wizard_step')    showWizardCard(ev.step, ev.token);
         if (ev.type === 'wizard_close')   { if(ev.card_id) closeWizardCard(ev.card_id); else closeWizard(); }
         if (ev.type === 'context_update') _ctxToCard(ev.panel, ev.token);
@@ -1025,11 +1034,33 @@ function listenSSE() {
   };
 }
 
+// Execute des UserActions poussees par le serveur (artefact_publish) DANS le navigateur :
+// applyUserActions ecrit en same-origin sur la session authentifiee -> bypass du WAF de
+// l'instance ET privileges owner (ecriture des tables meta _grist_Views_section). Acquitte
+// sur /apply-result/{token} : {} en succes, {error} si echec.
+async function applyFromServer(actions, token) {
+  var payload = {};
+  try {
+    if (!(window.grist && grist.docApi && grist.docApi.applyUserActions))
+      throw new Error('grist.docApi indisponible');
+    await grist.docApi.applyUserActions(actions);
+  } catch(e) {
+    payload = { error: String((e && e.message) || e) };
+  }
+  try {
+    await fetch(BASE+'/apply-result/'+encodeURIComponent(token), {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)});
+  } catch(_) {}
+}
+
 // ── MCP TOOL CALL ────────────────────────────────────────────────────────────
 async function tool(name, args) {
   if (!_token) throw new Error('Widget non connecte');
+  var _toolHeaders = {'Content-Type':'application/json','Authorization':'Bearer '+_token};
+  if (APP_TOKEN) _toolHeaders['X-App-Token'] = APP_TOKEN;
   var r = await fetch(BASE+'/mcp', {method:'POST',
-    headers:{'Content-Type':'application/json','Authorization':'Bearer '+_token},
+    headers:_toolHeaders,
     body: JSON.stringify({jsonrpc:'2.0',id:_mcpId++,method:'tools/call',
                           params:{name:name,arguments:args||{}}})});
   var d = await r.json();

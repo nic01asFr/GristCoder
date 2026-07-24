@@ -9,7 +9,7 @@ COPY grist_coder.py .
 COPY widget.html .
 COPY harness/ ./harness/
 
-# Port du service
+# Port du service (surchargable via $PORT, injecte par le chart Onyxia)
 EXPOSE 8742
 
-CMD ["uvicorn", "grist_coder:app", "--host", "0.0.0.0", "--port", "8742"]
+CMD ["sh", "-c", "uvicorn grist_coder:app --host 0.0.0.0 --port ${PORT:-8742}"]

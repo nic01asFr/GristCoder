@@ -156,12 +156,11 @@
 
     var resp;
     try {
+      var _h = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token };
+      if (window.__APP_TOKEN__) _h['X-App-Token'] = window.__APP_TOKEN__;
       resp = await fetch(base + '/mcp', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: 'Bearer ' + token
-        },
+        headers: _h,
         body: JSON.stringify({
           jsonrpc: '2.0',
           id: 'harness-tools-list',

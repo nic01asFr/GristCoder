@@ -1,0 +1,6 @@
+# Scripts shell servis via raw et executes sur Linux (SSPCloud) : toujours LF.
+*.sh text eol=lf
+# Fichiers Helm / manifests : LF (evite les soucis de rendu sur cluster).
+*.yaml text eol=lf
+*.yml text eol=lf
+*.tpl text eol=lf

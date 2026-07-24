@@ -129,6 +129,10 @@
       "X-LLM-Base": opts.baseUrl || "",
       "Authorization": "Bearer " + (opts.apiKey || "")
     };
+    // Garde du pod (deploiement Onyxia) : /llm-proxy exige X-App-Token quand active.
+    if (typeof window !== "undefined" && window.__APP_TOKEN__) {
+      headers["X-App-Token"] = window.__APP_TOKEN__;
+    }
     // Anthropic exige anthropic-version ; le proxy le relaie (liste blanche).
     if (opts.provider === "anthropic") {
       headers["anthropic-version"] = "2023-06-01";

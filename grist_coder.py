@@ -12,7 +12,7 @@ TOOLS : sessions(3) plan(1) canvas(7) wizard(2) context(1) chat(2) subagent(1)
 MCP   : sampling/createMessage (client capability) -> subagent_call + chat auto-reply
 """
 
-import asyncio, base64, difflib, hashlib, json, os, re, secrets, subprocess, sys, time, uuid, urllib.parse
+import asyncio, base64, difflib, hashlib, hmac, json, os, re, secrets, subprocess, sys, time, uuid, urllib.parse
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -33,6 +33,98 @@ SESSION_TTL     = int(os.getenv("SESSION_TTL", str(24 * 3600)))
 LLM_PROXY_ALLOWED_HOSTS = {
     h.strip().lower() for h in os.getenv("LLM_PROXY_ALLOWED_HOSTS", "").split(",") if h.strip()
 }
+
+# ── Deploiement Onyxia par-utilisateur (pod souverain) ─────────────────────────
+# Ces variables sont injectees par le chart charts/grist-coder. Toutes vides en dev
+# local -> aucun changement de comportement (garde et owner-lock desactives).
+#
+# Garde d'acces du pod : token Bearer exige sur la surface protegee (/mcp, /register,
+# /llm-proxy). Vide = pas de garde (dev local, ou pod volontairement ouvert).
+APP_AUTH_TOKEN = os.getenv("APP_AUTH_TOKEN", "").strip()
+# Owner-lock TOFU : le 1er compte Grist (uid) qui s'enregistre devient proprietaire ;
+# tout autre uid est rejete (403). Empeche un tiers d'utiliser ce pod avec sa cle.
+OWNER_LOCK = os.getenv("OWNER_LOCK", "").strip().lower() in ("1", "on", "true", "yes")
+_owner_uid: str | None = None  # epingle au 1er enregistrement quand OWNER_LOCK actif
+# Defauts LLM injectes par le chart (repli quand le widget n'envoie pas X-LLM-*).
+LLM_BASE_URL_DEFAULT  = os.getenv("LLM_BASE_URL", "").strip().rstrip("/")
+LLM_MODEL_DEFAULT     = os.getenv("LLM_MODEL", "").strip()
+LLM_API_KEY_ENV       = os.getenv("LLM_API_KEY", "").strip()
+# Recuperation auto de la cle LLM depuis la config AI Assistant du datalab SSPCloud
+# (Secret *-secretassistant), quand le pod tourne avec kubernetes.role: edit.
+LLM_AUTO_FROM_DATALAB = os.getenv("LLM_AUTO_FROM_DATALAB", "").strip().lower() in ("1", "on", "true", "yes")
+
+
+def _check_app_token(request) -> bool:
+    """Vrai si la garde du pod est satisfaite (ou desactivee). En deploiement Onyxia,
+    APP_AUTH_TOKEN est injecte ; la surface protegee doit le presenter via l'en-tete
+    X-App-Token, la query app_token, ou le body (POST /register). Vide -> toujours vrai."""
+    if not APP_AUTH_TOKEN:
+        return True
+    tok = (request.headers.get("X-App-Token")
+           or request.query_params.get("app_token") or "")
+    return bool(tok) and hmac.compare_digest(tok, APP_AUTH_TOKEN)
+
+
+def _owner_gate(uid_key) -> bool:
+    """Owner-lock TOFU : epingle le 1er uid:{id} reel, rejette tout autre. True = autorise.
+    Les uid de repli key:{sha1} (profil non resolu, compte vide) ne sont jamais epingles."""
+    global _owner_uid
+    if not OWNER_LOCK or not uid_key or not uid_key.startswith("uid:"):
+        return True
+    if _owner_uid is None:
+        _owner_uid = uid_key
+        return True
+    return uid_key == _owner_uid
+
+
+# Cle LLM resolue une fois (env explicite, sinon lecture datalab). Cache best-effort.
+_llm_key_cache: dict = {"key": None, "loaded": False}
+
+
+async def _datalab_llm_key():
+    """Lit la cle LLM depuis le Secret AI Assistant du datalab SSPCloud (pattern qgis-sspcloud).
+    Le pod doit tourner avec kubernetes.role: edit (lecture des Secrets du namespace).
+    Retourne la cle ou None. Resultat mis en cache (une seule lecture par process)."""
+    if _llm_key_cache["loaded"]:
+        return _llm_key_cache["key"]
+    _llm_key_cache["loaded"] = True
+    sa_dir = "/var/run/secrets/kubernetes.io/serviceaccount"
+    try:
+        with open(f"{sa_dir}/token", encoding="utf-8") as f:
+            sa_token = f.read().strip()
+        ns = os.getenv("SSPCLOUD_NAMESPACE", "").strip()
+        if not ns:
+            with open(f"{sa_dir}/namespace", encoding="utf-8") as f:
+                ns = f.read().strip()
+        async with httpx.AsyncClient(verify=f"{sa_dir}/ca.crt", timeout=10.0) as c:
+            r = await c.get(
+                f"https://kubernetes.default.svc/api/v1/namespaces/{ns}/secrets",
+                headers={"Authorization": f"Bearer {sa_token}"})
+            r.raise_for_status()
+            for item in r.json().get("items", []):
+                name = (item.get("metadata", {}) or {}).get("name", "")
+                if name.endswith("secretassistant"):
+                    raw = (item.get("data", {}) or {}).get("config.json")
+                    if not raw:
+                        continue
+                    cfg = json.loads(base64.b64decode(raw).decode())
+                    key = (cfg.get("api_keys", {}) or {}).get("OPENAI_API_KEY", "")
+                    if key:
+                        _llm_key_cache["key"] = key
+                        print(f"[llm] cle recuperee du datalab (Secret {name})", file=sys.stderr)
+                        return key
+    except Exception as e:
+        print(f"[llm] lecture datalab echouee : {type(e).__name__}: {e}", file=sys.stderr)
+    return None
+
+
+async def _resolve_llm_key():
+    """Cle LLM server-side : env explicite, sinon config datalab (si autoFromDatalab)."""
+    if LLM_API_KEY_ENV:
+        return LLM_API_KEY_ENV
+    if LLM_AUTO_FROM_DATALAB:
+        return await _datalab_llm_key()
+    return None
 
 # Security warning: webhook receiver is unauthenticated unless WEBHOOK_SECRET is set.
 # If HOST_URL is publicly accessible (not localhost), this allows anyone to inject
@@ -385,6 +477,10 @@ class UserRegistry:
 registry  = UserRegistry()
 _token_to_uid: dict[str, str] = {}
 _screenshot_waiters: dict[str, asyncio.Future] = {}
+# Round-trip d'ecriture navigateur : le serveur pousse des UserActions au widget,
+# qui les execute via grist.docApi.applyUserActions (bypass WAF + privileges owner)
+# puis acquitte sur POST /apply-result/{token}.
+_apply_waiters: dict[str, asyncio.Future] = {}
 _client_capabilities: dict[str, dict] = {}   # uid_key -> capabilities déclarées par le client MCP
 _mcp_client_sids: dict[str, str] = {}        # uid_key -> sid SSE du client MCP (Claude Desktop)
 _display_sids: set[str] = set()              # sids des widgets en display mode (?a=...) — pas de replay wizard
@@ -443,6 +539,45 @@ def _notify_resource(uid_key, uri):
     _push(uid_key, {"type": "mcp_notification",
                     "method": "notifications/resources/updated",
                     "params": {"uri": uri}})
+
+
+def _has_live_widget(uid_key) -> bool:
+    """Vrai si un widget navigateur (SSE) est connecte pour ce user. Exclut la connexion
+    SSE du client MCP lui-meme (Claude Desktop ouvre aussi un GET /mcp) : elle n'execute
+    pas applyUserActions et ne doit pas compter comme un widget capable d'ecrire."""
+    mcp_sids = set(_mcp_client_sids.values())
+    return any(_sid_uid.get(sid) == uid_key and sid not in mcp_sids for sid in _queues)
+
+
+async def _browser_apply(uid_key, ctx, actions, *, timeout=20.0):
+    """Execute des UserActions DANS le navigateur (widget) via grist.docApi.applyUserActions.
+    Pourquoi : les ecritures serveur vers grist.numerique.gouv.fr passent par le WAF Incapsula
+    (403 sur gros payloads / <script> / droits meta insuffisants de l'accessToken). Le navigateur,
+    lui, ecrit en same-origin sur la session authentifiee de l'utilisateur -> bypass WAF ET
+    privileges pleins du proprietaire (ecriture des tables meta _grist_Views_section OK).
+    Round-trip SSE (apply_request) + ack (POST /apply-result/{token}). Retourne (ok, error)."""
+    if not _has_live_widget(uid_key):
+        return False, ("Aucun widget Coder connecte pour ce compte. Ouvre le widget Coder "
+                       "dans ce doc Grist pour publier : l'ecriture passe par le navigateur "
+                       "afin de contourner le pare-feu de l'instance.")
+    prior = _apply_waiters.pop(ctx.token, None)
+    if prior and not prior.done():
+        prior.cancel()
+    loop = asyncio.get_event_loop()
+    fut = loop.create_future()
+    _apply_waiters[ctx.token] = fut
+    _push(uid_key, {"type": "apply_request", "token": ctx.token, "actions": actions})
+    try:
+        res = await asyncio.wait_for(fut, timeout=timeout)
+        if isinstance(res, dict) and res.get("error"):
+            return False, str(res["error"])
+        return True, None
+    except asyncio.TimeoutError:
+        return False, ("Timeout : le widget connecte n'a pas execute l'action dans le delai. "
+                       "Verifie que le widget Coder est ouvert et actif sur ce doc.")
+    finally:
+        if _apply_waiters.get(ctx.token) is fut:
+            _apply_waiters.pop(ctx.token, None)
 
 # ── PLAN PROGRESS CARD ────────────────────────────────────────────────────────
 # Construit la card "ctx-plan-progress" (bandeau Zone 1) depuis ctx.project_plan.
@@ -6073,8 +6208,13 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 except Exception:
                     options = {}
                 options["customView"] = custom_view
-                await grist_apply(ctx, [["UpdateRecord", "_grist_Views_section", section_ref,
-                                         {"options": json.dumps(options)}]])
+                # Ecriture lourde (HTML dans widgetOptions) -> WAF/droits meta cote serveur.
+                # On l'execute dans le navigateur (bypass WAF + privileges owner).
+                ok, apply_err = await _browser_apply(uid_key, ctx, [
+                    ["UpdateRecord", "_grist_Views_section", section_ref,
+                     {"options": json.dumps(options)}]])
+                if not ok:
+                    return {"error": f"Publication via widget echouee : {apply_err}"}
             else:
                 # Nouvelle page dediee : une seule section custom pleine page
                 if not table_id:
@@ -6100,12 +6240,15 @@ async def call_tool(uid_key, mcp_sid, name, args):
                     "zebraStripes": False, "numFrozen": 0,
                     "customView": custom_view,
                 })
-                await grist_apply(ctx, [
+                # Ecriture lourde (HTML dans widgetOptions) -> via navigateur (bypass WAF).
+                ok, apply_err = await _browser_apply(uid_key, ctx, [
                     ["UpdateRecord", "_grist_Views_section", section_ref, {"options": options}],
                     ["UpdateRecord", "_grist_Views", view_ref,
                      {"name": page_name,
                       "layoutSpec": json.dumps({"children": [{"leaf": section_ref}], "collapsed": []})}],
                 ])
+                if not ok:
+                    return {"error": f"Publication via widget echouee : {apply_err}"}
 
             # 4. Tracer la publication sur l artefact source (best-effort)
             try:
@@ -6290,9 +6433,15 @@ async def mcp_post(request: Request,
     raw_bearer = _auth(authorization)
     if not raw_bearer:
         return JSONResponse({"error": "Authorization: Bearer requis"}, status_code=401)
+    if not _check_app_token(request):
+        return JSONResponse({"error": "Garde du pod : en-tete X-App-Token manquant ou invalide."},
+                            status_code=401)
     uid_key = await _resolve_uid_key(raw_bearer, x_grist_site)
     if not uid_key:
         return JSONResponse({"error": "Token inconnu ou expire. Rechargez le widget."}, status_code=401)
+    if not _owner_gate(uid_key):
+        return JSONResponse({"error": "Pod verrouille sur un autre compte (owner-lock). "
+                             "Ce pod appartient a son proprietaire."}, status_code=403)
     mcp_sid  = mcp_session_id or str(uuid.uuid4())
     try:
         body = await request.json()
@@ -6330,6 +6479,8 @@ async def mcp_sse(request: Request,
                   authorization: str | None = Header(default=None),
                   mcp_session_id: str | None = Header(default=None, alias="Mcp-Session-Id")):
     raw_bearer = _auth(authorization)
+    if not _check_app_token(request):
+        return Response("Garde du pod : app_token manquant ou invalide.", status_code=401)
     uid_key = None
     is_mcp_client = False
     if raw_bearer:
@@ -6342,6 +6493,8 @@ async def mcp_sse(request: Request,
             uid_key = _token_to_uid.get(arto_token)
     if not uid_key:
         return Response("Authorization requis", status_code=401)
+    if not _owner_gate(uid_key):
+        return Response("Pod verrouille sur un autre compte (owner-lock).", status_code=403)
     sid = mcp_session_id or str(uuid.uuid4())
     is_display = request.query_params.get("display") == "1"
     _queues[sid] = asyncio.Queue(maxsize=64)
@@ -6427,6 +6580,14 @@ async def mcp_delete(mcp_session_id: str | None = Header(default=None, alias="Mc
 async def register(request: Request):
     data, err = await _read_json(request)
     if err: return err
+    # Garde du pod : le widget presente APP_AUTH_TOKEN (header X-App-Token, query
+    # app_token, ou champ appToken du body). Vide (dev) -> pas de garde.
+    if APP_AUTH_TOKEN:
+        tok = (request.headers.get("X-App-Token") or request.query_params.get("app_token")
+               or (data.get("appToken") or "").strip())
+        if not (tok and hmac.compare_digest(tok, APP_AUTH_TOKEN)):
+            return JSONResponse({"error": "Garde du pod : appToken manquant ou invalide."},
+                                status_code=401)
     access_token = data.get("accessToken", "").strip()
     grist_key    = data.get("gristKey", "").strip()
     site_url     = data.get("siteUrl", "").rstrip("/")
@@ -6447,6 +6608,10 @@ async def register(request: Request):
     if not grist_user_id:
         return JSONResponse({"error": "Impossible de verifier l identite Grist."}, status_code=401)
     uid_key = f"uid:{grist_user_id}"
+    if not _owner_gate(uid_key):
+        return JSONResponse({"error": "Pod verrouille sur un autre compte (owner-lock). "
+                             "Ce pod appartient a son proprietaire ; connecte-toi avec ce compte."},
+                            status_code=403)
     registry.provision(uid_key, grist_key=grist_key, access_token=access_token, site=site_url)
     ctx = registry.register_session(uid_key, doc_id, doc_title, site_url,
                                     grist_key=grist_key, access_token=access_token)
@@ -6536,6 +6701,19 @@ async def screenshot(request: Request):
     fut   = _screenshot_waiters.pop(token, None)
     if fut and not fut.done():
         fut.set_result(image)
+        return {"ok": True}
+    return {"ok": False, "error": "Pas de waiter actif pour ce token."}
+
+
+@app.post("/apply-result/{token}")
+async def apply_result(token: str, request: Request):
+    """Ack du widget apres execution navigateur des UserActions (voir _browser_apply).
+    Body : {} en succes, ou {"error": "..."} si applyUserActions a echoue cote navigateur."""
+    body, err = await _read_json(request, default={})
+    if err: return err
+    fut = _apply_waiters.pop(token, None)
+    if fut and not fut.done():
+        fut.set_result(body or {})
         return {"ok": True}
     return {"ok": False, "error": "Pas de waiter actif pour ce token."}
 
@@ -6727,12 +6905,16 @@ async def llm_proxy(path: str, request: Request):
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type, Authorization, X-LLM-Base",
         })
+    if not _check_app_token(request):
+        return JSONResponse({"error": "Garde du pod : X-App-Token manquant ou invalide."},
+                            status_code=401)
     if not LLM_PROXY_ALLOWED_HOSTS:
         return JSONResponse(
             {"error": "llm-proxy desactive : definir LLM_PROXY_ALLOWED_HOSTS dans .env"},
             status_code=403)
-    # Get target base URL from header or query param
-    target_base = request.headers.get("X-LLM-Base") or request.query_params.get("base")
+    # Base cible : header/query, sinon defaut serveur injecte par le chart (LLM_BASE_URL).
+    target_base = (request.headers.get("X-LLM-Base") or request.query_params.get("base")
+                   or LLM_BASE_URL_DEFAULT)
     if not target_base:
         return JSONResponse({"error": "Missing X-LLM-Base header or ?base= param"}, status_code=400)
     target_base = target_base.rstrip("/")
@@ -6748,6 +6930,12 @@ async def llm_proxy(path: str, request: Request):
     headers = {}
     if auth := request.headers.get("authorization"):
         headers["Authorization"] = auth
+    else:
+        # Le widget n'envoie pas de cle (deploiement Onyxia : cle server-side) ->
+        # injecter la cle du pod (env explicite ou config datalab SSPCloud).
+        srv_key = await _resolve_llm_key()
+        if srv_key:
+            headers["Authorization"] = f"Bearer {srv_key}"
     for h in ("anthropic-version", "anthropic-beta", "openai-organization", "x-api-key"):
         v = request.headers.get(h)
         if v:

@@ -1,0 +1,123 @@
+# Valeurs par defaut du chart grist-coder (Onyxia SSPCloud, self-hosted par-user).
+# Le serveur MCP est stateless (sessions in-memory, re-register auto) : pas de PVC.
+# Aucun secret n'est commite ici ; les secrets naissent dans le namespace du user.
+
+# --- Image ---------------------------------------------------------------------
+# repository est REECRIT au packaging par la CI GitLab avec $CI_REGISTRY_IMAGE
+# (valeur autoritative du registre conteneur CEREMA). La valeur ci-dessous n'est
+# qu'un defaut lisible ; ne pas s'y fier hors CI.
+image:
+  repository: registry.gitlab.cerema.fr/mcp/gristcoder_mcp
+  tag: "latest"
+  pullPolicy: Always
+
+# --- Identite Onyxia -----------------------------------------------------------
+onyxia:
+  friendlyName: "GristCoder MCP"
+  chartIconUrl: https://grist.numerique.gouv.fr/favicon.ico
+
+# ONYXIA_USER est renseigne automatiquement par Onyxia (values.schema.json).
+onyxia_user: ""
+
+# --- Serveur MCP ---------------------------------------------------------------
+app:
+  # Hostname public (surcharge par Onyxia, cf. values.schema.json).
+  host: ""
+  port: 8742
+  logLevel: info
+  # Nombre de hops proxy (ingress onyxia = 1).
+  trustProxy: 1
+  # Verrou proprietaire : le 1er uid Grist qui s'enregistre devient owner (TOFU),
+  # tout autre uid est rejete (403). Empeche un tiers d'utiliser ton pod avec
+  # sa propre cle Grist. Mettre "off" seulement pour un pod volontairement partage.
+  ownerLock: "on"
+
+# --- Garde Bearer du pod (auto-generee) ----------------------------------------
+# Le chart cree son propre Secret avec un APP_AUTH_TOKEN aleatoire stable
+# (helper lookup -> conserve entre upgrades, jamais connu de l'auteur du chart).
+# Exige sur /mcp, /register, SSE, /llm-proxy. Le widget le porte via les options
+# de section ; les clients MCP via l'en-tete Authorization / X-App-Token.
+appAuth:
+  token: ""  # vide = genere aleatoirement (48 char), stable au prochain upgrade
+
+# --- Instance Grist ------------------------------------------------------------
+grist:
+  # Instance Grist cible (resolution profil / repli WAF).
+  siteUrl: "https://grist.numerique.gouv.fr"
+  # Cle API Grist (optionnelle) : le widget utilise getAccessToken cote navigateur ;
+  # une cle server-side n'est utile que pour les clients MCP (Claude Desktop/Code)
+  # et les operations owner (webhooks). Reste dans TON Secret, sur TON pod.
+  apiKey: ""
+
+# --- Configuration LLM ---------------------------------------------------------
+# Recuperee PAR DEFAUT depuis la config "AI Assistant" du datalab SSPCloud
+# (Secret *-secretassistant), quand le service est lance avec kubernetes.role: edit
+# (defaut du catalogue). Sinon, renseigner la cle ci-dessous.
+llm:
+  # Auto-lecture de la cle depuis le Secret datalab au boot (necessite role: edit).
+  autoFromDatalab: true
+  # Endpoint LLM SSPCloud (OpenAI-compatible).
+  baseUrl: "https://llm.lab.sspcloud.fr/api"
+  model: "gemma3-27b-it"
+  # Cle explicite (repli si autoFromDatalab echoue ou hors SSPCloud). Dans TON Secret.
+  apiKey: ""
+
+# --- Anti-SSRF /llm-proxy ------------------------------------------------------
+# Liste blanche d'hotes autorises par le proxy LLM (CSV). Doit contenir l'hote LLM.
+llmProxyAllowedHosts: "llm.lab.sspcloud.fr,albert.api.etalab.gouv.fr"
+
+# --- Securite pod (contraintes SSPCloud) ---------------------------------------
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+# --- Ressources ----------------------------------------------------------------
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+# --- Repliques (stateless mais sessions in-memory : garder 1 sauf sticky) ------
+replicaCount: 1
+
+# --- Service -------------------------------------------------------------------
+service:
+  type: ClusterIP
+  port: 8742
+
+# --- Ingress -------------------------------------------------------------------
+ingress:
+  enabled: true
+  className: nginx
+  tls: true
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    # SSE : desactiver le buffering nginx pour le flux d'evenements.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+
+# --- Probes --------------------------------------------------------------------
+# /health est public (pas de Bearer) -> httpGet possible.
+probes:
+  liveness:
+    enabled: true
+    type: httpGet
+    path: /health
+    initialDelaySeconds: 20
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    enabled: true
+    type: httpGet
+    path: /health
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3

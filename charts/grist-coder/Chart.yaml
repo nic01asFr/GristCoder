@@ -1,0 +1,26 @@
+apiVersion: v2
+name: grist-coder
+description: |
+  Serveur MCP GristCoder — transforme un document Grist en application metier
+  complete via IA (tables, formules, artefacts HTML/React, webhooks).
+  Mode HTTP streamable, garde Bearer + owner-lock, config LLM SSPCloud auto.
+  Package self-hosted par-utilisateur pour le catalogue Onyxia SSPCloud :
+  chaque utilisateur deploie son pod, garde ses propres secrets, l'auteur
+  du chart n'est depositaire d'aucun secret.
+type: application
+version: 0.1.0
+appVersion: "5.12"
+icon: https://grist.numerique.gouv.fr/favicon.ico
+keywords:
+  - mcp
+  - grist
+  - llm
+  - low-code
+  - sspcloud
+  - onyxia
+home: https://github.com/nicolaslaval/artefactory-mcp
+sources:
+  - https://github.com/nicolaslaval/artefactory-mcp
+maintainers:
+  - name: Nicolas LAVAL
+    email: laval.nicolas13@gmail.com

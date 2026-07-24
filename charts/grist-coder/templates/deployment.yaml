@@ -1,0 +1,100 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "grist-coder.fullname" . }}
+  labels:
+    {{- include "grist-coder.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "grist-coder.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "grist-coder.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Force le redeploiement si le Secret change.
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      securityContext:
+        {{- toYaml .Values.securityContext | nindent 8 }}
+      containers:
+        - name: grist-coder
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.app.port }}
+              protocol: TCP
+          env:
+            # --- Serveur ---------------------------------------------------
+            - name: PORT
+              value: {{ .Values.app.port | quote }}
+            - name: HOST
+              value: "0.0.0.0"
+            - name: LOG_LEVEL
+              value: {{ .Values.app.logLevel | quote }}
+            - name: PUBLIC_URL
+              value: "https://{{ .Values.app.host }}"
+            - name: TRUST_PROXY
+              value: {{ .Values.app.trustProxy | quote }}
+            # --- Garde d'acces --------------------------------------------
+            - name: APP_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "grist-coder.fullname" . }}
+                  key: APP_AUTH_TOKEN
+            - name: OWNER_LOCK
+              value: {{ .Values.app.ownerLock | quote }}
+            # --- Grist -----------------------------------------------------
+            - name: GRIST_SITE_URL
+              value: {{ .Values.grist.siteUrl | quote }}
+            - name: GRIST_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "grist-coder.fullname" . }}
+                  key: GRIST_API_KEY
+            # --- LLM -------------------------------------------------------
+            - name: LLM_BASE_URL
+              value: {{ .Values.llm.baseUrl | quote }}
+            - name: LLM_MODEL
+              value: {{ .Values.llm.model | quote }}
+            - name: LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "grist-coder.fullname" . }}
+                  key: LLM_API_KEY
+            - name: LLM_AUTO_FROM_DATALAB
+              value: {{ .Values.llm.autoFromDatalab | quote }}
+            - name: LLM_PROXY_ALLOWED_HOSTS
+              value: {{ .Values.llmProxyAllowedHosts | quote }}
+            # --- Contexte SSPCloud (lecture datalab / logs) ----------------
+            - name: SSPCLOUD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: ONYXIA_USER
+              value: {{ .Values.onyxia_user | quote }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.probes.liveness.enabled }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          {{- end }}
+          {{- if .Values.probes.readiness.enabled }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          {{- end }}

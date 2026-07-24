@@ -399,9 +399,11 @@
     var token = window._token;
     var base = window.BASE || (window.location && window.location.origin) || '';
     if (!token) return Promise.resolve(null);
+    var _ctxHeaders = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token };
+    if (window.__APP_TOKEN__) _ctxHeaders['X-App-Token'] = window.__APP_TOKEN__;
     return fetch(base + '/mcp', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+      headers: _ctxHeaders,
       body: JSON.stringify({
         jsonrpc: '2.0', id: 'harness-ctx', method: 'resources/read',
         params: { uri: 'grist-coder://context/' + token }

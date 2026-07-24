@@ -1,0 +1,44 @@
+GristCoder MCP est deploye.
+
+1. URL de ton serveur (privee, protegee par owner-lock + Bearer) :
+
+     https://{{ .Values.app.host }}
+
+2. Recuperer la garde Bearer de TON pod (jamais connue de l'auteur du chart) :
+
+     kubectl get secret {{ include "grist-coder.fullname" . }} \
+       -o jsonpath='{.data.APP_AUTH_TOKEN}' | base64 -d ; echo
+
+3. Cote widget Grist : ajoute un widget personnalise pointant sur
+
+     https://{{ .Values.app.host }}/
+
+   et renseigne le token ci-dessus dans les options de section (champ appToken).
+
+4. Cote client MCP (Claude Desktop / Claude Code), dans .mcp.json :
+
+     {
+       "mcpServers": {
+         "grist-coder": {
+           "type": "http",
+           "url": "https://{{ .Values.app.host }}/mcp",
+           "headers": {
+             "Authorization": "Bearer <ta_cle_api_grist>",
+             "X-App-Token": "<APP_AUTH_TOKEN etape 2>"
+           }
+         }
+       }
+     }
+
+{{- if .Values.llm.autoFromDatalab }}
+
+5. LLM : recuperation auto depuis ta config AI Assistant du datalab SSPCloud.
+   Si le service n'a pas ete lance avec le role Kubernetes 'edit', renseigne
+   une cle LLM dans les valeurs (llm.apiKey) et redeploie.
+{{- else }}
+
+5. LLM : cle explicite fournie (llm.apiKey). Base : {{ .Values.llm.baseUrl }}.
+{{- end }}
+
+Owner-lock : {{ .Values.app.ownerLock }}. En 'on', seul le 1er compte Grist
+qui s'enregistre peut utiliser ce pod ; tout autre compte est rejete (403).
