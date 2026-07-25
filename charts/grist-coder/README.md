@@ -74,18 +74,24 @@ auto de la clé LLM.
 
 ## Distribution (CI GitLab CEREMA)
 
-La CI (`.gitlab-ci.yml`) publie les deux livrables à chaque push sur `master`
-(latest) et sur tag `v*` (version figée) :
+La CI (`.gitlab-ci.yml`) publie à chaque push sur `master` (latest) et tag `v*` :
 
-1. **Image** → registre conteneur GitLab (`$CI_REGISTRY_IMAGE`), via kaniko.
+1. **Image** → registre externe public (le GitLab CEREMA n'a pas de registre
+   conteneur), via kaniko. Registre configuré par variables CI/CD.
 2. **Chart** → registre Helm GitLab (canal `stable`), après réécriture de
-   `image.repository` avec `$CI_REGISTRY_IMAGE` (le chart pointe toujours sur
-   l'image réellement poussée).
+   `image.repository` avec `$IMAGE_REPO` (le chart pointe toujours sur l'image
+   réellement poussée).
 
-À valider au 1er déploiement réel : **la joignabilité SSPCloud → registre
-conteneur CEREMA** (pull de l'image depuis le cluster datalab). Si le registre
-n'est pas atteignable/anonyme depuis SSPCloud, basculer l'image sur un registre
-public (ex. ghcr) — le reste du chart est inchangé.
+### Variables CI/CD requises (Settings → CI/CD → Variables)
+
+| Variable | Exemple | Note |
+|---|---|---|
+| `IMAGE_REGISTRY` | `ghcr.io` | hôte du registre |
+| `IMAGE_REPO` | `ghcr.io/nic01asfr/grist-coder` | chemin complet |
+| `REGISTRY_USER` | `nic01asfr` | identifiant de push |
+| `REGISTRY_TOKEN` | *(masked)* | token de push (PAT GitHub `write:packages`) |
+
+ghcr.io est recommandé : pull anonyme, déjà validé sur SSPCloud (qgis/n8n).
 
 ## Câblage serveur attendu (grist_coder.py)
 

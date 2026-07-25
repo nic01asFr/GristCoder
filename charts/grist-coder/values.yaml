@@ -3,11 +3,12 @@
 # Aucun secret n'est commite ici ; les secrets naissent dans le namespace du user.
 
 # --- Image ---------------------------------------------------------------------
-# repository est REECRIT au packaging par la CI GitLab avec $CI_REGISTRY_IMAGE
-# (valeur autoritative du registre conteneur CEREMA). La valeur ci-dessous n'est
-# qu'un defaut lisible ; ne pas s'y fier hors CI.
+# Le GitLab CEREMA n'a pas de registre conteneur -> l'image est hebergee sur un
+# registre externe public (ghcr.io par defaut). repository est REECRIT au packaging
+# par la CI avec la variable $IMAGE_REPO. La valeur ci-dessous n'est qu'un defaut
+# lisible ; ne pas s'y fier hors CI.
 image:
-  repository: registry.gitlab.cerema.fr/mcp/gristcoder_mcp
+  repository: ghcr.io/nic01asfr/grist-coder
   tag: "latest"
   pullPolicy: Always
 
