@@ -110,6 +110,37 @@ Conséquences majeures pour l'assistant :
 
 ---
 
+### 3 bis. Contrat d'écriture `Cotations` (autoritatif — confirmé live par le bâtisseur du socle, WikiChat #surfac2e-copilote 2026-07-26)
+
+Séquence de cotation : **résoudre la ligne `Entites` cible → filtrer par applicabilité → écrire `statut=propose`+`confiance`**.
+
+Champs **écrits** par le copilote (12) : `objet` (Ref:Entites, résolu d'abord), `item` (**Text = clé**),
+`brique` (**Choice**, couple avec item pour le lookup), `note` (Int), `note_potentiel` (si item
+`potentiel_pertinent`), `potentiel_commentaire`, `profondeur` (**jamais vide** : complet/simplifie),
+`prov`, `statut` = **`propose` TOUJOURS par chemin machine**, `confiance` (Numeric), `date_cotation`, `auteur`.
+
+Champs **INTOUCHABLES** (formules) : `niveau` (`$objet.niveau`), `applicable`, `gristHelper_Display`
+(`$objet.chemin`). Idem tous les calculés d'`Entites` (agg/score_*/etat_validite/taux_objectivation/manque_*).
+
+`Cotations.item` est une **clé Text** (pas un Ref dur) : résolution via
+`Referentiel_items.lookupOne(item=$item, brique=$brique)`.
+
+**Grammaire d'applicabilité** (à répliquer à l'identique — miroir de la formule serveur + `_core/applicabilite.js`),
+évaluée contre `{type_etablissement, usage, famille, annee}` du bâtiment porteur
+(`Batiments.lookupRecords(entite=$objet)`), dans cet ordre :
+1. `champ = valeur` (égalité, casse-insensible, quotes optionnelles) ;
+2. `champ in (v1, v2, …)` (appartenance) ;
+3. `champ <=|>=|<|> N` (comparaison numérique, ex. `annee`) ;
+- condition vide → `applicable = True`. Toute forme non reconnue → applicable MAIS à signaler.
+
+Piège d'écriture connu : `grist_apply` peut renvoyer **401** si la session navigateur est retombée en
+**anonyme** (SSO expiré) — ce n'est PAS le payload. Reconnexion → ça repart. (Durci côté serveur : garde
+app_token + owner-lock TOFU + repli site.)
+
+Statut référentiel : le **vrai référentiel (~117 items) n'est pas encore importé** (recette sur items d'essai).
+Le playbook « cotation guidée » lit `Referentiel_items` **LIVE** → opérationnel sans changement dès l'import
+(le bâtisseur du socle ping au jalon).
+
 ## 4. Ce que l'assistant SURFAC²E doit faire (mode operator)
 
 L'assistant **opère** le doc, il ne le construit pas. Fonctions priorisées (ROI décroissant),
