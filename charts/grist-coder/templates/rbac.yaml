@@ -1,0 +1,25 @@
+{{- if .Values.rbac.create }}
+# ServiceAccount dedie au pod + RoleBinding vers la ClusterRole 'edit', pour que
+# le pod puisse lire le Secret AI Assistant du datalab (recuperation auto cle LLM).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "grist-coder.fullname" . }}
+  labels:
+    {{- include "grist-coder.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "grist-coder.fullname" . }}-{{ .Values.rbac.clusterRole }}
+  labels:
+    {{- include "grist-coder.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Values.rbac.clusterRole }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "grist-coder.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

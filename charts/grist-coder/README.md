@@ -13,7 +13,20 @@ chart n'est dépositaire d'aucun secret**. C'est le pendant du modèle
 | URL par-user | `user-<idep>-grist-coder.user.lab.sspcloud.fr` (ingress TLS auto) |
 | Secrets | naissent dans le namespace du user (`Secret` `helm.sh/resource-policy: keep`) ; jamais commités |
 | Garde d'accès | `APP_AUTH_TOKEN` Bearer auto-généré **+** owner-lock (1er `uid` Grist = propriétaire) |
-| Clé LLM | **auto** depuis la config AI Assistant du datalab (rôle `edit`) ; **sinon** champ à renseigner |
+| Clé LLM | **catalogue Onyxia** → auto depuis l'AI Assistant du datalab (RBAC + Secret injecté) ; **`helm install`** → renseigner `llm.apiKey` (déterministe) |
+
+## Clé LLM — deux chemins
+
+La récupération auto depuis le datalab suppose **deux conditions** réunies :
+1. un **Secret `*-secretassistant`** dans le namespace — injecté par Onyxia quand le
+   service est lancé **depuis le catalogue** avec l'option AI Assistant ;
+2. un **RBAC** autorisant le pod à lire ce Secret (`rbac.create: true` → RoleBinding
+   vers la ClusterRole `edit`, inclus dans ce chart).
+
+Sur un simple **`helm install` depuis un terminal**, le Secret n'existe pas (Onyxia
+ne l'injecte que via le catalogue) → renseigner **`llm.apiKey`** (voie déterministe,
+recommandée hors catalogue). Le serveur tombe alors sur cette clé et affiche un
+bandeau non bloquant si aucune clé n'est disponible.
 
 ## Sécurité — un tiers avec l'URL n'accède à rien
 

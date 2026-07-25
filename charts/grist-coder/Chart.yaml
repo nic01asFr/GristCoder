@@ -8,7 +8,7 @@ description: |
   chaque utilisateur deploie son pod, garde ses propres secrets, l'auteur
   du chart n'est depositaire d'aucun secret.
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "5.12"
 icon: https://grist.numerique.gouv.fr/favicon.ico
 keywords:

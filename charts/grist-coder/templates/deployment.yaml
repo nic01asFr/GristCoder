@@ -17,6 +17,9 @@ spec:
         # Force le redeploiement si le Secret change.
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
     spec:
+      {{- if .Values.rbac.create }}
+      serviceAccountName: {{ include "grist-coder.fullname" . }}
+      {{- end }}
       securityContext:
         {{- toYaml .Values.securityContext | nindent 8 }}
       containers:

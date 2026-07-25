@@ -67,6 +67,19 @@ llm:
 # Liste blanche d'hotes autorises par le proxy LLM (CSV). Doit contenir l'hote LLM.
 llmProxyAllowedHosts: "llm.lab.sspcloud.fr,albert.api.etalab.gouv.fr"
 
+# --- RBAC (lecture du Secret AI Assistant du datalab) --------------------------
+# Le pod tourne par defaut avec le ServiceAccount 'default' du namespace, qui ne
+# peut PAS lire les Secrets (403) -> la recuperation auto de la cle LLM echoue.
+# On cree un ServiceAccount dedie + un RoleBinding vers la ClusterRole 'edit'
+# (qui inclut la lecture des Secrets). RoleBinding vers une ClusterRole EXISTANTE
+# est autorise en namespace utilisateur SSPCloud (contrairement a creer une Role).
+# Utile uniquement avec llm.autoFromDatalab ET un Secret *-secretassistant present
+# (injecte par Onyxia quand le service est lance depuis le catalogue avec l'option
+# AI Assistant). Sur un simple 'helm install', preferer llm.apiKey (deterministe).
+rbac:
+  create: true
+  clusterRole: edit
+
 # --- Securite pod (contraintes SSPCloud) ---------------------------------------
 securityContext:
   runAsNonRoot: true
