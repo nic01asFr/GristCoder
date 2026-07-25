@@ -67,6 +67,14 @@ llm:
 # Liste blanche d'hotes autorises par le proxy LLM (CSV). Doit contenir l'hote LLM.
 llmProxyAllowedHosts: "llm.lab.sspcloud.fr,albert.api.etalab.gouv.fr"
 
+# --- Specialisation operator (Assistant Manifest, binding pod-level) ----------
+# URL d'un manifeste JSON qui specialise le pod en copilote metier borne a un doc
+# (ex: surfac2e). Vide -> mode builder generique (comportement actuel). Le manifeste
+# porte persona/regles de methode/mode/playbooks/garde-fous ; le schema reste derive
+# LIVE du doc. Voir shared/assistant_manifest.py + shared/manifests/*.json.
+assistant:
+  manifestUrl: ""
+
 # --- RBAC (lecture du Secret AI Assistant du datalab) --------------------------
 # Le pod tourne par defaut avec le ServiceAccount 'default' du namespace, qui ne
 # peut PAS lire les Secrets (403) -> la recuperation auto de la cle LLM echoue.

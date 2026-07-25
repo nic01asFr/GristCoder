@@ -220,10 +220,24 @@ Portent des règles importantes, non extraits (fichiers `.xlsx`/`.odg`/`.boxnote
 
 ---
 
-## 8. Prochaines étapes
+## 8. État d'implémentation (mode operator v0)
 
-- Esquisse `shared/assistant_manifest.py` (Pydantic v0.1) + instance `surfac2e`.
-- Côté serveur : overlay `SERVER_INSTRUCTIONS` + jeu d'outils `operator` (réutilise
-  `CONTEXT_TOOLS`), lecture du manifeste au démarrage de session.
-- Valider avec un vrai doc SURFAC²E v2 (le doc `2Lk1zX9oZW9F` a les tables ; vérifier
-  `Referentiel_items` peuplé).
+Décisions tranchées : **binding pod-level** + **contrôle qualité d'abord**.
+
+FAIT (branche `feat/surfac2e-assistant`) :
+- `shared/assistant_manifest.py` (Pydantic v0.1) + instance surfac2e → généré en
+  `shared/manifests/surfac2e.assistant.json` (source hébergeable, raw GitLab).
+- **Serveur** (`grist_coder.py`) : chargement du manifeste au boot (env `ASSISTANT_MANIFEST_URL`
+  ou `ASSISTANT_MANIFEST` inline ; vide = builder générique, rétrocompat) ; **overlay** du
+  manifeste dans `SERVER_INSTRUCTIONS` à l'`initialize` ; **garde operator déterministe** sur
+  `grist_apply` (bloque AddTable/AddColumn/Remove*/Modify* → l'assistant opère, ne construit pas).
+- **Chart** : valeur `assistant.manifestUrl` → env, + `values.schema.json` (chart v0.3.0).
+
+Activation d'un pod surfac2e :
+`helm install ... --set assistant.manifestUrl=<raw URL de surfac2e.assistant.json>`.
+
+RESTE :
+- Filtrage fin du jeu d'outils operator (masquer les outils de construction) — optionnel v1.
+- Tester en réel sur le doc SURFAC²E (le contrôle qualité marche déjà : lit les champs calculés).
+- Cotation guidée : opérationnelle dès l'**import du référentiel réel (~117 items)** — ping du
+  bâtisseur du socle attendu.

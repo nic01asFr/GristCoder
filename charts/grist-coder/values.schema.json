@@ -58,6 +58,18 @@
         }
       }
     },
+    "assistant": {
+      "type": "object",
+      "title": "Specialisation (Assistant Manifest)",
+      "properties": {
+        "manifestUrl": {
+          "type": "string",
+          "title": "URL du manifeste operator",
+          "description": "Specialise le pod en copilote metier borne a un doc (ex: surfac2e). Vide = mode builder generique.",
+          "default": ""
+        }
+      }
+    },
     "llm": {
       "type": "object",
       "title": "Modele de langage (LLM)",

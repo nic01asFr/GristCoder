@@ -126,6 +126,67 @@ async def _resolve_llm_key():
         return await _datalab_llm_key()
     return None
 
+
+# ── Assistant Manifest (specialisation operator, binding pod-level) ────────────
+# Vide -> mode builder generique (retrocompat). Sinon, specialise le runtime en
+# copilote metier borne : overlay des SERVER_INSTRUCTIONS + garde operator sur les
+# ecritures de schema. Le schema/pondérations/scores restent derives LIVE du doc.
+ASSISTANT_MANIFEST_URL    = os.getenv("ASSISTANT_MANIFEST_URL", "").strip()
+ASSISTANT_MANIFEST_INLINE = os.getenv("ASSISTANT_MANIFEST", "").strip()
+ASSISTANT_MANIFEST: dict | None = None
+
+# Actions de SCHEMA interdites en mode operator (l'assistant opere, ne construit pas).
+_OPERATOR_FORBIDDEN = {"AddTable", "AddEmptyTable", "RemoveTable", "RenameTable",
+                       "AddColumn", "RemoveColumn", "RenameColumn", "ModifyColumn"}
+
+
+async def _load_assistant_manifest():
+    """Charge le manifeste de specialisation au boot (inline env, sinon URL). None = builder."""
+    global ASSISTANT_MANIFEST
+    raw = ASSISTANT_MANIFEST_INLINE
+    if not raw and ASSISTANT_MANIFEST_URL:
+        try:
+            async with _grist_client() as c:
+                r = await c.get(ASSISTANT_MANIFEST_URL)
+                r.raise_for_status()
+                raw = r.text
+        except Exception as e:
+            print(f"[assistant] manifeste injoignable ({ASSISTANT_MANIFEST_URL}) : "
+                  f"{_scrub_secrets(str(e))}", file=sys.stderr)
+            return
+    if raw:
+        try:
+            ASSISTANT_MANIFEST = json.loads(raw)
+            print(f"[assistant] manifeste charge : id={ASSISTANT_MANIFEST.get('id')} "
+                  f"mode={ASSISTANT_MANIFEST.get('mode')}", file=sys.stderr)
+        except Exception as e:
+            print(f"[assistant] manifeste JSON invalide : {e}", file=sys.stderr)
+
+
+def _manifest_overlay(m) -> str:
+    """Fragment ajoute aux SERVER_INSTRUCTIONS pour specialiser l'agent (miroir de
+    AssistantManifest.system_overlay, shared/assistant_manifest.py)."""
+    if not m:
+        return ""
+    p = m.get("persona") or {}
+    out = ["", "======== ASSISTANT SPECIALISE ========",
+           f"# {m.get('title','')} — {m.get('domain','')}",
+           f"Role : {p.get('role','')}. Ton : {p.get('tone','')}. Mode : {m.get('mode','operator')}."]
+    if m.get("knowledge"):
+        out.append("\n## Regles de methode"); out += [f"- {k}" for k in m["knowledge"]]
+    if m.get("guardrails"):
+        out.append("\n## Garde-fous (interdits durs)"); out += [f"- {g}" for g in m["guardrails"]]
+    if m.get("playbooks"):
+        out.append("\n## Playbooks")
+        for pb in m["playbooks"]:
+            out.append(f"- {pb.get('title','')} (quand : {pb.get('when','')})")
+            out += [f"    {i+1}. {s}" for i, s in enumerate(pb.get("steps", []))]
+    if m.get("bindings"):
+        out.append("\n## Tables du doc (role ; schema derive LIVE via grist_schema)")
+        out += [f"- {b.get('table')} [{b.get('role')}]"
+                + (f" : {b.get('note')}" if b.get("note") else "") for b in m["bindings"]]
+    return "\n".join(out)
+
 # Security warning: webhook receiver is unauthenticated unless WEBHOOK_SECRET is set.
 # If HOST_URL is publicly accessible (not localhost), this allows anyone to inject
 # fake webhook events into widgets connected to the server.
@@ -5812,6 +5873,15 @@ async def call_tool(uid_key, mcp_sid, name, args):
     # ── Document structure
     if name == "grist_apply":
         actions = args.get("actions")
+        # Garde OPERATOR (deterministe) : en mode operator, l'assistant OPERE le doc metier
+        # (donnees) mais ne le CONSTRUIT pas -> actions de schema interdites. Robustesse dans
+        # le harness, pas dans le prompt.
+        if ASSISTANT_MANIFEST and ASSISTANT_MANIFEST.get("mode") == "operator" and isinstance(actions, list):
+            _bad = next((a[0] for a in actions
+                         if isinstance(a, list) and a and a[0] in _OPERATOR_FORBIDDEN), None)
+            if _bad:
+                return {"error": f"Mode operator : action de schema '{_bad}' interdite. "
+                        "L'assistant opere le doc metier (ecris des records), il ne le construit pas."}
         # Pre-vol automatique des batches STRUCTURELS (AddTable/AddColumn) : echouer proprement
         # avec un message actionnable plutot que de subir un 500 sandbox (ex: Ref forward).
         has_structural = isinstance(actions, list) and any(
@@ -6282,10 +6352,13 @@ async def dispatch(uid_key, mcp_sid, method, params):
     if method == "initialize":
         # Stocker les capabilities du client pour activer sampling si supporté
         _client_capabilities[uid_key] = params.get("capabilities", {})
+        _instructions = SERVER_INSTRUCTIONS
+        if ASSISTANT_MANIFEST:
+            _instructions = _instructions + "\n" + _manifest_overlay(ASSISTANT_MANIFEST)
         return {
             "protocolVersion": MCP_VER,
             "serverInfo": {"name": "grist-coder", "version": "5.12",
-                           "instructions": SERVER_INSTRUCTIONS},
+                           "instructions": _instructions},
             "capabilities": {
                 "tools":     {"listChanged": True},
                 "resources": {"subscribe": True, "listChanged": True},
@@ -6367,6 +6440,7 @@ async def lifespan(app):
     print(f"  tools: {len(TOOLS)}  prompts: {len(PROMPTS)}")
     print(f"  resources: {len(STATIC_RESOURCES)} static + {len(RESOURCE_TEMPLATES)} templates")
     print(f"  widget: {'widget.html' if WIDGET_PATH.exists() else 'MANQUANT'}")
+    await _load_assistant_manifest()  # specialisation operator (None = builder generique)
     purge_task = asyncio.create_task(_purge_loop())
     try:
         yield

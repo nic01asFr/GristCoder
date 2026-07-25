@@ -72,6 +72,9 @@ spec:
               value: {{ .Values.llm.autoFromDatalab | quote }}
             - name: LLM_PROXY_ALLOWED_HOSTS
               value: {{ .Values.llmProxyAllowedHosts | quote }}
+            # --- Specialisation operator (Assistant Manifest) --------------
+            - name: ASSISTANT_MANIFEST_URL
+              value: {{ .Values.assistant.manifestUrl | quote }}
             # --- Contexte SSPCloud (lecture datalab / logs) ----------------
             - name: SSPCLOUD_NAMESPACE
               valueFrom:
