@@ -55,6 +55,40 @@ jamais dupliqué ; `cerema_site_id` pour le site.
 
 ---
 
+### 2 bis. Schéma LIVE autoritatif (doc `2Lk1zX9oZW9F`, lu via grist_schema 2026-07-26)
+
+Le doc live est **plus riche que le repo** et porte la logique de calcul EN FORMULES Grist
+(donc lisible/dérivable — pas besoin des xlsx pour les pondérations). 13 tables métier :
+
+| Table | Colonnes clés (live) |
+|---|---|
+| `Entites` | objet_id, niveau, libelle, actif, **parent (Ref:Entites → hiérarchie)**, chemin(f), racine_site(f), **agg(f)** = moteur d'agrégation, **score_{etat_technique,environnement,attractivite,confort_sante,surete_securite,fonctionnalite,reglementaire,adaptation_climat}(f)**, note_globale(f), etat_validite(f: sans_objet/non_comparable/partiel/complet), taux_objectivation(f), profondeur_dominante(f), manque_recolte(f), manque_referentiel(f) |
+| `Referentiel_items` | item, brique (8 valeurs), niveau, **poids_global (Numeric = LA pondération)**, regime (AUTO/SEMI/SAISIE), producteur, source, condition, definition, lib_1..4, potentiel_pertinent, profondeur_min, version_ref |
+| `Cotations` | objet (Ref:Entites), item, brique, note (Int), note_potentiel, potentiel_commentaire, profondeur, prov (terrain/referentiel/**calcule**), statut (propose/valide/rejete), confiance (Numeric), date_cotation, auteur, niveau(f), **applicable(f)** = moteur d'applicabilité |
+| `Batiments` | id_bat, rnb, nom, adresse, annee, surface_sdp, usage, famille, type_etablissement, dans_perimetre_gestion, entite (Ref) |
+| `Sites` | cerema_site_id, nom, commune, code_insee, adresse, famille, gestionnaire_ref, entite(f Ref) |
+| `Assise_parcellaire` | parcelle_id, contenance_m2, commune, entite(f Ref) |
+| `Zones_fonctionnelles` | activite, sous_categorie_operat, amplitude_usage, surface_sdp, entite(f Ref) |
+| `Enrichissement` | **champ, valeur, source, confiance, date_maj, statut (propose/valide/rejete), entite** — collecteur des données AUTO/SEMI (clé-valeur horodatée, humain valide) |
+| `Config` | cle, valeur, type_valeur (texte/nombre/booleen/json), description |
+| `Referentiel_version` | composant (schema/referentiel/config), version, installe_le |
+| `Acteurs` | nom, organisme, role, courriel |
+| `Droits` | niveau_droit (lecture/saisie/validation/administration), entite (Ref), acteur (Ref:Acteurs) |
+| `Pieces_reglementaires` | type_piece, reference, date_piece, echeance, entite (Ref) |
+
+Conséquences majeures pour l'assistant :
+- **Les pondérations et le score sont DANS le doc** (`Referentiel_items.poids_global` + `Entites.agg`
+  qui fait moyenne pondérée par brique sur cotations `valide`). L'assistant **lit/explique** ces
+  scores, il ne les recalcule pas. Les xlsx de pondération deviennent secondaires.
+- **La complétude/objectivation est calculée** (`taux_objectivation`, `manque_recolte`,
+  `manque_referentiel`, `etat_validite`) → le contrôle qualité s'appuie dessus, pas à réinventer.
+- **Deux exutoires d'écriture distincts** : les notes → `Cotations` ; les données de contexte
+  enrichies (adresse, DPE, risques…) → **`Enrichissement`** (champ/valeur/statut). L'assistant
+  propose dans l'un OU l'autre selon la nature, toujours `statut=propose`.
+- **Couche de gouvernance** : `Acteurs`/`Droits` (droits par entité) — l'assistant doit respecter
+  le `niveau_droit` de l'utilisateur (lecture/saisie/validation/administration).
+- **Hiérarchie réelle** = `Entites.parent` (self-ref), pas des jointures externes.
+
 ## 3. Règles de cotation (le cœur, non négociable)
 
 - **Échelle ordinale 1→4**, polarité **positive** (1 = défavorable/rouge, 4 = favorable/vert).
