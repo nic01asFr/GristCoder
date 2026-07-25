@@ -19,6 +19,13 @@ workflow:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"
 
+# Les runners de l'instance CEREMA sont TAGGES (cerema-apps, k8-runner) et ne
+# prennent pas les jobs non-taggees. On cible le pool applicatif cerema-apps
+# (executeur k8s, compatible images kaniko/helm/python) pour tous les jobs.
+default:
+  tags:
+    - cerema-apps
+
 stages:
   - validate
   - build-image
