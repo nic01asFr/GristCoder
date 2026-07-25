@@ -45,6 +45,15 @@ if ! kubectl -n "$NS" auth can-i get secrets >/dev/null 2>&1; then
   warn "auto de la cle LLM depuis le datalab echouera : fournir LLM_API_KEY."
 fi
 
+# Repertoires Helm inscriptibles : sur les pods SSPCloud, ~/.config n'est pas
+# inscriptible ("mkdir /home/onyxia/.config/helm: permission denied"). On force
+# les dossiers cache/config/data de Helm vers un emplacement sur (writable).
+_HELM_BASE="${TMPDIR:-/tmp}/gristcoder-helm"
+export HELM_CACHE_HOME="${HELM_CACHE_HOME:-$_HELM_BASE/cache}"
+export HELM_CONFIG_HOME="${HELM_CONFIG_HOME:-$_HELM_BASE/config}"
+export HELM_DATA_HOME="${HELM_DATA_HOME:-$_HELM_BASE/data}"
+mkdir -p "$HELM_CACHE_HOME" "$HELM_CONFIG_HOME" "$HELM_DATA_HOME"
+
 # --- 3. Helm repo (registre Helm GitLab CEREMA, pull anonyme) -------------------
 HELM_REPO_URL="${HELM_REPO_URL:-https://gitlab.cerema.fr/api/v4/projects/3099/packages/helm/stable}"
 log "Ajout du Helm repo : $HELM_REPO_URL"
