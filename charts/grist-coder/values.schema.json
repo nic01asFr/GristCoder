@@ -13,7 +13,7 @@
           "description": "Hostname public du serveur (TLS auto). Renseigne par Onyxia.",
           "default": "",
           "x-onyxia": {
-            "overwriteDefaultWith": "grist-coder-{{k8s.randomSubdomain}}.user-{{user.idep}}.lab.sspcloud.fr"
+            "overwriteDefaultWith": "user-{{user.idep}}-grist-coder.user.lab.sspcloud.fr"
           }
         },
         "ownerLock": {

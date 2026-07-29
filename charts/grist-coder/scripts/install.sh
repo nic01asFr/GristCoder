@@ -89,7 +89,12 @@ ${BOLD}Deploiement termine${RESET}
   MCP        : ${CYAN}https://$HOST/mcp${RESET}
   App token  : ${YELLOW}$APP_TOKEN${RESET}
 
-${BOLD}Client MCP (Claude Code) :${RESET}
+${BOLD}Connecteur OAuth (Claude Desktop / claude.ai, recommande) :${RESET}
+  Ajoute un connecteur personnalise avec l'URL ${CYAN}https://$HOST/mcp${RESET}
+  puis colle ta cle API Grist sur la page de consentement du pod.
+  (Aucun header a configurer ; le connecteur ne recoit qu'un jeton revocable.)
+
+${BOLD}Client MCP par headers (Claude Code) :${RESET}
   ${GREEN}claude mcp add grist-coder --transport http https://$HOST/mcp \\
     --header "Authorization: Bearer <ta_cle_api_grist>" \\
     --header "X-App-Token: $APP_TOKEN"${RESET}
