@@ -1,12 +1,14 @@
 """
-GRIST CODER · MCP Server v5.12 · streamable HTTP spec 2025-03-26
+GRIST CODER · MCP Server v5.13 · streamable HTTP spec 2025-03-26
 ────────────────────────────────────────────────────────────────
 Document Grist = codebase du projet.
 Widget = split vertical Ace editor | iframe preview.
 LLM via MCP : schema relationnel + artefacts + pages structurées.
 
 AUTH  : widget -> grist.docApi.getAccessToken() -> POST /register -> gc-xxx
-        Claude Desktop -> Bearer <grist_key> -> uid:user_id stable
+        Claude Desktop -> Bearer <grist_key> + X-App-Token -> uid:user_id stable
+        Connecteur OAuth (en ligne, si PUBLIC_URL) -> /oauth/* (cle Grist en consent)
+                        -> access token gco-xxx revocable -> meme uid:user_id
 TOOLS : sessions(3) plan(1) canvas(7) wizard(2) context(1) chat(2) subagent(1)
         artefact(2) grist-r(3) grist-w(3) validate(1) doc(5) webhooks(1) = 32
 MCP   : sampling/createMessage (client capability) -> subagent_call + chat auto-reply
@@ -20,7 +22,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 load_dotenv()
 HOST_URL        = os.getenv("HOST_URL", "http://localhost:8742")
@@ -140,7 +142,7 @@ if not WEBHOOK_SECRET and "localhost" not in HOST_URL and "127.0.0.1" not in HOS
 # ── SERVER INSTRUCTIONS ───────────────────────────────────────────────────────
 
 SERVER_INSTRUCTIONS = """
-Tu es Grist Coder MCP v5.12 — service de construction d apps Grist completes et guidees.
+Tu es Grist Coder MCP v5.13 — service de construction d apps Grist completes et guidees.
 
 MISSION
   Transformer le besoin utilisateur en une application Grist complete (donnees + UI + logique +
@@ -6284,7 +6286,7 @@ async def dispatch(uid_key, mcp_sid, method, params):
         _client_capabilities[uid_key] = params.get("capabilities", {})
         return {
             "protocolVersion": MCP_VER,
-            "serverInfo": {"name": "grist-coder", "version": "5.12",
+            "serverInfo": {"name": "grist-coder", "version": "5.13",
                            "instructions": SERVER_INSTRUCTIONS},
             "capabilities": {
                 "tools":     {"listChanged": True},
@@ -6349,6 +6351,7 @@ async def _purge_loop():
         await asyncio.sleep(3600)
         try:
             tokens, uids = registry.purge_expired(SESSION_TTL)
+            _oauth_purge()
             for t in tokens:
                 _token_to_uid.pop(t, None)
             for u in uids:
@@ -6363,7 +6366,7 @@ async def _purge_loop():
 
 @asynccontextmanager
 async def lifespan(app):
-    print(f"Grist Coder v5.12 · {HOST_URL}")
+    print(f"Grist Coder v5.13 · {HOST_URL}")
     print(f"  tools: {len(TOOLS)}  prompts: {len(PROMPTS)}")
     print(f"  resources: {len(STATIC_RESOURCES)} static + {len(RESOURCE_TEMPLATES)} templates")
     print(f"  widget: {'widget.html' if WIDGET_PATH.exists() else 'MANQUANT'}")
@@ -6384,6 +6387,8 @@ def _auth(auth):
 
 async def _resolve_uid_key(raw_bearer, x_grist_site):
     if not raw_bearer: return None
+    if raw_bearer.startswith("gco-"):          # access token OAuth -> uid mappe
+        return _oauth_uid_from_token(raw_bearer)
     if raw_bearer.startswith("gc-"):
         return _token_to_uid.get(raw_bearer)
     uid_key = registry.get_uid_for_grist_key(raw_bearer)
@@ -6425,6 +6430,249 @@ async def _resolve_uid_key(raw_bearer, x_grist_site):
     return uid_key
 
 
+# ── OAuth 2.1 · Authorization Server embarque (connecteurs en ligne) ────────────
+# Surface 100% ADDITIVE, active uniquement en ligne (PUBLIC_URL non vide, injecte par
+# le chart Onyxia). Le pod est son propre Authorization Server. Le << login >> du
+# consentement valide la cle API Grist (meme identite uid:{id} + owner-lock que le
+# reste du serveur). Le client ne recoit qu'un token opaque gco-... revocable : la cle
+# Grist ne repart JAMAIS vers le client (pas de token passthrough). En dev local
+# (PUBLIC_URL vide) tous ces endpoints renvoient 404 -> comportement inchange, et le
+# chemin legacy (Bearer cle Grist + X-App-Token) reste accepte en parallele.
+PUBLIC_URL = os.getenv("PUBLIC_URL", "").strip().rstrip("/")
+_OAUTH_CODE_TTL  = 120                  # code d'autorisation : tres court
+_OAUTH_TOKEN_TTL = 30 * 24 * 3600       # access token : 30 jours
+_oauth_clients: dict[str, dict] = {}    # client_id   -> {redirect_uris, created}
+_oauth_codes:   dict[str, dict] = {}    # code        -> {uid_key, redirect_uri, code_challenge, ...}
+_oauth_tokens:  dict[str, dict] = {}    # gco-access  -> {uid_key, expires}
+_oauth_refresh: dict[str, dict] = {}    # gcr-refresh -> {uid_key}
+
+
+def _oauth_enabled() -> bool:
+    return bool(PUBLIC_URL)
+
+
+def _oauth_purge():
+    """Expire codes et access tokens perimes (appele par _purge_loop)."""
+    now = time.time()
+    for code, d in list(_oauth_codes.items()):
+        if now > d["expires"]: _oauth_codes.pop(code, None)
+    for tok, d in list(_oauth_tokens.items()):
+        if now > d["expires"]: _oauth_tokens.pop(tok, None)
+
+
+def _oauth_uid_from_token(bearer) -> str | None:
+    """Resout un access token OAuth gco-... en uid_key, ou None si inconnu/expire."""
+    d = _oauth_tokens.get(bearer)
+    if not d:
+        return None
+    if time.time() > d["expires"]:
+        _oauth_tokens.pop(bearer, None)
+        return None
+    return d["uid_key"]
+
+
+def _pkce_ok(verifier: str, challenge: str, method: str = "S256") -> bool:
+    """Verifie le code_verifier PKCE contre le code_challenge stocke (S256 par defaut)."""
+    if not challenge:
+        return True   # PKCE non demande (Claude envoie toujours S256, on reste tolerant)
+    if not verifier:
+        return False
+    if method == "plain":
+        return hmac.compare_digest(verifier, challenge)
+    computed = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    return hmac.compare_digest(computed, challenge)
+
+
+def _oauth_issue(uid_key: str) -> dict:
+    """Emet une paire access/refresh token opaque mappee sur uid_key."""
+    at = "gco-" + secrets.token_urlsafe(32)
+    rt = "gcr-" + secrets.token_urlsafe(32)
+    _oauth_tokens[at]  = {"uid_key": uid_key, "expires": time.time() + _OAUTH_TOKEN_TTL}
+    _oauth_refresh[rt] = {"uid_key": uid_key}
+    return {"access_token": at, "token_type": "Bearer", "expires_in": _OAUTH_TOKEN_TTL,
+            "refresh_token": rt, "scope": "mcp"}
+
+
+def _oauth_check_client(client_id: str, redirect_uri: str):
+    """(client, None) si client_id connu et redirect_uri autorise, sinon (None, message)."""
+    client = _oauth_clients.get(client_id)
+    if not client:
+        return None, "Client OAuth inconnu. Relance la connexion depuis le connecteur."
+    uris = client.get("redirect_uris") or []
+    if uris and redirect_uri not in uris:
+        return None, "redirect_uri non autorise pour ce client."
+    return client, None
+
+
+def _oauth_page(body_html: str, status: int = 200) -> HTMLResponse:
+    html = (
+        "<!doctype html><html lang=fr><head><meta charset=utf-8>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
+        "<title>GristCoder - Connexion</title><style>"
+        "body{font-family:system-ui,Segoe UI,sans-serif;background:#f5f5f7;margin:0;"
+        "display:flex;min-height:100vh;align-items:center;justify-content:center}"
+        ".card{background:#fff;max-width:420px;width:92%;padding:32px;border-radius:14px;"
+        "box-shadow:0 6px 30px rgba(0,0,0,.08)}h1{font-size:19px;margin:0 0 6px}"
+        "p{color:#555;font-size:14px;line-height:1.5}label{display:block;font-size:13px;"
+        "font-weight:600;margin:18px 0 6px}input{width:100%;box-sizing:border-box;padding:11px;"
+        "border:1px solid #ccc;border-radius:8px;font-size:14px}"
+        "button{margin-top:20px;width:100%;padding:12px;border:0;border-radius:8px;"
+        "background:#000091;color:#fff;font-size:15px;font-weight:600;cursor:pointer}"
+        ".err{background:#ffe9e9;color:#a10000;padding:10px;border-radius:8px;font-size:13px;margin-top:14px}"
+        ".hint{font-size:12px;color:#888;margin-top:8px}</style></head><body>"
+        f"<div class=card>{body_html}</div></body></html>"
+    )
+    return HTMLResponse(html, status_code=status)
+
+
+def _oauth_consent_form(params: dict, error: str = "") -> str:
+    def esc(s):
+        return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    hidden = "".join(
+        f'<input type=hidden name={k} value="{esc(params.get(k, ""))}">'
+        for k in ("client_id", "redirect_uri", "state", "code_challenge",
+                  "code_challenge_method", "scope"))
+    err = f"<div class=err>{esc(error)}</div>" if error else ""
+    return (
+        "<h1>Connecter GristCoder</h1>"
+        "<p>Colle ta cle API Grist pour autoriser ce connecteur. Elle sert uniquement a "
+        "verifier ton identite ; le connecteur ne recevra qu'un jeton revocable.</p>"
+        f"{err}"
+        "<form method=post action=/oauth/authorize>"
+        f"{hidden}"
+        "<label>Cle API Grist</label>"
+        "<input name=grist_key type=password autocomplete=off required placeholder='ex: 1a2b3c...'>"
+        "<div class=hint>Grist &rarr; Profile settings &rarr; API key.</div>"
+        "<button type=submit>Autoriser</button></form>"
+    )
+
+
+@app.get("/.well-known/oauth-protected-resource")
+@app.get("/.well-known/oauth-protected-resource/{path:path}")
+async def oauth_protected_resource(path: str = ""):
+    if not _oauth_enabled():
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse({
+        "resource": f"{PUBLIC_URL}/mcp",
+        "authorization_servers": [PUBLIC_URL],
+        "bearer_methods_supported": ["header"],
+    })
+
+
+@app.get("/.well-known/oauth-authorization-server")
+async def oauth_as_metadata():
+    if not _oauth_enabled():
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse({
+        "issuer": PUBLIC_URL,
+        "authorization_endpoint": f"{PUBLIC_URL}/oauth/authorize",
+        "token_endpoint": f"{PUBLIC_URL}/oauth/token",
+        "registration_endpoint": f"{PUBLIC_URL}/oauth/register",
+        "scopes_supported": ["mcp"],
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
+    })
+
+
+@app.post("/oauth/register")
+async def oauth_register(request: Request):
+    """Dynamic Client Registration (RFC 7591). Permissif : c'est ce qui permet a Claude
+    de s'enregistrer automatiquement (corrige l'erreur << Impossible de s'inscrire >>)."""
+    if not _oauth_enabled():
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    data, err = await _read_json(request)
+    if err or not isinstance(data, dict):
+        data = {}   # corps vide ou invalide accepte (client public)
+    redirect_uris = data.get("redirect_uris") or []
+    client_id = "gcc-" + secrets.token_urlsafe(16)
+    _oauth_clients[client_id] = {"redirect_uris": redirect_uris, "created": time.time()}
+    return JSONResponse({
+        "client_id": client_id,
+        "client_id_issued_at": int(time.time()),
+        "redirect_uris": redirect_uris,
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+        "token_endpoint_auth_method": "none",
+    }, status_code=201)
+
+
+@app.get("/oauth/authorize")
+async def oauth_authorize_get(request: Request):
+    if not _oauth_enabled():
+        return Response("not found", status_code=404)
+    q = dict(request.query_params)
+    _, err = _oauth_check_client(q.get("client_id", ""), q.get("redirect_uri", ""))
+    if err:
+        return _oauth_page(f"<h1>Connexion impossible</h1><div class=err>{err}</div>", status=400)
+    return _oauth_page(_oauth_consent_form(q))
+
+
+@app.post("/oauth/authorize")
+async def oauth_authorize_post(request: Request):
+    if not _oauth_enabled():
+        return Response("not found", status_code=404)
+    raw = (await request.body()).decode("utf-8", "replace")
+    data = {k: v[0] for k, v in urllib.parse.parse_qs(raw, keep_blank_values=True).items()}
+    client_id, redirect_uri = data.get("client_id", ""), data.get("redirect_uri", "")
+    _, err = _oauth_check_client(client_id, redirect_uri)
+    if err:
+        return _oauth_page(f"<h1>Connexion impossible</h1><div class=err>{err}</div>", status=400)
+    grist_key = (data.get("grist_key") or "").strip()
+    if not grist_key:
+        return _oauth_page(_oauth_consent_form(data, "Cle API Grist requise."), status=400)
+    # Le << login >> = validation de la cle Grist -> uid:{id} (via profil), puis owner-lock.
+    uid_key = await _resolve_uid_key(grist_key, None)
+    if not uid_key or not uid_key.startswith("uid:"):
+        return _oauth_page(_oauth_consent_form(data, "Cle Grist invalide ou compte introuvable."),
+                           status=401)
+    if not _owner_gate(uid_key):
+        return _oauth_page("<h1>Acces refuse</h1><div class=err>Ce pod appartient a un autre "
+                           "compte Grist (owner-lock).</div>", status=403)
+    code = "gca-" + secrets.token_urlsafe(24)
+    _oauth_codes[code] = {
+        "uid_key": uid_key, "redirect_uri": redirect_uri,
+        "code_challenge": data.get("code_challenge", ""),
+        "code_challenge_method": (data.get("code_challenge_method") or "S256"),
+        "expires": time.time() + _OAUTH_CODE_TTL,
+    }
+    sep = "&" if "?" in redirect_uri else "?"
+    loc = f"{redirect_uri}{sep}code={urllib.parse.quote(code)}"
+    state = data.get("state")
+    if state:
+        loc += f"&state={urllib.parse.quote(state)}"
+    return RedirectResponse(loc, status_code=302)
+
+
+@app.post("/oauth/token")
+async def oauth_token(request: Request):
+    if not _oauth_enabled():
+        return JSONResponse({"error": "invalid_request"}, status_code=404)
+    raw = (await request.body()).decode("utf-8", "replace")
+    data = {k: v[0] for k, v in urllib.parse.parse_qs(raw, keep_blank_values=True).items()}
+    grant = data.get("grant_type", "")
+    no_store = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+    if grant == "authorization_code":
+        cd = _oauth_codes.pop(data.get("code", ""), None)
+        if not cd or time.time() > cd["expires"]:
+            return JSONResponse({"error": "invalid_grant"}, status_code=400, headers=no_store)
+        ruri = data.get("redirect_uri")
+        if ruri and cd.get("redirect_uri") and ruri != cd["redirect_uri"]:
+            return JSONResponse({"error": "invalid_grant"}, status_code=400, headers=no_store)
+        if not _pkce_ok(data.get("code_verifier", ""), cd.get("code_challenge", ""),
+                        cd.get("code_challenge_method", "S256")):
+            return JSONResponse({"error": "invalid_grant", "error_description": "PKCE"},
+                                status_code=400, headers=no_store)
+        return JSONResponse(_oauth_issue(cd["uid_key"]), headers=no_store)
+    if grant == "refresh_token":
+        rd = _oauth_refresh.get(data.get("refresh_token", ""))
+        if not rd:
+            return JSONResponse({"error": "invalid_grant"}, status_code=400, headers=no_store)
+        return JSONResponse(_oauth_issue(rd["uid_key"]), headers=no_store)
+    return JSONResponse({"error": "unsupported_grant_type"}, status_code=400, headers=no_store)
+
+
 @app.post("/mcp")
 async def mcp_post(request: Request,
                    authorization: str | None = Header(default=None),
@@ -6432,8 +6680,11 @@ async def mcp_post(request: Request,
                    x_grist_site: str | None = Header(default=None, alias="X-Grist-Site")):
     raw_bearer = _auth(authorization)
     if not raw_bearer:
-        return JSONResponse({"error": "Authorization: Bearer requis"}, status_code=401)
-    if not _check_app_token(request):
+        hdrs = ({"WWW-Authenticate": f'Bearer resource_metadata="{PUBLIC_URL}'
+                 '/.well-known/oauth-protected-resource"'} if _oauth_enabled() else {})
+        return JSONResponse({"error": "Authorization: Bearer requis"}, status_code=401, headers=hdrs)
+    # Token OAuth (gco-) : la garde du pod est portee par le token lui-meme -> pas de X-App-Token.
+    if not raw_bearer.startswith("gco-") and not _check_app_token(request):
         return JSONResponse({"error": "Garde du pod : en-tete X-App-Token manquant ou invalide."},
                             status_code=401)
     uid_key = await _resolve_uid_key(raw_bearer, x_grist_site)
@@ -6479,7 +6730,8 @@ async def mcp_sse(request: Request,
                   authorization: str | None = Header(default=None),
                   mcp_session_id: str | None = Header(default=None, alias="Mcp-Session-Id")):
     raw_bearer = _auth(authorization)
-    if not _check_app_token(request):
+    is_oauth = bool(raw_bearer and raw_bearer.startswith("gco-"))
+    if not is_oauth and not _check_app_token(request):
         return Response("Garde du pod : app_token manquant ou invalide.", status_code=401)
     uid_key = None
     is_mcp_client = False
@@ -6492,7 +6744,9 @@ async def mcp_sse(request: Request,
         if arto_token:
             uid_key = _token_to_uid.get(arto_token)
     if not uid_key:
-        return Response("Authorization requis", status_code=401)
+        hdrs = ({"WWW-Authenticate": f'Bearer resource_metadata="{PUBLIC_URL}'
+                 '/.well-known/oauth-protected-resource"'} if _oauth_enabled() else {})
+        return Response("Authorization requis", status_code=401, headers=hdrs)
     if not _owner_gate(uid_key):
         return Response("Pod verrouille sur un autre compte (owner-lock).", status_code=403)
     sid = mcp_session_id or str(uuid.uuid4())
@@ -6806,7 +7060,7 @@ async def webhook_receive(doc_id: str, request: Request):
 @app.get("/health")
 async def health(request: Request):
     total = sum(len(u["sessions"]) for u in registry._users.values())
-    base = {"ok": True, "version": "5.12", "mcp_protocol": MCP_VER,
+    base = {"ok": True, "version": "5.13", "mcp_protocol": MCP_VER,
             "sessions": total, "users": len(registry._users),
             "tools": len(TOOLS), "prompts": len(PROMPTS),
             "resources": {"static": len(STATIC_RESOURCES), "templates": len(RESOURCE_TEMPLATES)},

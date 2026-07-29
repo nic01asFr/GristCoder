@@ -3,13 +3,14 @@ name: grist-coder
 description: |
   Serveur MCP GristCoder — transforme un document Grist en application metier
   complete via IA (tables, formules, artefacts HTML/React, webhooks).
-  Mode HTTP streamable, garde Bearer + owner-lock, config LLM SSPCloud auto.
+  Mode HTTP streamable, garde Bearer + owner-lock, connecteur OAuth 2.1 embarque
+  (adosse a la cle API Grist), config LLM SSPCloud auto.
   Package self-hosted par-utilisateur pour le catalogue Onyxia SSPCloud :
   chaque utilisateur deploie son pod, garde ses propres secrets, l'auteur
   du chart n'est depositaire d'aucun secret.
 type: application
-version: 0.2.0
-appVersion: "5.12"
+version: 0.3.0
+appVersion: "5.13"
 icon: https://grist.numerique.gouv.fr/favicon.ico
 keywords:
   - mcp

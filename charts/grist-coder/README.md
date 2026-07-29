@@ -32,14 +32,24 @@ bandeau non bloquant si aucune clé n'est disponible.
 
 L'URL n'est pas un secret (ingress public). La protection est double :
 
-- **`/mcp`, `/register`, SSE, `/llm-proxy`** exigent le Bearer `APP_AUTH_TOKEN`
-  (dans ton `Secret`, que toi seul lis).
+- **`/mcp`, `/register`, SSE, `/llm-proxy`** exigent soit le Bearer `APP_AUTH_TOKEN`
+  (dans ton `Secret`, que toi seul lis), soit un **access token OAuth** émis par le
+  pod (voir ci-dessous).
 - **Owner-lock** (`app.ownerLock: on`) : le premier compte Grist qui s'enregistre
   devient propriétaire ; tout autre `uid` est rejeté (403), même avec une clé
   Grist valide. Empêche un tiers d'utiliser ton pod (ta clé LLM, ton compute).
 
-On n'utilise **pas** l'OIDC Onyxia : le widget vit dans une iframe cross-origin
-(Grist), où le cookie SSPCloud ne circule pas de façon fiable.
+**Connecteur OAuth 2.1 embarqué** (actif en ligne, dès que `PUBLIC_URL` est injecté) :
+le pod est son propre Authorization Server. Le « login » du consentement valide
+ta **clé API Grist** (même identité `uid:{id}` + owner-lock) et le pod émet un jeton
+opaque révocable. La clé Grist ne repart jamais vers le client (pas de token
+passthrough) ; le jeton remplace le couple `Bearer` + `X-App-Token`. Le Dynamic
+Client Registration (RFC 7591) est activé → le connecteur s'enregistre seul, sans
+`client_id` manuel.
+
+On n'utilise **pas** l'OIDC Onyxia (le widget vit dans une iframe cross-origin Grist
+où le cookie SSPCloud ne circule pas de façon fiable) : l'AS OAuth du pod est
+autonome et adossé à la clé Grist, pas au SSO SSPCloud.
 
 ## Déploiement
 
@@ -69,7 +79,10 @@ auto de la clé LLM.
    ```
 2. **Widget Grist** : ajouter un widget personnalisé pointant sur `https://<host>/`,
    renseigner le token dans les options de section (`appToken`).
-3. **Client MCP** (`.mcp.json` / Claude Desktop) :
+3. **Connecteur OAuth** (recommandé, Claude Desktop / claude.ai) : ajouter un
+   connecteur personnalisé avec l'URL `https://<host>/mcp`, puis coller sa clé API
+   Grist sur la page de consentement du pod. Aucun header à configurer.
+4. **Client MCP par headers** (`.mcp.json` / Claude Code) :
    ```json
    {
      "mcpServers": {
