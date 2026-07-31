@@ -5049,7 +5049,21 @@ async def call_tool(uid_key, mcp_sid, name, args):
         return {"ok": True, "selected": ctx.meta(),
                 "_next": "session_info pour snapshot complet, ou plan/{token} si reprise d un projet existant."}
 
+    # Routage deterministe de la session. On NE retombe JAMAIS silencieusement sur la
+    # session "la plus recente" du compte : sous un meme uid (widget + connecteur +
+    # Claude Code), ca faisait operer un client sur le doc d'un autre. Regle : un seul
+    # doc ouvert -> auto (confort) ; plusieurs -> exiger session_select explicite.
     token = _active_tokens.get(mcp_sid)
+    if not token:
+        _sess = registry.list_sessions(uid_key)
+        if len(_sess) == 1:
+            token = _sess[0]["token"]
+            _active_tokens[mcp_sid] = token
+        elif len(_sess) > 1:
+            return {"error": "Plusieurs documents ouverts sous ce compte : choisis ta session "
+                             "avec session_select(token) avant d'agir (isolation entre clients).",
+                    "sessions": _sess,
+                    "_next": "session_select(token) puis relance ton outil."}
     ctx   = registry.resolve(uid_key, token)
     if not ctx: return {"error": "Aucune session active. Appeler sessions_list() d abord."}
     ctx.touch()
@@ -6694,6 +6708,10 @@ async def mcp_post(request: Request,
         return JSONResponse({"error": "Pod verrouille sur un autre compte (owner-lock). "
                              "Ce pod appartient a son proprietaire."}, status_code=403)
     mcp_sid  = mcp_session_id or str(uuid.uuid4())
+    # Auto-epinglage : un bearer gc- EST le token de session du widget -> cette connexion
+    # est liee a SON doc, jamais routee vers "le plus recent" du compte. Idempotent.
+    if raw_bearer.startswith("gc-") and registry.resolve(uid_key, raw_bearer):
+        _active_tokens[mcp_sid] = raw_bearer
     try:
         body = await request.json()
     except Exception:
@@ -6759,7 +6777,9 @@ async def mcp_sse(request: Request,
         _mcp_client_sids[uid_key] = sid  # Track pour sampling
     # Re-push active wizard cards on reconnect (SSE restore) — sauf pour display mode
     if not is_display:
-        ctx_for_replay = registry.resolve(uid_key, None)
+        # Replay cible la session du widget (?token=), pas "la plus recente" du compte.
+        _rt = request.query_params.get("token")
+        ctx_for_replay = registry.resolve(uid_key, _rt) if _rt else registry.resolve(uid_key, None)
         # Restaurer le bandeau plan + la phase depuis project_plan (source persistante),
         # meme si la card ephemere ctx-plan-progress a ete fermee entre-temps.
         if ctx_for_replay and ctx_for_replay.project_plan.get("status"):
