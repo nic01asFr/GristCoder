@@ -976,17 +976,27 @@ async def _provision_coder_widget(base, doc_id, key, widget_url):
         r = await c.get(f"{base}/api/docs/{doc_id}/tables", headers=phdr)
         r.raise_for_status()
         existantes = [t.get("id") for t in (r.json() or {}).get("tables", [])]
+        table_ref, vues_auto = None, []
         if "Artefacts" not in existantes:
-            rc = await c.post(f"{base}/api/docs/{doc_id}/tables", headers=phdr,
-                              content=json.dumps(ARTEFACTS_TABLE_DEF))
+            # AddTable plutot que POST /tables : la creation d'une table engendre
+            # TOUJOURS une page (celle qu'on voyait en gris a cote de "🟢Coder"), et
+            # seul retValues nous en donne l'id de facon deterministe — on la
+            # supprime en fin de provisioning.
+            cols = [dict({"id": col["id"]}, **(col.get("fields") or {}))
+                    for col in ARTEFACTS_TABLE_DEF["tables"][0]["columns"]]
+            rc = await c.post(f"{base}/api/docs/{doc_id}/apply", headers=phdr,
+                              content=json.dumps([["AddTable", "Artefacts", cols]]))
             rc.raise_for_status()
-        # rowId meta de Artefacts (necessaire a CreateViewSection).
-        rs = await c.post(f"{base}/api/docs/{doc_id}/sql", headers=phdr,
-                          content=json.dumps({"sql": "SELECT id FROM _grist_Tables WHERE tableId = ? LIMIT 1",
-                                              "args": ["Artefacts"]}))
-        rs.raise_for_status()
-        recs = (rs.json() or {}).get("records", [])
-        table_ref = (recs[0].get("fields", {}) or {}).get("id") if recs else None
+            rv = ((rc.json() or {}).get("retValues") or [{}])[0] or {}
+            table_ref = rv.get("id")
+            vues_auto = [v.get("id") for v in (rv.get("views") or []) if v.get("id")]
+        if not table_ref:
+            rs = await c.post(f"{base}/api/docs/{doc_id}/sql", headers=phdr,
+                              content=json.dumps({"sql": "SELECT id FROM _grist_Tables WHERE tableId = ? LIMIT 1",
+                                                  "args": ["Artefacts"]}))
+            rs.raise_for_status()
+            recs = (rs.json() or {}).get("records", [])
+            table_ref = (recs[0].get("fields", {}) or {}).get("id") if recs else None
         if not table_ref:
             return False
         # 2. Page + section custom sur Artefacts.
@@ -1023,12 +1033,17 @@ async def _provision_coder_widget(base, doc_id, key, widget_url):
         ru = await c.post(f"{base}/api/docs/{doc_id}/apply", headers=phdr,
                           content=json.dumps(actions))
         ru.raise_for_status()
-        # 5. Menage : la Table1 du document vierge et sa page n'ont plus lieu d'etre.
-        #    Best effort — un echec ici ne compromet pas un document deja utilisable.
+        # 5. Menage. Best effort — un echec ici ne compromet pas un document deja
+        #    utilisable. On ne laisse que la page "🟢Coder" :
+        #      - la page grise creee avec la table Artefacts (RemoveView, verifie)
+        #      - la Table1 du document vierge, et sa page avec elle
+        menage = [["RemoveView", v] for v in vues_auto if v != view_ref]
         if "Table1" in existantes:
+            menage.append(["RemoveTable", "Table1"])
+        for action in menage:
             try:
                 await c.post(f"{base}/api/docs/{doc_id}/apply", headers=phdr,
-                             content=json.dumps([["RemoveTable", "Table1"]]))
+                             content=json.dumps([action]))
             except Exception:
                 pass
         return True
