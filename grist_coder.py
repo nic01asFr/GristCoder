@@ -279,6 +279,11 @@ OUTILS (31)
   Plan     : plan_update              <- META-CONTROLE : persiste + _next_resources par phase
   Sessions : sessions_list            <- _next hint integre (plan? ou docs/qualification)
              session_select, session_info
+             ROUTAGE : si plusieurs documents sont ouverts, passer token=<token> A CHAQUE
+             outil (le token vient de sessions_list). C est portable, ca survit aux clients
+             qui ne gerent pas Mcp-Session-Id, et ca permet a plusieurs agents/onglets de
+             travailler en parallele sur des docs differents. session_select ne fait
+             qu epingler un defaut pour la connexion courante.
   Canvas   : canvas_select (switch artefact, lecture seule), canvas_read, canvas_write, canvas_patch, canvas_exec, canvas_screenshot, canvas_type
   Wizard   : canvas_wizard (id requis, choice|form|confirm|progress|info|input)
              canvas_wizard_close (card_id? -> ferme une card ; absent -> ferme tout)
@@ -858,6 +863,94 @@ def _split_html_js(code: str) -> tuple[str, str]:
 # celle de CE serveur (localhost par defaut). L'injection du widget est
 # best-effort et entierement gardee : un echec ne compromet pas la creation.
 
+def _provision_key(uid_key):
+    """Cle API Grist utilisable pour creer un document, avec sa provenance.
+
+    Ordre : override explicite (.env GRIST_PROVISION_KEY) > cle de l'APPELANT
+    (Bearer Claude Desktop / connecteur OAuth / widget) > cle du pod (GRIST_API_KEY
+    injectee par le chart). Exiger une cle de provisioning dediee etait redondant :
+    sur un pod perso, l'appelant est deja owner de ses workspaces, et le doc doit
+    lui appartenir a lui, pas a une identite de service."""
+    k = os.getenv("GRIST_PROVISION_KEY", "").strip()
+    if k:
+        return k, "GRIST_PROVISION_KEY"
+    user = registry._users.get(uid_key) or {}
+    k = (user.get("grist_key") or "").strip()
+    if k:
+        return k, "cle Grist de l'appelant"
+    for s in (user.get("sessions") or {}).values():
+        k = (getattr(s, "grist_key", "") or "").strip()
+        if k:
+            return k, "cle Grist de la session widget"
+    k = os.getenv("GRIST_API_KEY", "").strip()
+    if k:
+        return k, "GRIST_API_KEY (cle du pod)"
+    return "", ""
+
+
+def _provision_site_url(uid_key):
+    """Base du site Grist : session active de l'appelant > site memorise pour l'uid >
+    env GRIST_SITE_URL > n'importe quelle session connue du serveur."""
+    user = registry._users.get(uid_key) or {}
+    for s in (user.get("sessions") or {}).values():
+        if getattr(s, "site_url", ""):
+            return s.site_url
+    if (user.get("site") or "").strip():
+        return user["site"].strip()
+    env = os.getenv("GRIST_SITE_URL", "").strip()
+    if env:
+        return env
+    for u in registry._users.values():
+        for s in (u.get("sessions") or {}).values():
+            if getattr(s, "site_url", ""):
+                return s.site_url
+    return ""
+
+
+def _coder_widget_url():
+    """URL publique de CE serveur, a poser dans la section custom du nouveau doc.
+    Le chart Onyxia n'injecte que PUBLIC_URL (pas HOST_URL) : sans ce repli, un pod
+    en ligne posait une URL localhost inutilisable dans le doc cree."""
+    for env in ("GRIST_CODER_WIDGET_URL", "PUBLIC_URL"):
+        v = os.getenv(env, "").strip().rstrip("/")
+        if v:
+            return v
+    return HOST_URL.rstrip("/")
+
+
+async def _provision_workspaces(c, base, phdr, org_hint=""):
+    """Enumere les workspaces visibles par la cle, toutes orgs confondues.
+    Retourne [{id, name, org, org_name, docs}]. Ne leve pas."""
+    orgs = []
+    try:
+        r = await c.get(f"{base}/api/orgs", headers=phdr)
+        r.raise_for_status()
+        orgs = [o for o in (r.json() or []) if isinstance(o, dict)]
+    except Exception:
+        orgs = []
+    if not orgs and org_hint:
+        orgs = [{"id": org_hint, "domain": org_hint, "name": org_hint}]
+    out = []
+    for o in orgs:
+        oid = o.get("domain") or o.get("id")
+        if oid is None:
+            continue
+        try:
+            rw = await c.get(f"{base}/api/orgs/{oid}/workspaces", headers=phdr)
+            rw.raise_for_status()
+            wss = rw.json() or []
+        except Exception:
+            continue
+        for w in wss:
+            if not isinstance(w, dict) or w.get("id") is None:
+                continue
+            out.append({"id": w.get("id"), "name": w.get("name"),
+                        "org": str(o.get("domain") or o.get("id")),
+                        "org_name": o.get("name"),
+                        "docs": len(w.get("docs") or [])})
+    return out
+
+
 async def _provision_coder_widget(base, doc_id, key, widget_url):
     """Ajoute au nouveau doc une page avec une section Custom Widget pointant vers
     widget_url (ce serveur). Retourne True si l'API confirme, False sinon. Ne leve
@@ -1140,7 +1233,9 @@ TOOLS = [
      "description": (
          "PREMIERE ETAPE obligatoire — liste les widgets actifs et retourne token + doc_title. "
          "La reponse inclut _next : action recommandee immediate (plan existant -> plan/{token}, "
-         "nouveau doc -> docs/qualification). Si plusieurs sessions : session_select(token) pour choisir."
+         "nouveau doc -> docs/qualification). Si plusieurs sessions : reutiliser le token de "
+         "la session voulue en le passant a chaque outil (token=...) — routage par appel, "
+         "compatible multi-agents. session_select n epingle qu un defaut de connexion."
      ),
      "inputSchema": {"type": "object", "properties": {}},
      "annotations": {"readOnlyHint": True}},
@@ -1155,9 +1250,9 @@ TOOLS = [
      "description": (
          "Cree un NOUVEAU document Grist vierge dans un workspace, le nomme, y ajoute "
          "(best-effort) une page avec le widget Coder, et retourne le lien cliquable. "
-         "Necessite une cle de provisioning cote serveur (.env : GRIST_PROVISION_KEY + "
-         "GRIST_PROVISION_WORKSPACE_ID). Si workspace_id absent, retourne la liste des "
-         "workspaces disponibles. Utiliser pour demarrer un projet sur un document propre "
+         "Utilise la cle Grist de l'appelant : aucune configuration serveur requise. "
+         "Si workspace_id est absent et qu'il existe plusieurs workspaces, retourne la "
+         "liste pour choisir. Utiliser pour demarrer un projet sur un document propre "
          "plutot que d'encombrer un document existant."
      ),
      "inputSchema": {"type": "object",
@@ -1593,6 +1688,26 @@ TOOLS = [
                      "required": ["action"]}},
 ]
 
+# ── ROUTAGE DE SESSION PORTE PAR L'APPEL ──────────────────────────────────────
+# Chaque outil agissant sur un document accepte un `token` optionnel. Raison : un
+# client passerelle (connecteur claude.ai) ne renvoie pas toujours l'en-tete
+# Mcp-Session-Id -> l'epinglage serveur pose par session_select est perdu d'un appel
+# a l'autre, et deux onglets / deux agents partageant le meme compte ne peuvent de
+# toute facon pas se partager un etat global. Avec ce parametre, chaque appel est
+# autoportant et le travail en parallele redevient possible.
+_NO_SESSION_TOOLS = {"sessions_list", "session_select", "grist_doc_create"}
+_SESSION_TOKEN_PROP = {
+    "type": "string",
+    "description": ("Token de la session ciblee (voir sessions_list). Optionnel si un seul "
+                    "document est ouvert. A FOURNIR des que plusieurs le sont : le routage "
+                    "est porte par l'appel, pas par un etat serveur partage."),
+}
+for _t in TOOLS:
+    if _t["name"] in _NO_SESSION_TOOLS:
+        continue
+    _t.setdefault("inputSchema", {}).setdefault("properties", {}) \
+      .setdefault("token", dict(_SESSION_TOKEN_PROP))
+
 # ── CONTEXT-BASED TOOL FILTERING ──────────────────────────────────────────────
 # Maps plan status → set of visible tool names (None = all tools visible)
 _QUALIFYING_TOOLS = {
@@ -1943,8 +2058,11 @@ DOCS_ARTEFACTS = """GRIST CODER - Recettes artefacts HTML/JS
 =========================================
 
 TEMPLATE BASE - TYPE: grist (widget reactif aux donnees)
-DSFR CSS+JS auto-injecte par prepareWidgetHTML — NE PAS ajouter de CDN CSS/Tailwind.
+DSFR N EST PAS auto-injecte : ajouter les 2 <link> ci-dessous si tu veux les classes fr-*.
+Pas de Tailwind. NE PAS mettre DSFR dans un artefact a librairie graphique (voir plus bas).
 <!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">
+<link href="https://cdn.jsdelivr.net/npm/@gouvfr/dsfr@1.14/dist/dsfr.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/@gouvfr/dsfr@1.14/dist/utility/utility.min.css" rel="stylesheet">
 <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
 </head><body>
 <div class="fr-container fr-py-4w" id="app"></div>
@@ -1993,17 +2111,21 @@ loadData();
 
 ---
 TEMPLATE BASE - TYPE: html (UI independante, pas de donnees Grist)
-DSFR CSS+JS auto-injecte — NE PAS ajouter de CDN CSS/Tailwind.
+DSFR N EST PAS auto-injecte : ajouter les 2 <link> ci-dessous. Pas de Tailwind.
 <!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8">
+<link href="https://cdn.jsdelivr.net/npm/@gouvfr/dsfr@1.14/dist/dsfr.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/@gouvfr/dsfr@1.14/dist/utility/utility.min.css" rel="stylesheet">
 </head><body>
 <div class="fr-container fr-py-4w">...</div>
 </body></html>
 
 ---
-DSFR — COMPOSANTS DE REFERENCE (auto-injecte, classes fr-* utilisables directement)
+DSFR — COMPOSANTS DE REFERENCE (classes fr-*, une fois les 2 <link> ajoutes)
 =====================================================================================
 Le DSFR (Systeme de Design de l Etat) est le framework CSS officiel de l administration francaise.
-Il est charge automatiquement dans tous les artefacts — utiliser les classes fr-* ci-dessous.
+Il n est PAS charge automatiquement : chaque artefact qui en a besoin declare les 2 <link>
+jsdelivr montres dans les templates ci-dessus. NE PAS le charger dans un artefact utilisant
+MapLibre, Leaflet, Chart.js ou D3 — le CSS global DSFR casse leurs rendus.
 
 ## LAYOUT
 <div class="fr-container">                           <!-- max-width 78rem, centre -->
@@ -4958,7 +5080,9 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 _next = ("Nouveau projet — lire docs/qualification pour choisir la categorie, "
                          "puis canvas_wizard(type='input') pour collecter le besoin utilisateur.")
             return {"sessions": result, "_next": _next,
-                    "_hint": "Apres selection : plan/{token} si reprise, docs/qualification si debut"}
+                    "_hint": ("Apres selection : plan/{token} si reprise, docs/qualification si debut. "
+                              "Plusieurs sessions ? Passer token=<token> a chaque outil plutot que "
+                              "session_select : routage par appel, robuste et parallelisable.")}
         # Debug: lister tous les users connus pour diagnostiquer le mismatch d uid
         all_uids = {u: len(d["sessions"]) for u, d in registry._users.items()}
         return {
@@ -4972,43 +5096,51 @@ async def call_tool(uid_key, mcp_sid, name, args):
         doc_name = (args.get("name") or "").strip()
         if not doc_name:
             return {"ok": False, "error": "name requis (nom du nouveau document a creer)."}
-        prov_key = os.getenv("GRIST_PROVISION_KEY", "").strip()
+        prov_key, key_source = _provision_key(uid_key)
         if not prov_key:
             return {"ok": False, "error": (
-                "Provisioning non configure. Definir dans .env : GRIST_PROVISION_KEY "
-                "(cle API Grist owner du workspace), GRIST_PROVISION_WORKSPACE_ID (id numerique "
-                "du workspace cible). Optionnel : GRIST_PROVISION_ORG (defaut 'docs'), "
-                "GRIST_CODER_WIDGET_URL (URL publique de ce serveur, defaut http://localhost:8742), "
-                "GRIST_SITE_URL (si aucune session widget active).")}
-        # Base du site : depuis une session active de l'uid, sinon env.
-        site_url = os.getenv("GRIST_SITE_URL", "").strip()
-        try:
-            _sl = registry.list_sessions(uid_key)
-            if _sl:
-                _c0 = registry.resolve(uid_key, _sl[0]["token"])
-                if _c0 and _c0.site_url:
-                    site_url = _c0.site_url
-        except Exception:
-            pass
+                "Aucune cle Grist utilisable pour creer un document. Se connecter avec une "
+                "cle API Grist (Claude Desktop : Authorization: Bearer <cle_grist> ; connecteur "
+                "OAuth : cle saisie au consentement), ou definir GRIST_PROVISION_KEY / "
+                "GRIST_API_KEY cote serveur.")}
+        site_url = _provision_site_url(uid_key)
         root = urllib.parse.urlsplit(site_url)
         if not root.netloc:
-            return {"ok": False, "error": "URL du site Grist introuvable (aucune session active et GRIST_SITE_URL absent)."}
+            return {"ok": False, "error": (
+                "URL du site Grist introuvable : aucune session widget active et GRIST_SITE_URL "
+                "absent cote serveur. Ouvrir le widget Coder dans Grist, ou definir GRIST_SITE_URL "
+                "(ex: https://grist.numerique.gouv.fr).")}
         base = f"{root.scheme}://{root.netloc}"
-        org = (os.getenv("GRIST_PROVISION_ORG", "docs").strip() or "docs")
         ws_id = str(args.get("workspace_id") or os.getenv("GRIST_PROVISION_WORKSPACE_ID", "")).strip()
+        org = ""
         phdr = {"Authorization": f"Bearer {prov_key}", "Content-Type": "application/json"}
         async with _grist_client() as c:
-            if not ws_id:
-                wss = []
+            if ws_id:
+                # Org du workspace cible : necessaire pour construire l'URL /o/{org}/...
                 try:
-                    r = await c.get(f"{base}/api/orgs/{org}/workspaces", headers=phdr)
-                    r.raise_for_status()
-                    wss = [{"id": w.get("id"), "name": w.get("name")} for w in (r.json() or [])]
+                    rw = await c.get(f"{base}/api/workspaces/{ws_id}", headers=phdr)
+                    rw.raise_for_status()
+                    _w = rw.json() or {}
+                    org = str((_w.get("org") or {}).get("domain") or "")
                 except Exception:
-                    pass
-                return {"ok": False,
-                        "error": "workspace_id manquant. Fournir args.workspace_id ou definir GRIST_PROVISION_WORKSPACE_ID.",
-                        "workspaces_disponibles": wss}
+                    org = ""
+            else:
+                # Pas de workspace impose : on enumere ce que la cle voit reellement.
+                # Un seul candidat -> choix evident, on enchaine. Plusieurs -> on rend
+                # la main plutot que de creer le doc au mauvais endroit.
+                wss = await _provision_workspaces(c, base, phdr,
+                                                  os.getenv("GRIST_PROVISION_ORG", "").strip())
+                if len(wss) == 1:
+                    ws_id, org = str(wss[0]["id"]), wss[0]["org"]
+                elif wss:
+                    return {"ok": False,
+                            "error": "Plusieurs workspaces disponibles : preciser workspace_id.",
+                            "workspaces_disponibles": wss,
+                            "_next": "grist_doc_create(name=..., workspace_id=<id choisi>)"}
+                else:
+                    return {"ok": False, "error": (
+                        f"Aucun workspace accessible avec cette cle ({key_source}) sur {base}. "
+                        "Verifier que la cle est valide et qu'elle a acces a au moins un workspace.")}
             try:
                 r = await c.post(f"{base}/api/workspaces/{ws_id}/docs", headers=phdr,
                                  content=json.dumps({"name": doc_name}))
@@ -5016,17 +5148,24 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 doc_id = (r.text or "").strip().strip('"')
             except httpx.HTTPStatusError as e:
                 return {"ok": False, "error": _scrub_secrets(
-                    f"Echec creation du document (HTTP {e.response.status_code}). "
-                    f"Verifier GRIST_PROVISION_KEY et workspace_id. Detail: {e.response.text[:200]}")}
+                    f"Echec creation du document (HTTP {e.response.status_code}) dans le workspace "
+                    f"{ws_id} sur {base}. Cle utilisee : {key_source}. "
+                    f"Detail: {e.response.text[:200]}")}
             except Exception as e:
                 return {"ok": False, "error": _scrub_secrets(f"Echec creation du document : {e}")}
         slug = (re.sub(r'[^a-zA-Z0-9]+', '-', doc_name).strip('-').lower() or "document")
+        org = org or (os.getenv("GRIST_PROVISION_ORG", "").strip() or "docs")
         doc_url = f"{base}/o/{org}/{doc_id}/{slug}"
         out = {"ok": True, "doc_id": doc_id, "name": doc_name, "url": doc_url,
-               "workspace_id": ws_id, "_next": f"Document cree. Ouvrir : {doc_url}"}
+               "workspace_id": ws_id, "org": org, "_key_source": key_source,
+               "_next": f"Document cree. Ouvrir : {doc_url}"}
         if args.get("add_coder_widget", True):
-            widget_url = (os.getenv("GRIST_CODER_WIDGET_URL", "").strip() or "http://localhost:8742")
+            widget_url = _coder_widget_url()
             out["coder_widget_url"] = widget_url
+            if "localhost" in widget_url or "127.0.0.1" in widget_url:
+                out["coder_widget_warning"] = (
+                    f"L'URL du widget ({widget_url}) est locale : elle ne fonctionnera que depuis "
+                    "cette machine. Definir GRIST_CODER_WIDGET_URL ou PUBLIC_URL pour un pod en ligne.")
             try:
                 added = await _provision_coder_widget(base, doc_id, prov_key, widget_url)
                 out["coder_widget_added"] = bool(added)
@@ -5047,23 +5186,40 @@ async def call_tool(uid_key, mcp_sid, name, args):
         _active_tokens[mcp_sid] = ctx.token
         ctx.touch()
         return {"ok": True, "selected": ctx.meta(),
-                "_next": "session_info pour snapshot complet, ou plan/{token} si reprise d un projet existant."}
+                "_next": "session_info pour snapshot complet, ou plan/{token} si reprise d un projet existant.",
+                "_hint": ("Cet epinglage vaut pour CETTE connexion MCP. Un client qui ne renvoie "
+                          "pas l'en-tete Mcp-Session-Id le perd : passer token=... directement a "
+                          "chaque outil est plus sur et permet de travailler en parallele.")}
 
-    # Routage deterministe de la session. On NE retombe JAMAIS silencieusement sur la
+    # Routage de session. Priorite : token PASSE DANS L'APPEL > epinglage de la
+    # connexion > unique session ouverte. On NE retombe JAMAIS silencieusement sur la
     # session "la plus recente" du compte : sous un meme uid (widget + connecteur +
-    # Claude Code), ca faisait operer un client sur le doc d'un autre. Regle : un seul
-    # doc ouvert -> auto (confort) ; plusieurs -> exiger session_select explicite.
-    token = _active_tokens.get(mcp_sid)
+    # Claude Code), ca faisait operer un client sur le doc d'un autre.
+    explicit = str(args.pop("token", "") or "").strip()
+    if explicit:
+        if not registry.resolve(uid_key, explicit):
+            return {"error": f"Token de session inconnu : {explicit}",
+                    "sessions": registry.list_sessions(uid_key),
+                    "_next": "sessions_list() pour obtenir un token valide."}
+        # SANS effet de bord : on n'epingle pas la connexion. Deux agents qui passent
+        # chacun leur token sur le meme credential ne doivent jamais s'ecraser l'un
+        # l'autre — c'est tout l'interet du routage par appel.
+        token = explicit
+    else:
+        token = _active_tokens.get(mcp_sid)
     if not token:
         _sess = registry.list_sessions(uid_key)
         if len(_sess) == 1:
             token = _sess[0]["token"]
             _active_tokens[mcp_sid] = token
         elif len(_sess) > 1:
-            return {"error": "Plusieurs documents ouverts sous ce compte : choisis ta session "
-                             "avec session_select(token) avant d'agir (isolation entre clients).",
+            return {"error": "Plusieurs documents ouverts sous ce compte : preciser la session "
+                             "cible. Le plus fiable est de passer token=... a l'outil lui-meme "
+                             f"(ex: {name}(token='{_sess[0]['token']}', ...)) — l'epinglage par "
+                             "session_select peut etre perdu si le client ne renvoie pas "
+                             "l'en-tete Mcp-Session-Id.",
                     "sessions": _sess,
-                    "_next": "session_select(token) puis relance ton outil."}
+                    "_next": f"Relancer {name} avec token=<token du doc vise>."}
     ctx   = registry.resolve(uid_key, token)
     if not ctx: return {"error": "Aucune session active. Appeler sessions_list() d abord."}
     ctx.touch()
@@ -6707,7 +6863,11 @@ async def mcp_post(request: Request,
     if not _owner_gate(uid_key):
         return JSONResponse({"error": "Pod verrouille sur un autre compte (owner-lock). "
                              "Ce pod appartient a son proprietaire."}, status_code=403)
-    mcp_sid  = mcp_session_id or str(uuid.uuid4())
+    # Identite de connexion. Un uuid tire a chaque requete quand le client n'echo pas
+    # Mcp-Session-Id (cas des passerelles : connecteur claude.ai) rendait _active_tokens
+    # inutilisable — session_select ecrivait sous un sid jamais revu, donc la selection
+    # etait perdue des l'appel suivant. Repli deterministe sur le credential.
+    mcp_sid  = mcp_session_id or ("cred:" + hashlib.sha1(raw_bearer.encode()).hexdigest()[:12])
     # Auto-epinglage : un bearer gc- EST le token de session du widget -> cette connexion
     # est liee a SON doc, jamais routee vers "le plus recent" du compte. Idempotent.
     if raw_bearer.startswith("gc-") and registry.resolve(uid_key, raw_bearer):
