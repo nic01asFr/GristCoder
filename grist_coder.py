@@ -959,30 +959,39 @@ async def _provision_workspaces(c, base, phdr, org_hint=""):
 
 
 async def _provision_coder_widget(base, doc_id, key, widget_url):
-    """Ajoute au nouveau doc une page avec une section Custom Widget pointant vers
-    widget_url (ce serveur). Retourne True si l'API confirme, False sinon. Ne leve
-    pas : l'appelant garde deja, mais on reste defensif."""
+    """Prepare un document neuf pour Grist Coder. Etat vise, et rien d'autre :
+
+        table Artefacts  +  une page "🟢Coder" en section custom sur cette table
+
+    La Table1 du document vierge est supprimee. La table est creee par REST, qui
+    n'engendre PAS de page (primaryViewId = 0) — contrairement a l'action AddTable
+    lancee depuis le navigateur, d'ou la page "Artefacts" parasite qu'on observait
+    quand le widget creait la table lui-meme au premier chargement.
+
+    Retourne True si l'API confirme, False sinon. Ne leve pas : l'appelant garde
+    deja, mais on reste defensif."""
     phdr = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
     async with _grist_client() as c:
-        # 1. Table cible : la Table1 creee par defaut dans un doc vierge.
+        # 1. Table Artefacts. Idempotent : si elle existe deja on continue.
         r = await c.get(f"{base}/api/docs/{doc_id}/tables", headers=phdr)
         r.raise_for_status()
-        tables = (r.json() or {}).get("tables", [])
-        if not tables:
-            return False
-        # rowId meta de la table (necessaire a CreateViewSection) : via SQL sur _grist_Tables.
-        table_str_id = tables[0].get("id")
+        existantes = [t.get("id") for t in (r.json() or {}).get("tables", [])]
+        if "Artefacts" not in existantes:
+            rc = await c.post(f"{base}/api/docs/{doc_id}/tables", headers=phdr,
+                              content=json.dumps(ARTEFACTS_TABLE_DEF))
+            rc.raise_for_status()
+        # rowId meta de Artefacts (necessaire a CreateViewSection).
         rs = await c.post(f"{base}/api/docs/{doc_id}/sql", headers=phdr,
                           content=json.dumps({"sql": "SELECT id FROM _grist_Tables WHERE tableId = ? LIMIT 1",
-                                              "args": [table_str_id]}))
+                                              "args": ["Artefacts"]}))
         rs.raise_for_status()
         recs = (rs.json() or {}).get("records", [])
         table_ref = (recs[0].get("fields", {}) or {}).get("id") if recs else None
         if not table_ref:
             return False
-        # 2. Nouvelle page + section pour la table.
+        # 2. Page + section custom sur Artefacts.
         ra = await c.post(f"{base}/api/docs/{doc_id}/apply", headers=phdr,
-                          content=json.dumps([["CreateViewSection", table_ref, 0, "record", None, None]]))
+                          content=json.dumps([["CreateViewSection", table_ref, 0, "custom", None, None]]))
         ra.raise_for_status()
         ret = ra.json()
         # retValues[0] = {viewRef, sectionRef} selon la version de Grist.
@@ -1014,6 +1023,14 @@ async def _provision_coder_widget(base, doc_id, key, widget_url):
         ru = await c.post(f"{base}/api/docs/{doc_id}/apply", headers=phdr,
                           content=json.dumps(actions))
         ru.raise_for_status()
+        # 5. Menage : la Table1 du document vierge et sa page n'ont plus lieu d'etre.
+        #    Best effort — un echec ici ne compromet pas un document deja utilisable.
+        if "Table1" in existantes:
+            try:
+                await c.post(f"{base}/api/docs/{doc_id}/apply", headers=phdr,
+                             content=json.dumps([["RemoveTable", "Table1"]]))
+            except Exception:
+                pass
         return True
 
 # ── PROJECT META PERSISTENCE ──────────────────────────────────────────────────
