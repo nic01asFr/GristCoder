@@ -993,8 +993,19 @@ async def _provision_coder_widget(base, doc_id, key, widget_url):
         if not section_ref:
             return False
         # 3. Bascule la section en custom widget + URL (options JSON string).
-        opts = json.dumps({"customView": {"url": widget_url, "access": "full",
-                                          "renderAfterReady": True}})
+        # customView doit etre une CHAINE JSON dans options, pas un objet : le frontend
+        # Grist fait JSON.parse dessus. Un objet y arrive serialise en "[object Object]"
+        # -> « Erreur lors de l'acces au document » et le doc devient inouvrable.
+        # Meme forme que artefact_publish (voir options["customView"] = custom_view).
+        # "mode" est obligatoire, son absence donne « Cannot read properties of
+        # undefined (reading 'mode') ».
+        custom_view = json.dumps({
+            "mode": "url", "url": widget_url, "access": "full",
+            "renderAfterReady": True, "pluginId": "", "sectionId": "",
+            "widgetId": "", "widgetDef": None, "widgetOptions": None,
+            "columnsMapping": None,
+        })
+        opts = json.dumps({"customView": custom_view})
         actions = [["UpdateRecord", "_grist_Views_section", section_ref,
                     {"parentKey": "custom", "options": opts}]]
         # 4. Nomme la page hote "🟢Coder" si on a le viewRef.
