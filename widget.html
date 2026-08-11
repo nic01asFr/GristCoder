@@ -490,10 +490,13 @@ function prepareWidgetHTML(html, ctx) {
   // DSFR — no longer auto-injected. Artefacts that need it import it themselves:
   //   <link href="https://cdn.jsdelivr.net/npm/@gouvfr/dsfr@1.14/dist/dsfr.min.css" rel="stylesheet">
   var dsfrInject = '';
-  // JSON.stringify n'echappe NI '<' NI U+2028/2029 : une cellule Grist contenant
-  // '</script>' (ou un separateur de ligne unicode) referme la balise hote et casse
-  // l'artefact avec un SyntaxError, code repandu dans le body. On neutralise a
-  // l'injection — JSON relit \u003c a l'identique.
+  // JSON.stringify n'echappe NI '<' NI U+2028/2029 : une cellule Grist contenant une
+  // balise de fermeture de script (ou un separateur de ligne unicode) refermerait la
+  // balise hote et casserait l'artefact avec un SyntaxError, code repandu dans le body.
+  // On neutralise a l'injection : JSON relit < a l'identique.
+  // NE JAMAIS ecrire cette sequence de fermeture en clair ici, meme en commentaire : le
+  // parseur HTML termine l'element script des qu'il la voit, chaine et commentaire
+  // compris. Ecrire '<' + '/script>' comme partout ailleurs dans ce fichier.
   var jsonForScript = function (o) {
     return JSON.stringify(o).replace(/</g, '\\u003c').replace(/>/g, '\\u003e')
                             .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
