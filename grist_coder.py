@@ -25,7 +25,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 load_dotenv()
-HOST_URL        = os.getenv("HOST_URL", "http://localhost:8742")
+# URL publique de CE serveur. Le chart Onyxia n'injecte que PUBLIC_URL (voir
+# charts/grist-coder/templates/deployment.yaml) : sans ce repli, un pod en ligne
+# retombait sur le defaut localhost et posait des URLs inutilisables dans les
+# documents (sections custom de grist_view_create/grist_view_add_widget, URLs de
+# webhook). Le rstrip evite les doubles slash des concatenations HOST_URL + "/".
+HOST_URL        = (os.getenv("HOST_URL", "").strip().rstrip("/")
+                   or os.getenv("PUBLIC_URL", "").strip().rstrip("/")
+                   or "http://localhost:8742")
 WEBHOOK_SECRET  = os.getenv("WEBHOOK_SECRET", "")
 MCP_VER  = "2025-03-26"
 WIDGET_PATH = Path(__file__).parent / "widget.html"
