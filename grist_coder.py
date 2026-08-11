@@ -6736,8 +6736,15 @@ async def oauth_protected_resource(path: str = ""):
     })
 
 
+# Variante suffixee obligatoire : quand le serveur est declare avec un chemin
+# (ex: https://pod/mcp), les clients MCP font une decouverte << path-aware >> et
+# demandent /.well-known/oauth-authorization-server/mcp (RFC 8414, insertion du
+# chemin de la ressource). Sans cette route, ils prenaient un 404 et affichaient
+# un message trompeur << Unable to connect >> au lieu d'un probleme de decouverte.
+# oauth-protected-resource ci-dessus avait deja les deux formes ; c'etait l'asymetrie.
 @app.get("/.well-known/oauth-authorization-server")
-async def oauth_as_metadata():
+@app.get("/.well-known/oauth-authorization-server/{path:path}")
+async def oauth_as_metadata(path: str = ""):
     if not _oauth_enabled():
         return JSONResponse({"error": "not_found"}, status_code=404)
     return JSONResponse({
