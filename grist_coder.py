@@ -1136,6 +1136,27 @@ def _provision_key(uid_key):
     return "", ""
 
 
+def _erreur_cle_absente(uid_key) -> dict:
+    """Message actionnable quand aucune cle Grist n'est disponible.
+
+    Cas devenu frequent depuis les tokens OAuth signes : le token survit au
+    redemarrage du pod, mais la cle Grist — recueillie au consentement et gardee
+    en memoire — non. L'appelant se retrouve authentifie mais sans cle, etat
+    incoherent qu'un message generique rend enigmatique."""
+    user = registry._users.get(uid_key) or {}
+    connecte = bool(user.get("sessions"))
+    return {
+        "error": ("Aucune cle Grist disponible pour ce compte."
+                  + (" Tu es pourtant connecte : ta cle a ete recueillie au consentement "
+                     "et vit en memoire — elle n'a pas survecu au dernier redemarrage du pod."
+                     if connecte else "")),
+        "_next": ("Reconnecte le connecteur (le consentement redonne ta cle), ou utilise "
+                  "Authorization: Bearer <cle_grist>."),
+        "_durable": ("Pour que la cle survive aux redemarrages : renseigner grist.apiKey dans "
+                     "les valeurs Helm du pod (variable GRIST_API_KEY, deja lue en dernier recours)."),
+    }
+
+
 def _provision_site_url(uid_key):
     """Base du site Grist : session active de l'appelant > site memorise pour l'uid >
     env GRIST_SITE_URL > n'importe quelle session connue du serveur."""
@@ -5573,11 +5594,7 @@ async def call_tool(uid_key, mcp_sid, name, args):
             return {"ok": False, "error": "name requis (nom du nouveau document a creer)."}
         prov_key, key_source = _provision_key(uid_key)
         if not prov_key:
-            return {"ok": False, "error": (
-                "Aucune cle Grist utilisable pour creer un document. Se connecter avec une "
-                "cle API Grist (Claude Desktop : Authorization: Bearer <cle_grist> ; connecteur "
-                "OAuth : cle saisie au consentement), ou definir GRIST_PROVISION_KEY / "
-                "GRIST_API_KEY cote serveur.")}
+            return dict(_erreur_cle_absente(uid_key), ok=False)
         site_url = _provision_site_url(uid_key)
         root = urllib.parse.urlsplit(site_url)
         if not root.netloc:
@@ -5663,8 +5680,7 @@ async def call_tool(uid_key, mcp_sid, name, args):
             return {"error": "doc_id requis (visible dans l URL du document Grist)."}
         cle, source = _provision_key(uid_key)
         if not cle:
-            return {"error": ("Aucune cle Grist utilisable. Se connecter avec une cle API Grist "
-                              "(Bearer, ou consentement OAuth) pour ouvrir une session sans widget.")}
+            return _erreur_cle_absente(uid_key)
         site = (args.get("site_url") or "").strip().rstrip("/") or _provision_site_url(uid_key)
         root = urllib.parse.urlsplit(site)
         if not root.netloc:
