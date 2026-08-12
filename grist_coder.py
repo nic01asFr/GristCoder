@@ -14,7 +14,7 @@ TOOLS : sessions(3) plan(1) canvas(7) wizard(2) context(1) chat(2) subagent(1)
 MCP   : sampling/createMessage (client capability) -> subagent_call + chat auto-reply
 """
 
-import asyncio, base64, difflib, hashlib, hmac, json, os, re, secrets, subprocess, sys, time, uuid, urllib.parse
+import asyncio, base64, difflib, hashlib, hmac, io, json, os, re, secrets, shutil, subprocess, sys, tarfile, tempfile, time, uuid, urllib.parse, urllib.request, urllib.error
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -853,6 +853,188 @@ async def _fetch_builder_def(ctx) -> dict:
 
 _SCRIPT_RE = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>",
                         re.IGNORECASE | re.DOTALL)
+
+# ── BUNDLING — esbuild ────────────────────────────────────────────────────────
+# Un artefact qui fait `import x from "preact"` ne peut PAS tourner tel quel dans
+# un navigateur : il rend blanc. Le bundler resout les imports et inline tout, ce
+# qui produit un artefact autonome (zero requete reseau a l'execution).
+#
+# Paquets recuperes A LA DEMANDE depuis le registre npm, avec cache disque dans le
+# pod : rien n'est embarque dans l'image (un paquet coute ~0,2 s a telecharger).
+# Extraire un tarball n'execute jamais le code du paquet — pas de postinstall.
+#
+# Resolution des dependances transitives : on ne reimplemente pas npm. esbuild dit
+# exactement ce qui lui manque ("Could not resolve X") ; on telecharge X et on
+# relance. Ca converge, chaque tour resolvant au moins un paquet.
+
+NPM_REGISTRY = os.getenv("NPM_REGISTRY", "https://registry.npmjs.org").rstrip("/")
+_BUNDLE_DIR = Path(os.getenv("BUNDLE_CACHE_DIR", tempfile.gettempdir())) / "grist-coder-bundle"
+_BUNDLE_MAX_TOURS = 24          # garde-fou : boucle de resolution bornee
+_BUNDLE_ALERTE_O = 2_000_000    # au-dela, on publie mais on signale le poids
+
+# Catalogue de reference : ce vers quoi on oriente la generation. Ce n'est PAS une
+# restriction — tout paquet du registre est bundlable — mais ces librairies-la sont
+# celles dont le rapport poids/service est connu et mesure (gzip) :
+#   preact 5 Ko · preact/compat 10 Ko · leaflet 42 Ko · chart.js 59 Ko
+#   @tanstack/table-core 15 Ko · react+react-dom 59 Ko · d3 modules 8-29 Ko
+CATALOGUE_BUNDLE = ["preact", "preact/compat", "@tanstack/table-core",
+                    "chart.js", "leaflet", "d3-scale", "d3-shape", "react", "react-dom"]
+
+# Pas d'ancrage en debut de ligne : dans un artefact, le code suit souvent la
+# balise sur la MEME ligne (`<script>import {h} from "preact"`). On exige juste que
+# le mot ne soit pas colle a un identifiant (evite `noimport`, `obj.import`).
+_IMPORT_RE = re.compile(
+    r"""(?<![\w.$])import\s+(?:[\w*{}\s,$]+?\s+from\s+)?["']([^"'./][^"']*)["']"""   # import ... from "pkg"
+    r"""|(?<![\w.$])import\s*\(\s*["']([^"'./][^"']*)["']\s*\)"""                    # import("pkg") dynamique
+    r"""|(?<![\w.$])require\s*\(\s*["']([^"'./][^"']*)["']\s*\)""")                  # require("pkg")
+_NON_RESOLU_RE = re.compile(r'Could not resolve ["\']([^"\']+)["\']')
+
+
+def _paquet_racine(spec: str) -> str:
+    """'preact/hooks' -> 'preact' ; '@scope/pkg/sub' -> '@scope/pkg'."""
+    parts = spec.split("/")
+    return "/".join(parts[:2]) if spec.startswith("@") and len(parts) >= 2 else parts[0]
+
+
+def imports_npm(code: str) -> list:
+    """Paquets npm importes par ce code (hors chemins relatifs). Vide -> rien a bundler."""
+    vus = []
+    for m in _IMPORT_RE.finditer(code):
+        spec = m.group(1) or m.group(2) or m.group(3)
+        if not spec:
+            continue
+        # Un artefact peut AFFICHER du code : `var s = 'import y from "z"'`. Si le
+        # dernier caractere significatif avant le match est un guillemet, on est
+        # dans une chaine, pas devant une vraie instruction.
+        avant = code[:m.start()].rstrip()
+        if avant and avant[-1] in "'\"`":
+            continue
+        r = _paquet_racine(spec)
+        if r not in vus:
+            vus.append(r)
+    return vus
+
+
+def _esbuild_bin() -> str | None:
+    """Chemin du binaire esbuild, ou None s'il n'est pas disponible."""
+    p = os.getenv("ESBUILD_PATH", "").strip()
+    if p and Path(p).exists():
+        return p
+    return shutil.which("esbuild")
+
+
+def _npm_recupere(paquet: str, version: str = "") -> tuple[str, str]:
+    """Telecharge et extrait un paquet npm dans le cache. Retourne (version, erreur)."""
+    racine = _BUNDLE_DIR / "node_modules" / paquet
+    if racine.exists() and (racine / "package.json").exists():
+        try:
+            return json.loads((racine / "package.json").read_text(encoding="utf-8")).get("version", "?"), ""
+        except Exception:
+            return "?", ""
+    try:
+        with urllib.request.urlopen(f"{NPM_REGISTRY}/{urllib.parse.quote(paquet, safe='@/')}",
+                                    timeout=30) as r:
+            meta = json.loads(r.read())
+        ver = version or (meta.get("dist-tags", {}) or {}).get("latest", "")
+        infos = (meta.get("versions", {}) or {}).get(ver)
+        if not infos:
+            return "", f"version introuvable pour {paquet}"
+        with urllib.request.urlopen(infos["dist"]["tarball"], timeout=60) as r:
+            data = r.read()
+        racine.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(fileobj=io.BytesIO(data)) as tf:
+            for m in tf.getmembers():
+                if not m.isfile() or not m.name.startswith("package/"):
+                    continue
+                rel = m.name[len("package/"):]
+                if not rel or ".." in rel:          # anti path-traversal
+                    continue
+                cible = racine / rel
+                cible.parent.mkdir(parents=True, exist_ok=True)
+                cible.write_bytes(tf.extractfile(m).read())
+        return ver, ""
+    except urllib.error.HTTPError as e:
+        return "", (f"paquet '{paquet}' introuvable sur le registre npm"
+                    if e.code == 404 else f"registre npm : HTTP {e.code}")
+    except Exception as e:
+        return "", f"registre npm injoignable : {type(e).__name__}"
+
+
+def bundler_artefact(code: str) -> dict:
+    """Bundle un artefact HTML dont le <script> importe des paquets npm.
+
+    Retourne {ok, code?, paquets?, taille?, erreur?, _hint?}. Ne modifie rien si le
+    code n'a aucun import : dans ce cas ok=True et bundle=False."""
+    paquets = imports_npm(code)
+    if not paquets:
+        return {"ok": True, "bundle": False}
+    exe = _esbuild_bin()
+    if not exe:
+        return {"ok": False, "bundle": False, "erreur": (
+            "Cet artefact importe des paquets npm mais esbuild n'est pas disponible "
+            "sur ce serveur — il rendrait une page blanche."),
+            "paquets": paquets,
+            "_hint": "Reecrire sans import (librairie en <script src=...> CDN), ou installer esbuild."}
+
+    # Separation SANS passer par _split_html_js : celui-ci prefixe grist.ready(),
+    # ce qui rendrait le bundle dependant de Grist meme pour un artefact qui n'en
+    # a pas besoin. Le bundling doit etre neutre ; c'est la publication qui ajoute
+    # le prefixe, plus tard, sur le code deja bundle.
+    js_part = "\n\n".join(m.group(1).strip() for m in _SCRIPT_RE.finditer(code)
+                          if m.group(1).strip())
+    html_part = _SCRIPT_RE.sub("", code).strip()
+    _BUNDLE_DIR.mkdir(parents=True, exist_ok=True)
+    src = _BUNDLE_DIR / f"src-{hashlib.sha1(js_part.encode()).hexdigest()[:10]}.jsx"
+    src.write_text(js_part, encoding="utf-8")
+    out = src.with_suffix(".out.js")
+
+    versions, manquants_vus = {}, set()
+    for tour in range(_BUNDLE_MAX_TOURS):
+        r = subprocess.run(
+            [exe, str(src), "--bundle", "--minify", "--format=iife", "--target=es2020",
+             "--loader:.jsx=jsx", "--jsx-factory=h", "--jsx-fragment=Fragment",
+             "--define:process.env.NODE_ENV=\"production\"",
+             "--legal-comments=none", f"--outfile={out}"],
+            capture_output=True, text=True, cwd=str(_BUNDLE_DIR), timeout=120)
+        if r.returncode == 0:
+            break
+        manquants = [_paquet_racine(x) for x in _NON_RESOLU_RE.findall(r.stderr)]
+        manquants = [m for m in dict.fromkeys(manquants) if m not in manquants_vus]
+        if not manquants:
+            return {"ok": False, "bundle": False, "paquets": paquets,
+                    "erreur": "Bundling echoue.",
+                    "detail": (r.stderr or "")[-600:],
+                    "_hint": "Verifier les imports de l'artefact (chemins, noms de paquets)."}
+        for m in manquants:
+            manquants_vus.add(m)
+            ver, err = _npm_recupere(m)
+            if err:
+                return {"ok": False, "bundle": False, "paquets": paquets,
+                        "erreur": f"Dependance non resolue : {err}",
+                        "catalogue": CATALOGUE_BUNDLE,
+                        "_hint": ("Utiliser une librairie du catalogue, ou la charger en "
+                                  "<script src=...> CDN si le registre npm est injoignable.")}
+            versions[m] = ver
+    else:
+        return {"ok": False, "bundle": False, "paquets": paquets,
+                "erreur": f"Resolution des dependances non convergente apres {_BUNDLE_MAX_TOURS} tours.",
+                "_hint": "Reduire le nombre de librairies importees."}
+
+    js = out.read_text(encoding="utf-8")
+    ferm = "<" + "/script>"
+    js = js.replace(ferm, "<\\/script>")          # ceinture : esbuild le fait deja
+    tag = "<" + "script>" + js + ferm
+    fin = "<" + "/body>"
+    code_final = (html_part.replace(fin, tag + "\n" + fin) if fin in html_part
+                  else html_part + "\n" + tag)
+    res = {"ok": True, "bundle": True, "code": code_final, "paquets": paquets,
+           "versions": versions, "taille": len(code_final)}
+    if len(code_final) > _BUNDLE_ALERTE_O:
+        res["avertissement_poids"] = (
+            f"Artefact volumineux ({len(code_final)//1024} Ko). Au-dela de ~1 Mo le rendu "
+            "se ressent sur mobile : preferer preact a react, et des imports nommes.")
+    return res
+
 
 _SCRIPT_SRC_RE = re.compile(r"<script[^>]*\bsrc\s*=\s*[\"']([^\"']+)[\"']", re.IGNORECASE)
 
@@ -5659,8 +5841,21 @@ async def call_tool(uid_key, mcp_sid, name, args):
         _next = "canvas_screenshot pour valider le rendu."
         if is_new:
             _next = "canvas_screenshot pour valider, puis grist_view_create pour creer la page associee."
-        return {"ok": True, "sha": sha, "art_nom": art_nom, "art_type": art_type,
-                "art_id": art_id, "created": is_new, "_next": _next}
+        sortie_w = {"ok": True, "sha": sha, "art_nom": art_nom, "art_type": art_type,
+                    "art_id": art_id, "created": is_new, "_next": _next}
+        # Un artefact qui importe des paquets npm rend BLANC en previsualisation :
+        # le navigateur ne resout pas les imports. Il sera bundle a la publication.
+        # On le dit ici plutot que de laisser un canvas vide inexplique.
+        _pk = imports_npm(code)
+        if _pk:
+            sortie_w["imports_npm"] = _pk
+            sortie_w["avertissement_preview"] = (
+                "Cet artefact importe des paquets npm : la PREVISUALISATION restera blanche "
+                "(le navigateur ne resout pas les imports). Il sera bundle automatiquement a "
+                "artefact_publish, et c'est la qu'on verra le rendu reel.")
+            sortie_w["_next"] = ("artefact_publish pour bundler et voir le rendu. "
+                                 "canvas_screenshot ne montrera rien d'utile avant.")
+        return sortie_w
 
     if name == "canvas_patch":
         old, new = args["old_str"], args["new_str"]
@@ -6674,6 +6869,18 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 if not code.strip():
                     return {"error": f"Artefact '{artefact}' : Code vide dans Grist — "
                                      "sauvegarder l artefact (canvas_write + Save) avant de publier"}
+            # Bundling AVANT la garde : un artefact qui importe des paquets npm ne
+            # peut pas tourner tel quel dans un navigateur (page blanche). On resout
+            # ses imports et on inline tout. La source reste intacte dans Artefacts —
+            # seul le code publie est bundle.
+            infos_bundle = bundler_artefact(code)
+            if not infos_bundle.get("ok"):
+                return {"error": infos_bundle.get("erreur", "Bundling impossible."),
+                        **{k: v for k, v in infos_bundle.items()
+                           if k in ("paquets", "detail", "catalogue", "_hint")}}
+            if infos_bundle.get("bundle"):
+                code = infos_bundle["code"]
+
             # Garde d'autonomie : un widget publie ne doit dependre ni du pod ni
             # d'un CDN. Verifie, plutot que promis par la documentation.
             bloquants, cdn = _audit_autonomie(code)
@@ -6794,6 +7001,14 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 sortie["_next"] = ("Ajouter un ecran = ajouter une ligne " + APP_MODULE_PREFIXE
                                    + "Nom dans Artefacts. Depuis un ecran : app.navigate(nom), "
                                      "app.setState(o), app.emit(ev,d), app.on(ev,cb).")
+            if infos_bundle.get("bundle"):
+                sortie["bundle"] = {"paquets": infos_bundle.get("paquets"),
+                                    "versions": infos_bundle.get("versions"),
+                                    "taille": infos_bundle.get("taille")}
+                sortie["hint"] = (sortie["hint"] + " Artefact bundle : les librairies "
+                                  "importees sont inlinees, zero requete reseau a l execution.")
+                if infos_bundle.get("avertissement_poids"):
+                    sortie["avertissement_poids"] = infos_bundle["avertissement_poids"]
             if cdn:
                 sortie["avertissement_cdn"] = (
                     "Ce widget dependra de ces CDN a l execution. Ils fonctionnent (verifie), "
