@@ -282,10 +282,13 @@ BOUCLE POST-WIZARD (apres chaque reponse interactive bloquante)
   3. Le wizard ne se ferme que sur plan_update(status='done') ou choix explicite utilisateur
   Objectif : le LLM ne laisse jamais l overlay vide apres une reponse — il enchaine toujours.
 
-OUTILS (31)
+OUTILS (34)
   Plan     : plan_update              <- META-CONTROLE : persiste + _next_resources par phase
   Sessions : sessions_list            <- _next hint integre (plan? ou docs/qualification)
              session_select, session_info
+             session_open(doc_id)     <- ouvre un doc SANS navigateur (cle de l appelant).
+             Aucun widget requis, sauf pour canvas_screenshot et les ecritures meta
+             lourdes de artefact_publish.
              ROUTAGE : si plusieurs documents sont ouverts, passer token=<token> A CHAQUE
              outil (le token vient de sessions_list). C est portable, ca survit aux clients
              qui ne gerent pas Mcp-Session-Id, et ca permet a plusieurs agents/onglets de
@@ -1464,6 +1467,20 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {}},
      "annotations": {"readOnlyHint": True}},
 
+    {"name": "session_open",
+     "description": (
+         "Ouvre une session sur un document SANS avoir a l ouvrir dans un navigateur. "
+         "Utilise la cle Grist de l appelant : le widget Coder n a pas besoin d etre charge. "
+         "Retourne un token utilisable par tous les outils. Indispensable pour piloter un "
+         "document depuis Claude Desktop sans passer par Grist. Limite : canvas_screenshot "
+         "et les ecritures meta lourdes de artefact_publish demandent un widget ouvert."
+     ),
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "doc_id": {"type": "string", "description": "Id du document Grist (visible dans l URL)."},
+                         "site_url": {"type": "string", "description": "Base du site (defaut : celui des sessions connues ou GRIST_SITE_URL)."}},
+                     "required": ["doc_id"]}},
+
     {"name": "session_select",
      "description": "Selectionne une session parmi plusieurs. Inutile si sessions_list retourne une seule session.",
      "inputSchema": {"type": "object",
@@ -1925,7 +1942,7 @@ TOOLS = [
 # a l'autre, et deux onglets / deux agents partageant le meme compte ne peuvent de
 # toute facon pas se partager un etat global. Avec ce parametre, chaque appel est
 # autoportant et le travail en parallele redevient possible.
-_NO_SESSION_TOOLS = {"sessions_list", "session_select", "grist_doc_create"}
+_NO_SESSION_TOOLS = {"sessions_list", "session_select", "session_open", "grist_doc_create"}
 _SESSION_TOKEN_PROP = {
     "type": "string",
     "description": ("Token de la session ciblee (voir sessions_list). Optionnel si un seul "
@@ -5431,6 +5448,42 @@ async def call_tool(uid_key, mcp_sid, name, args):
                     f"Custom Widget avec l'URL {widget_url}.")
         return out
 
+    if name == "session_open":
+        doc_id = (args.get("doc_id") or "").strip()
+        if not doc_id:
+            return {"error": "doc_id requis (visible dans l URL du document Grist)."}
+        cle, source = _provision_key(uid_key)
+        if not cle:
+            return {"error": ("Aucune cle Grist utilisable. Se connecter avec une cle API Grist "
+                              "(Bearer, ou consentement OAuth) pour ouvrir une session sans widget.")}
+        site = (args.get("site_url") or "").strip().rstrip("/") or _provision_site_url(uid_key)
+        root = urllib.parse.urlsplit(site)
+        if not root.netloc:
+            return {"error": ("Base du site Grist inconnue : fournir site_url, ou definir "
+                              "GRIST_SITE_URL cote serveur.")}
+        try:
+            async with _grist_client() as c:
+                r = await c.get(f"{site}/api/docs/{doc_id}",
+                                headers={"Authorization": f"Bearer {cle}"})
+                if r.status_code in (401, 403):
+                    return {"error": f"Acces refuse au document {doc_id} avec cette cle ({source})."}
+                if r.status_code == 404:
+                    return {"error": f"Document {doc_id} introuvable sur {site}.",
+                            "_hint": "Verifier l id du document et le site (ex: .../o/<org>)."}
+                r.raise_for_status()
+                meta = r.json() or {}
+        except Exception as e:
+            return {"error": _scrub_secrets(f"Ouverture impossible : {e}")}
+        titre = meta.get("name") or doc_id
+        registry.provision(uid_key, grist_key=cle, site=site)
+        ctx = registry.register_session(uid_key, doc_id, titre, site, grist_key=cle)
+        _active_tokens[mcp_sid] = ctx.token
+        return {"ok": True, "token": ctx.token, "doc_id": doc_id, "doc_title": titre,
+                "site_url": site, "_cle": source, "sans_widget": True,
+                "_next": (f"Session ouverte sans navigateur. Passer token='{ctx.token}' aux outils. "
+                          "canvas_screenshot et les ecritures meta lourdes de artefact_publish "
+                          "demandent en revanche un widget Coder ouvert.")}
+
     if name == "session_select":
         ctx = registry.resolve(uid_key, args["token"])
         if not ctx: return {"error": f"Token inconnu : {args['token']}"}
@@ -6936,8 +6989,65 @@ def _oauth_purge():
         if now > d["expires"]: _oauth_tokens.pop(tok, None)
 
 
+# Tokens OAuth SANS STOCKAGE. Ils etaient conserves en memoire : chaque
+# redemarrage du pod invalidait tous les connecteurs, y compris pour une simple
+# mise a jour — une deconnexion par deploiement. Le token porte desormais son
+# uid et son expiration, signes ; le serveur verifie sans rien memoriser, donc
+# ils survivent aux redemarrages.
+#
+# Revocation : il n'existait aucun endpoint de revocation, le terme etait
+# descriptif. Elle se fait en changeant APP_AUTH_TOKEN, ce qui invalide d'un coup
+# tous les tokens emis — c'est le geste qu'un proprietaire de pod ferait de toute
+# facon, puisque ce secret garde aussi l'acces au pod.
+
+_OAUTH_SECRET_REPLI = secrets.token_bytes(32)   # dev local sans APP_AUTH_TOKEN
+
+
+def _oauth_secret() -> bytes:
+    """Secret de signature. APP_AUTH_TOKEN est injecte par le chart depuis un Secret
+    Kubernetes : il est stable entre redemarrages. Sans lui (dev local), on tire un
+    secret de process et les tokens ne survivent pas au redemarrage — sans gravite."""
+    if APP_AUTH_TOKEN:
+        return hashlib.sha256(b"gco-signature:" + APP_AUTH_TOKEN.encode()).digest()
+    return _OAUTH_SECRET_REPLI
+
+
+def _oauth_forge(prefixe: str, uid_key: str, ttl: int) -> str:
+    corps = base64.urlsafe_b64encode(
+        json.dumps({"u": uid_key, "e": int(time.time() + ttl)},
+                   separators=(",", ":")).encode()).rstrip(b"=").decode()
+    sig = base64.urlsafe_b64encode(
+        hmac.new(_oauth_secret(), corps.encode(), hashlib.sha256).digest()).rstrip(b"=").decode()
+    return f"{prefixe}{corps}.{sig}"
+
+
+def _oauth_lire(prefixe: str, token: str) -> str | None:
+    """uid_key porte par un token signe, ou None si invalide/expire/contrefait."""
+    if not token or not token.startswith(prefixe):
+        return None
+    reste = token[len(prefixe):]
+    if "." not in reste:
+        return None
+    corps, sig = reste.rsplit(".", 1)
+    attendu = base64.urlsafe_b64encode(
+        hmac.new(_oauth_secret(), corps.encode(), hashlib.sha256).digest()).rstrip(b"=").decode()
+    if not hmac.compare_digest(sig, attendu):
+        return None
+    try:
+        p = json.loads(base64.urlsafe_b64decode(corps + "=" * (-len(corps) % 4)))
+    except Exception:
+        return None
+    if time.time() > p.get("e", 0):
+        return None
+    return p.get("u") or None
+
+
 def _oauth_uid_from_token(bearer) -> str | None:
     """Resout un access token OAuth gco-... en uid_key, ou None si inconnu/expire."""
+    uid = _oauth_lire("gco-", bearer)
+    if uid:
+        return uid
+    # Repli : tokens opaques emis avant le passage aux tokens signes.
     d = _oauth_tokens.get(bearer)
     if not d:
         return None
@@ -6960,13 +7070,12 @@ def _pkce_ok(verifier: str, challenge: str, method: str = "S256") -> bool:
 
 
 def _oauth_issue(uid_key: str) -> dict:
-    """Emet une paire access/refresh token opaque mappee sur uid_key."""
-    at = "gco-" + secrets.token_urlsafe(32)
-    rt = "gcr-" + secrets.token_urlsafe(32)
-    _oauth_tokens[at]  = {"uid_key": uid_key, "expires": time.time() + _OAUTH_TOKEN_TTL}
-    _oauth_refresh[rt] = {"uid_key": uid_key}
-    return {"access_token": at, "token_type": "Bearer", "expires_in": _OAUTH_TOKEN_TTL,
-            "refresh_token": rt, "scope": "mcp"}
+    """Emet une paire access/refresh token SIGNEE : rien n'est memorise, donc rien
+    n'est perdu au redemarrage du pod."""
+    return {"access_token": _oauth_forge("gco-", uid_key, _OAUTH_TOKEN_TTL),
+            "token_type": "Bearer", "expires_in": _OAUTH_TOKEN_TTL,
+            "refresh_token": _oauth_forge("gcr-", uid_key, 365 * 24 * 3600),
+            "scope": "mcp"}
 
 
 def _oauth_check_client(client_id: str, redirect_uri: str):
@@ -7149,10 +7258,14 @@ async def oauth_token(request: Request):
                                 status_code=400, headers=no_store)
         return JSONResponse(_oauth_issue(cd["uid_key"]), headers=no_store)
     if grant == "refresh_token":
-        rd = _oauth_refresh.get(data.get("refresh_token", ""))
-        if not rd:
+        rtok = data.get("refresh_token", "")
+        uid = _oauth_lire("gcr-", rtok)
+        if not uid:
+            rd = _oauth_refresh.get(rtok)          # repli : refresh opaque d'avant
+            uid = rd.get("uid_key") if rd else None
+        if not uid:
             return JSONResponse({"error": "invalid_grant"}, status_code=400, headers=no_store)
-        return JSONResponse(_oauth_issue(rd["uid_key"]), headers=no_store)
+        return JSONResponse(_oauth_issue(uid), headers=no_store)
     return JSONResponse({"error": "unsupported_grant_type"}, status_code=400, headers=no_store)
 
 
