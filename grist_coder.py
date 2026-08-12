@@ -1014,11 +1014,16 @@ def bundler_artefact(code: str) -> dict:
     src.write_text(js_part, encoding="utf-8")
     out = src.with_suffix(".out.js")
 
+    # JSX : runtime automatique plutot qu'une fabrique figee. Avec --jsx-factory=h on
+    # imposait la convention Preact, et le meme JSX rendait blanc avec React (h non
+    # defini). En automatique, esbuild injecte lui-meme l'import du bon runtime — il
+    # suffit de lui dire lequel, deduit des paquets importes.
+    source_jsx = "react" if "react" in paquets else "preact"
     versions, manquants_vus = {}, set()
     for tour in range(_BUNDLE_MAX_TOURS):
         r = subprocess.run(
             [exe, str(src), "--bundle", "--minify", "--format=iife", "--target=es2020",
-             "--loader:.jsx=jsx", "--jsx-factory=h", "--jsx-fragment=Fragment",
+             "--loader:.jsx=jsx", "--jsx=automatic", f"--jsx-import-source={source_jsx}",
              "--define:process.env.NODE_ENV=\"production\"",
              "--legal-comments=none", f"--outfile={out}"],
             capture_output=True, text=True, cwd=str(_BUNDLE_DIR), timeout=120)
@@ -7270,40 +7275,87 @@ def _oauth_secret() -> bytes:
     return _OAUTH_SECRET_REPLI
 
 
-def _oauth_forge(prefixe: str, uid_key: str, ttl: int) -> str:
+# La cle Grist recueillie au consentement voyage SCELLEE dans le token, chiffree
+# avec le meme secret que la signature. Sans ca, elle ne vivait qu'en memoire :
+# depuis que les tokens survivent aux redemarrages, le client n'a plus de raison
+# de reconsentir, donc la cle n'etait jamais redonnee — on se retrouvait connecte
+# mais sans cle. Exiger de la reconfigurer dans le chart aurait annule l'interet
+# du connecteur, dont la promesse est justement « colle ta cle une fois ».
+#
+# Exposition : qui detient le token a deja l'acces complet au pod. Le scellement
+# n'ajoute rien de ce cote, et protege en revanche la cle Grist BRUTE, qui donne
+# un acces bien plus large. Faire tourner APP_AUTH_TOKEN invalide d'un coup les
+# tokens et les cles scellees — la revocation reste coherente.
+
+def _sceller(txt: str) -> str:
+    if not txt:
+        return ""
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    except Exception:
+        return ""                       # sans la lib, on degrade sans casser
+    nonce = secrets.token_bytes(12)
+    ct = AESGCM(_oauth_secret()).encrypt(nonce, txt.encode(), None)
+    return base64.urlsafe_b64encode(nonce + ct).rstrip(b"=").decode()
+
+
+def _desceller(blob: str) -> str:
+    if not blob:
+        return ""
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        brut = base64.urlsafe_b64decode(blob + "=" * (-len(blob) % 4))
+        return AESGCM(_oauth_secret()).decrypt(brut[:12], brut[12:], None).decode()
+    except Exception:
+        return ""                       # secret tourne, token altere : on ignore
+
+
+def _oauth_forge(prefixe: str, uid_key: str, ttl: int, cle_grist: str = "") -> str:
+    charge = {"u": uid_key, "e": int(time.time() + ttl)}
+    scelle = _sceller(cle_grist)
+    if scelle:
+        charge["k"] = scelle
     corps = base64.urlsafe_b64encode(
-        json.dumps({"u": uid_key, "e": int(time.time() + ttl)},
-                   separators=(",", ":")).encode()).rstrip(b"=").decode()
+        json.dumps(charge, separators=(",", ":")).encode()).rstrip(b"=").decode()
     sig = base64.urlsafe_b64encode(
         hmac.new(_oauth_secret(), corps.encode(), hashlib.sha256).digest()).rstrip(b"=").decode()
     return f"{prefixe}{corps}.{sig}"
 
 
-def _oauth_lire(prefixe: str, token: str) -> str | None:
-    """uid_key porte par un token signe, ou None si invalide/expire/contrefait."""
+def _oauth_lire(prefixe: str, token: str) -> tuple[str | None, str]:
+    """(uid_key, cle_grist) portes par un token signe. (None, "") si invalide,
+    expire ou contrefait. La cle est vide si le token n'en scelle pas."""
+    vide = (None, "")
     if not token or not token.startswith(prefixe):
-        return None
+        return vide
     reste = token[len(prefixe):]
     if "." not in reste:
-        return None
+        return vide
     corps, sig = reste.rsplit(".", 1)
     attendu = base64.urlsafe_b64encode(
         hmac.new(_oauth_secret(), corps.encode(), hashlib.sha256).digest()).rstrip(b"=").decode()
     if not hmac.compare_digest(sig, attendu):
-        return None
+        return vide
     try:
         p = json.loads(base64.urlsafe_b64decode(corps + "=" * (-len(corps) % 4)))
     except Exception:
-        return None
+        return vide
     if time.time() > p.get("e", 0):
-        return None
-    return p.get("u") or None
+        return vide
+    return (p.get("u") or None), _desceller(p.get("k", ""))
 
 
 def _oauth_uid_from_token(bearer) -> str | None:
-    """Resout un access token OAuth gco-... en uid_key, ou None si inconnu/expire."""
-    uid = _oauth_lire("gco-", bearer)
+    """Resout un access token OAuth gco- en uid_key. Repose au passage la cle Grist
+    scellee dans le token : c'est ce qui la fait survivre aux redemarrages du pod
+    sans rien demander a l'utilisateur."""
+    uid, cle = _oauth_lire("gco-", bearer)
     if uid:
+        if cle:
+            u = registry._users.get(uid)
+            if not u or not (u.get("grist_key") or "").strip():
+                registry.provision(uid, grist_key=cle,
+                                   site=os.getenv("GRIST_SITE_URL", "").strip().rstrip("/"))
         return uid
     # Repli : tokens opaques emis avant le passage aux tokens signes.
     d = _oauth_tokens.get(bearer)
@@ -7327,12 +7379,12 @@ def _pkce_ok(verifier: str, challenge: str, method: str = "S256") -> bool:
     return hmac.compare_digest(computed, challenge)
 
 
-def _oauth_issue(uid_key: str) -> dict:
-    """Emet une paire access/refresh token SIGNEE : rien n'est memorise, donc rien
-    n'est perdu au redemarrage du pod."""
-    return {"access_token": _oauth_forge("gco-", uid_key, _OAUTH_TOKEN_TTL),
+def _oauth_issue(uid_key: str, cle_grist: str = "") -> dict:
+    """Emet une paire access/refresh token SIGNEE, scellant la cle Grist : rien
+    n'est memorise cote serveur, donc rien n'est perdu au redemarrage du pod."""
+    return {"access_token": _oauth_forge("gco-", uid_key, _OAUTH_TOKEN_TTL, cle_grist),
             "token_type": "Bearer", "expires_in": _OAUTH_TOKEN_TTL,
-            "refresh_token": _oauth_forge("gcr-", uid_key, 365 * 24 * 3600),
+            "refresh_token": _oauth_forge("gcr-", uid_key, 365 * 24 * 3600, cle_grist),
             "scope": "mcp"}
 
 
@@ -7482,7 +7534,7 @@ async def oauth_authorize_post(request: Request):
                            "compte Grist (owner-lock).</div>", status=403)
     code = "gca-" + secrets.token_urlsafe(24)
     _oauth_codes[code] = {
-        "uid_key": uid_key, "redirect_uri": redirect_uri,
+        "uid_key": uid_key, "redirect_uri": redirect_uri, "grist_key": grist_key,
         "code_challenge": data.get("code_challenge", ""),
         "code_challenge_method": (data.get("code_challenge_method") or "S256"),
         "expires": time.time() + _OAUTH_CODE_TTL,
@@ -7514,16 +7566,16 @@ async def oauth_token(request: Request):
                         cd.get("code_challenge_method", "S256")):
             return JSONResponse({"error": "invalid_grant", "error_description": "PKCE"},
                                 status_code=400, headers=no_store)
-        return JSONResponse(_oauth_issue(cd["uid_key"]), headers=no_store)
+        return JSONResponse(_oauth_issue(cd["uid_key"], cd.get("grist_key", "")), headers=no_store)
     if grant == "refresh_token":
         rtok = data.get("refresh_token", "")
-        uid = _oauth_lire("gcr-", rtok)
+        uid, cle = _oauth_lire("gcr-", rtok)
         if not uid:
             rd = _oauth_refresh.get(rtok)          # repli : refresh opaque d'avant
-            uid = rd.get("uid_key") if rd else None
+            uid, cle = (rd.get("uid_key") if rd else None), ""
         if not uid:
             return JSONResponse({"error": "invalid_grant"}, status_code=400, headers=no_store)
-        return JSONResponse(_oauth_issue(uid), headers=no_store)
+        return JSONResponse(_oauth_issue(uid, cle), headers=no_store)
     return JSONResponse({"error": "unsupported_grant_type"}, status_code=400, headers=no_store)
 
 
