@@ -45,16 +45,14 @@ appAuth:
 grist:
   # Instance Grist cible (resolution profil / repli WAF).
   siteUrl: "https://grist.numerique.gouv.fr"
-  # Cle API Grist (optionnelle mais RECOMMANDEE) : le widget utilise getAccessToken
+  # Cle API Grist (optionnelle) : le widget utilise getAccessToken
   # cote navigateur ; une cle server-side sert aux clients MCP (Claude Desktop/Code)
   # et aux operations owner (webhooks). Reste dans TON Secret, sur TON pod.
   #
-  # Sans elle, la cle recueillie au consentement OAuth vit UNIQUEMENT en memoire :
-  # elle ne survit pas a un redemarrage du pod (deploiement, drainage de noeud,
-  # eviction). Les outils qui en dependent — session_open, grist_doc_create —
-  # repondent alors « aucune cle Grist disponible » alors que la connexion, elle,
-  # tient (les tokens OAuth sont signes et survivent). La renseigner ici supprime
-  # cet etat incoherent.
+  # Le connecteur OAuth n'en a PAS besoin : la cle recueillie au consentement
+  # voyage scellee (chiffree) dans le token et survit aux redemarrages du pod.
+  # Cette valeur ne sert qu'aux usages sans consentement — client MCP en Bearer
+  # statique, ou operations owner declenchees sans utilisateur connecte.
   #   Grist -> Profile Settings -> API -> Create key
   apiKey: ""
 

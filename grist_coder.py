@@ -1155,10 +1155,12 @@ def _erreur_cle_absente(uid_key) -> dict:
                   + (" Tu es pourtant connecte : ta cle a ete recueillie au consentement "
                      "et vit en memoire — elle n'a pas survecu au dernier redemarrage du pod."
                      if connecte else "")),
-        "_next": ("Reconnecte le connecteur (le consentement redonne ta cle), ou utilise "
-                  "Authorization: Bearer <cle_grist>."),
-        "_durable": ("Pour que la cle survive aux redemarrages : renseigner grist.apiKey dans "
-                     "les valeurs Helm du pod (variable GRIST_API_KEY, deja lue en dernier recours)."),
+        "_next": ("Reconnecter le connecteur UNE fois : le consentement redonne la cle. "
+                  "Ou utiliser Authorization: Bearer <cle_grist>."),
+        "_durable": ("Ce reconsentement est le dernier necessaire : depuis cette version la cle "
+                     "voyage scellee (chiffree) dans le token OAuth, donc elle survit aux "
+                     "redemarrages du pod sans rien a configurer. Les tokens emis AVANT n'en "
+                     "portent pas — d'ou ce message."),
     }
 
 
