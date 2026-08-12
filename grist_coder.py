@@ -287,8 +287,8 @@ OUTILS (34)
   Sessions : sessions_list            <- _next hint integre (plan? ou docs/qualification)
              session_select, session_info
              session_open(doc_id)     <- ouvre un doc SANS navigateur (cle de l appelant).
-             Aucun widget requis, sauf pour canvas_screenshot et les ecritures meta
-             lourdes de artefact_publish.
+             Aucun widget requis, artefact_publish compris. Seul canvas_screenshot
+             en demande un, par nature.
              ROUTAGE : si plusieurs documents sont ouverts, passer token=<token> A CHAQUE
              outil (le token vient de sessions_list). C est portable, ca survit aux clients
              qui ne gerent pas Mcp-Session-Id, et ca permet a plusieurs agents/onglets de
@@ -564,6 +564,32 @@ def _has_live_widget(uid_key) -> bool:
     pas applyUserActions et ne doit pas compter comme un widget capable d'ecrire."""
     mcp_sids = set(_mcp_client_sids.values())
     return any(_sid_uid.get(sid) == uid_key and sid not in mcp_sids for sid in _queues)
+
+
+async def _apply_meta(uid_key, ctx, actions, *, timeout=20.0):
+    """Ecriture de tables meta (_grist_Views*), par le chemin le plus court disponible.
+
+    Serveur d'abord quand la session porte une VRAIE cle API : les deux raisons qui
+    imposaient le detour par le navigateur tombent alors — la portee insuffisante
+    d'un accessToken sur les tables meta (une cle a les droits owner) et le WAF sur
+    les payloads contenant du script (_waf_json echappe deja < et >). Verifie en
+    production : UpdateRecord sur _grist_Views_section.options accepte cote serveur.
+
+    Repli sur le navigateur sinon, ou si l'ecriture serveur echoue. C'est ce qui
+    permet de publier SANS widget ouvert (session_open)."""
+    if ctx.grist_key:
+        try:
+            await grist_apply(ctx, actions)
+            return True, None
+        except Exception as e:
+            err_srv = _scrub_secrets(str(e))
+        if not _has_live_widget(uid_key):
+            return False, (f"Ecriture serveur refusee ({err_srv}) et aucun widget Coder "
+                           "ouvert pour prendre le relais.")
+    else:
+        err_srv = "session sans cle API (accessToken widget)"
+    ok, err_nav = await _browser_apply(uid_key, ctx, actions, timeout=timeout)
+    return ok, (None if ok else f"serveur : {err_srv} | navigateur : {err_nav}")
 
 
 async def _browser_apply(uid_key, ctx, actions, *, timeout=20.0):
@@ -1653,9 +1679,10 @@ TOOLS = [
      "description": (
          "Ouvre une session sur un document SANS avoir a l ouvrir dans un navigateur. "
          "Utilise la cle Grist de l appelant : le widget Coder n a pas besoin d etre charge. "
-         "Retourne un token utilisable par tous les outils. Indispensable pour piloter un "
-         "document depuis Claude Desktop sans passer par Grist. Limite : canvas_screenshot "
-         "et les ecritures meta lourdes de artefact_publish demandent un widget ouvert."
+         "Retourne un token utilisable par tous les outils, artefact_publish compris "
+         "(les ecritures meta passent par le serveur quand la session porte une cle API). "
+         "Indispensable pour piloter un document depuis Claude Desktop sans passer par Grist. "
+         "Seule limite : canvas_screenshot, qui demande un widget ouvert par nature."
      ),
      "inputSchema": {"type": "object",
                      "properties": {
@@ -6928,11 +6955,11 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 options["customView"] = custom_view
                 # Ecriture lourde (HTML dans widgetOptions) -> WAF/droits meta cote serveur.
                 # On l'execute dans le navigateur (bypass WAF + privileges owner).
-                ok, apply_err = await _browser_apply(uid_key, ctx, [
+                ok, apply_err = await _apply_meta(uid_key, ctx, [
                     ["UpdateRecord", "_grist_Views_section", section_ref,
                      {"options": json.dumps(options)}]])
                 if not ok:
-                    return {"error": f"Publication via widget echouee : {apply_err}"}
+                    return {"error": f"Publication : ecriture des options de section echouee. {apply_err}"}
             else:
                 # Nouvelle page dediee : une seule section custom pleine page
                 if not table_id:
@@ -6959,14 +6986,14 @@ async def call_tool(uid_key, mcp_sid, name, args):
                     "customView": custom_view,
                 })
                 # Ecriture lourde (HTML dans widgetOptions) -> via navigateur (bypass WAF).
-                ok, apply_err = await _browser_apply(uid_key, ctx, [
+                ok, apply_err = await _apply_meta(uid_key, ctx, [
                     ["UpdateRecord", "_grist_Views_section", section_ref, {"options": options}],
                     ["UpdateRecord", "_grist_Views", view_ref,
                      {"name": page_name,
                       "layoutSpec": json.dumps({"children": [{"leaf": section_ref}], "collapsed": []})}],
                 ])
                 if not ok:
-                    return {"error": f"Publication via widget echouee : {apply_err}"}
+                    return {"error": f"Publication : ecriture des options de section echouee. {apply_err}"}
 
             # 4. Tracer la publication sur l artefact source (best-effort)
             try:
