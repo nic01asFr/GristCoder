@@ -851,6 +851,34 @@ async def _fetch_builder_def(ctx) -> dict:
 _SCRIPT_RE = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>",
                         re.IGNORECASE | re.DOTALL)
 
+_SCRIPT_SRC_RE = re.compile(r"<script[^>]*\bsrc\s*=\s*[\"']([^\"']+)[\"']", re.IGNORECASE)
+
+def _audit_autonomie(code: str) -> tuple[list, list]:
+    """Un widget publie doit vivre sans le serveur MCP : le code voyage avec le
+    document et s'execute apres l'arret du pod. Retourne (bloquants, avertissements).
+
+    Bloquant : toute reference au pod. Le widget mourrait avec lui.
+    Avertissement : <script src=...> externe — dans un widget publie ces balises
+    restent dans _html, ou elles ne s'executent PAS (le builder insere _html comme
+    markup). La librairie serait donc silencieusement absente ; il faut l'inliner."""
+    bloquants, avertissements = [], []
+    for motif, quoi in (("/ai-proxy",        "appel a /ai-proxy"),
+                        ("/llm-proxy",       "appel a /llm-proxy"),
+                        ("/webhook-receive", "webhook pointant vers le pod"),
+                        ("HOST_URL",         "reference a HOST_URL")):
+        if motif in code:
+            bloquants.append(f"{quoi} ({motif})")
+    for env in ("GRIST_CODER_WIDGET_URL", "PUBLIC_URL", "HOST_URL"):
+        hote = os.getenv(env, "").strip().rstrip("/")
+        if hote and hote not in ("http://localhost:8742",) and hote in code:
+            bloquants.append(f"URL du pod en dur ({hote})")
+            break
+    for src in _SCRIPT_SRC_RE.findall(code):
+        if src.startswith(("http://", "https://", "//")):
+            avertissements.append(src[:90])
+    return bloquants, avertissements
+
+
 def _split_html_js(code: str) -> tuple[str, str]:
     """Separe un artefact HTML en (_html, _js) pour le custom-widget-builder.
 
@@ -914,15 +942,24 @@ def _provision_site_url(uid_key):
     return ""
 
 
-def _coder_widget_url():
+def _coder_widget_url(avec_token=False):
     """URL publique de CE serveur, a poser dans la section custom du nouveau doc.
     Le chart Onyxia n'injecte que PUBLIC_URL (pas HOST_URL) : sans ce repli, un pod
-    en ligne posait une URL localhost inutilisable dans le doc cree."""
+    en ligne posait une URL localhost inutilisable dans le doc cree.
+
+    avec_token : ajoute ?app_token=... quand la garde du pod est active. Le widget
+    lit ce parametre dans son URL et le presente a POST /register — sans lui, la
+    garde repond 401 et le widget s'affiche sans jamais se connecter."""
+    base = ""
     for env in ("GRIST_CODER_WIDGET_URL", "PUBLIC_URL"):
         v = os.getenv(env, "").strip().rstrip("/")
         if v:
-            return v
-    return HOST_URL.rstrip("/")
+            base = v
+            break
+    base = base or HOST_URL.rstrip("/")
+    if avec_token and APP_AUTH_TOKEN:
+        return f"{base}/?app_token={urllib.parse.quote(APP_AUTH_TOKEN, safe='')}"
+    return base
 
 
 async def _provision_workspaces(c, base, phdr, org_hint=""):
@@ -3564,9 +3601,20 @@ STATIC_RESOURCES = [
 
 DOCS_PUBLICATION = """GRIST CODER - Publication autonome (artefact_publish)
 =====================================================
-Fige un artefact HTML termine en widget custom 100% autonome, stocke DANS le
-document Grist. Apres publication : AUCUNE dependance au serveur MCP au runtime
-— le widget survit a l arret du serveur et voyage avec le doc (copies, exports).
+Fige un artefact HTML termine en widget custom stocke DANS le document Grist.
+Apres publication : AUCUNE dependance au serveur MCP au runtime — le widget
+survit a l arret du pod et voyage avec le doc (copies, exports).
+
+Ce que « autonome » veut dire exactement, et ce qu il ne veut pas dire :
+  - independant du POD : oui, verifie. artefact_publish REFUSE un artefact dont
+    le code reference /ai-proxy, /llm-proxy, /webhook-receive, HOST_URL ou l URL
+    du pod. Un tel widget mourrait avec le serveur.
+  - independant de TOUT serveur : non. Le widget est rendu par le widget de
+    galerie 'custom-widget-builder', servi depuis gristgouv.github.io. Si cet
+    hebergement tombe, les widgets publies deviennent blancs. C est vrai de tous
+    les widgets publies, avant comme apres cette note.
+  - les <script src=...> vers un CDN ne s executent PAS : ils restent dans _html,
+    insere comme markup. Toute librairie doit etre INLINE dans le code.
 
 ## Quand publier
 En PHASE 4 (livraison), pour chaque artefact html finalise que l utilisateur
@@ -5210,7 +5258,9 @@ async def call_tool(uid_key, mcp_sid, name, args):
                "workspace_id": ws_id, "org": org, "_key_source": key_source,
                "_next": f"Document cree. Ouvrir : {doc_url}"}
         if args.get("add_coder_widget", True):
-            widget_url = _coder_widget_url()
+            # URL avec app_token : sans lui la garde du pod refuse POST /register
+            # et le widget s'affiche sans jamais ouvrir de session.
+            widget_url = _coder_widget_url(avec_token=True)
             out["coder_widget_url"] = widget_url
             if "localhost" in widget_url or "127.0.0.1" in widget_url:
                 out["coder_widget_warning"] = (
@@ -6396,6 +6446,17 @@ async def call_tool(uid_key, mcp_sid, name, args):
             if not code.strip():
                 return {"error": f"Artefact '{artefact}' : Code vide dans Grist — "
                                  "sauvegarder l artefact (canvas_write + Save) avant de publier"}
+            # Garde d'autonomie : un widget publie ne doit dependre ni du pod ni
+            # d'un CDN. Verifie, plutot que promis par la documentation.
+            bloquants, cdn = _audit_autonomie(code)
+            if bloquants:
+                return {"error": ("Publication refusee : cet artefact dependrait du serveur MCP "
+                                  "et cesserait de fonctionner a l'arret du pod."),
+                        "dependances": bloquants,
+                        "_hint": ("Un widget publie voyage avec le document. Remplacer ces appels "
+                                  "par grist.docApi (donnees du doc) ou par un calcul local. "
+                                  "Pour un artefact destine a rester servi par le pod, utiliser "
+                                  "grist_view_create au lieu de artefact_publish.")}
             if art_type not in ("html", "svg"):
                 return {"error": f"Type '{art_type}' non publiable en widget autonome "
                                  "(supportes : html, svg).",
@@ -6483,16 +6544,25 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 pass
 
             _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
-            return {
+            sortie = {
                 "ok": True, "artefact": artefact,
                 "section_ref": section_ref, "view_ref": view_ref,
                 "page_name": page_name if view_ref else None,
                 "autonomous": True,
                 "hint": ("Widget fige dans le doc (options de section, builder galerie). "
-                         "Plus aucune dependance au serveur MCP au runtime."),
+                         "Aucune dependance au serveur MCP au runtime — le widget survit a "
+                         "l arret du pod et voyage avec le doc. Il reste servi par le widget "
+                         "de galerie 'custom-widget-builder' (heberge hors du pod)."),
                 "_next": "Recharger la page Grist pour verifier le rendu. "
                          "Pour mettre a jour : modifier l artefact source puis republier.",
             }
+            if cdn:
+                sortie["avertissement_cdn"] = (
+                    "Ces <script src=...> ne s executeront PAS : dans un widget publie ils "
+                    "restent dans _html, insere comme markup. La librairie sera absente "
+                    "silencieusement — l inliner dans le code de l artefact.")
+                sortie["scripts_externes_inertes"] = cdn
+            return sortie
         except Exception as e:
             return {"error": str(e)}
 
