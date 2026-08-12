@@ -858,9 +858,11 @@ def _audit_autonomie(code: str) -> tuple[list, list]:
     document et s'execute apres l'arret du pod. Retourne (bloquants, avertissements).
 
     Bloquant : toute reference au pod. Le widget mourrait avec lui.
-    Avertissement : <script src=...> externe — dans un widget publie ces balises
-    restent dans _html, ou elles ne s'executent PAS (le builder insere _html comme
-    markup). La librairie serait donc silencieusement absente ; il faut l'inliner."""
+    Avertissement : <script src=...> externe. Ces balises restent dans _html et
+    s'executent bien — verifie en production : un artefact chargeant leaflet depuis
+    jsDelivr voit la requete partir (200) et la librairie disponible. Mais le widget
+    depend alors de ce CDN a l'execution : il n'est plus autonome au sens strict et
+    casse si le CDN devient injoignable (reseau filtre, hebergeur en panne)."""
     bloquants, avertissements = [], []
     for motif, quoi in (("/ai-proxy",        "appel a /ai-proxy"),
                         ("/llm-proxy",       "appel a /llm-proxy"),
@@ -3766,10 +3768,18 @@ veut garder comme application autonome. La source reste dans la table Artefacts
 Le code est copie dans les options de la section Grist via le widget de la
 galerie "Custom widget builder" (@berhalak/custom-widget-builder), publie sur
 l instance. Deux champs :
-  _html : le markup + styles (les <script> inline y sont INERTES, pas d API grist)
+  _html : le markup + styles. L API `grist` n y est PAS disponible.
   _js   : la logique — SEUL endroit ou l API `grist` est disponible
 artefact_publish fait le split automatiquement : il extrait les <script> inline
 vers _js, garde les <script src=...> CDN dans _html, et prefixe grist.ready().
+
+Les <script src=...> restes dans _html S EXECUTENT (verifie en production : un
+artefact chargeant leaflet depuis jsDelivr voit la requete partir en 200 et la
+librairie disponible). Une librairie CDN fonctionne donc dans un widget publie.
+Le prix est une dependance reseau a l execution : le widget casse si le CDN est
+injoignable. Pour une autonomie totale, inliner la librairie dans le code.
+artefact_publish signale les CDN detectes sans bloquer — seule une dependance au
+POD est bloquante.
 
 ## Contraintes (IMPORTANT)
 - Types publiables : html, svg UNIQUEMENT. Un artefact `react`/`app` est REFUSE
@@ -6733,10 +6743,11 @@ async def call_tool(uid_key, mcp_sid, name, args):
                                      "app.setState(o), app.emit(ev,d), app.on(ev,cb).")
             if cdn:
                 sortie["avertissement_cdn"] = (
-                    "Ces <script src=...> ne s executeront PAS : dans un widget publie ils "
-                    "restent dans _html, insere comme markup. La librairie sera absente "
-                    "silencieusement — l inliner dans le code de l artefact.")
-                sortie["scripts_externes_inertes"] = cdn
+                    "Ce widget dependra de ces CDN a l execution. Ils fonctionnent (verifie), "
+                    "mais l autonomie n est alors plus totale : le widget casse si le CDN "
+                    "devient injoignable. Inliner la librairie dans le code si l artefact doit "
+                    "survivre a tout, y compris hors ligne.")
+                sortie["cdn_requis_au_runtime"] = cdn
             return sortie
         except Exception as e:
             return {"error": str(e)}
