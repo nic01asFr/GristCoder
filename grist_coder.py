@@ -851,6 +851,34 @@ async def _fetch_builder_def(ctx) -> dict:
 _SCRIPT_RE = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>",
                         re.IGNORECASE | re.DOTALL)
 
+_SCRIPT_SRC_RE = re.compile(r"<script[^>]*\bsrc\s*=\s*[\"']([^\"']+)[\"']", re.IGNORECASE)
+
+def _audit_autonomie(code: str) -> tuple[list, list]:
+    """Un widget publie doit vivre sans le serveur MCP : le code voyage avec le
+    document et s'execute apres l'arret du pod. Retourne (bloquants, avertissements).
+
+    Bloquant : toute reference au pod. Le widget mourrait avec lui.
+    Avertissement : <script src=...> externe — dans un widget publie ces balises
+    restent dans _html, ou elles ne s'executent PAS (le builder insere _html comme
+    markup). La librairie serait donc silencieusement absente ; il faut l'inliner."""
+    bloquants, avertissements = [], []
+    for motif, quoi in (("/ai-proxy",        "appel a /ai-proxy"),
+                        ("/llm-proxy",       "appel a /llm-proxy"),
+                        ("/webhook-receive", "webhook pointant vers le pod"),
+                        ("HOST_URL",         "reference a HOST_URL")):
+        if motif in code:
+            bloquants.append(f"{quoi} ({motif})")
+    for env in ("GRIST_CODER_WIDGET_URL", "PUBLIC_URL", "HOST_URL"):
+        hote = os.getenv(env, "").strip().rstrip("/")
+        if hote and hote not in ("http://localhost:8742",) and hote in code:
+            bloquants.append(f"URL du pod en dur ({hote})")
+            break
+    for src in _SCRIPT_SRC_RE.findall(code):
+        if src.startswith(("http://", "https://", "//")):
+            avertissements.append(src[:90])
+    return bloquants, avertissements
+
+
 def _split_html_js(code: str) -> tuple[str, str]:
     """Separe un artefact HTML en (_html, _js) pour le custom-widget-builder.
 
@@ -914,15 +942,24 @@ def _provision_site_url(uid_key):
     return ""
 
 
-def _coder_widget_url():
+def _coder_widget_url(avec_token=False):
     """URL publique de CE serveur, a poser dans la section custom du nouveau doc.
     Le chart Onyxia n'injecte que PUBLIC_URL (pas HOST_URL) : sans ce repli, un pod
-    en ligne posait une URL localhost inutilisable dans le doc cree."""
+    en ligne posait une URL localhost inutilisable dans le doc cree.
+
+    avec_token : ajoute ?app_token=... quand la garde du pod est active. Le widget
+    lit ce parametre dans son URL et le presente a POST /register — sans lui, la
+    garde repond 401 et le widget s'affiche sans jamais se connecter."""
+    base = ""
     for env in ("GRIST_CODER_WIDGET_URL", "PUBLIC_URL"):
         v = os.getenv(env, "").strip().rstrip("/")
         if v:
-            return v
-    return HOST_URL.rstrip("/")
+            base = v
+            break
+    base = base or HOST_URL.rstrip("/")
+    if avec_token and APP_AUTH_TOKEN:
+        return f"{base}/?app_token={urllib.parse.quote(APP_AUTH_TOKEN, safe='')}"
+    return base
 
 
 async def _provision_workspaces(c, base, phdr, org_hint=""):
@@ -1215,6 +1252,141 @@ ARTEFACTS_TABLE_DEF = {
         ]
     }]
 }
+
+# ── APP SHELL — modele « magasin d'app » ──────────────────────────────────────
+# Un seul widget publie porte ce shell ; les ecrans de l'application sont des
+# lignes de la table Artefacts, prefixees APP_MODULE_PREFIXE. Le shell les monte
+# a la demande dans des iframes, leur rend l'API grist par postMessage, et leur
+# fournit routeur, bus d'evenements et etat partage.
+#
+# AUCUNE dependance au serveur MCP : le shell n'appelle que grist.docApi et l'API
+# REST de Grist (via getAccessToken). Il survit a l'arret du pod.
+#
+# Le chargement est paresseux SUR LE TRANSFERT : l'index ne rapatrie que les noms
+# (l'endpoint /sql projette les colonnes, ce que fetchTable ne sait pas faire), et
+# le code d'un ecran n'est telecharge qu'a sa premiere visite. Mesure en conditions
+# reelles sur 3 ecrans : index 237 o, un ecran non visite jamais telecharge.
+
+APP_MODULE_PREFIXE = "app/"
+
+_APP_MODULE_RUNTIME = (
+    "(function(){var _i=0,_p={},_l={},_s={};"
+    "window.addEventListener('message',function(e){var m=e.data;if(!m)return;"
+    "if(m.__r){var r=_p[m.id];if(r){delete _p[m.id];m.err?r[1](new Error(m.err)):r[0](m.val);}return;}"
+    "if(m.__ev&&_l[m.ev])_l[m.ev].forEach(function(c){try{c(m.data);}catch(x){}});"
+    "if(m.__st){for(var k in m.state)_s[k]=m.state[k];"
+    "if(_l['state'])_l['state'].forEach(function(c){try{c(_s);}catch(x){}});}});"
+    "function q(k,a){return new Promise(function(res,rej){var id=++_i;_p[id]=[res,rej];"
+    "parent.postMessage({__q:1,id:id,k:k,a:a},'*');});}"
+    "window.grist={ready:function(){},docApi:{"
+    "fetchTable:function(t){return q('fetchTable',[t]);},"
+    "applyUserActions:function(a){return q('applyUserActions',[a]);},"
+    "getAccessToken:function(o){return q('getAccessToken',[o||{}]);}}};"
+    "window.app={navigate:function(n){parent.postMessage({__nav:1,nom:n},'*');},"
+    "emit:function(ev,d){parent.postMessage({__emit:1,ev:ev,data:d},'*');},"
+    "on:function(ev,cb){(_l[ev]=_l[ev]||[]).push(cb);},"
+    "setState:function(o){parent.postMessage({__set:1,state:o},'*');},"
+    "get state(){return _s;},"
+    "notify:function(m,t){parent.postMessage({__notif:1,msg:m,t:t||'info'},'*');},"
+    "modules:function(){return q('__modules',[]);}};})();"
+)
+
+
+def _app_shell_html(entree: str = "", prefixe: str = APP_MODULE_PREFIXE) -> str:
+    """Artefact HTML complet portant le shell. Passe tel quel dans _split_html_js :
+    le conteneur part dans _html, tout le reste dans _js."""
+    cfg = json.dumps({"entree": entree, "prefixe": prefixe})
+    rt = json.dumps(_APP_MODULE_RUNTIME)
+    return (
+        "<!DOCTYPE html>\n<html lang=\"fr\"><head><meta charset=\"utf-8\">\n"
+        "<style>html,body{margin:0;height:100%;overflow:hidden}#app{height:100%}\n"
+        ".msg{font:14px/1.6 system-ui;padding:24px;color:#3a3a3a}\n"
+        ".msg b{display:block;margin-bottom:6px}.msg i{color:#777;font-style:normal;font-size:13px}\n"
+        "</style></head><body>\n<div id=\"app\"></div>\n"
+        "<" + "script>\n"
+        "grist.ready({ requiredAccess: 'full' });\n"
+        "var RUNTIME = " + rt + ";\n"
+        "(function () {\n"
+        "  var CFG = " + cfg + ";\n"
+        "  var PREFIXE = CFG.prefixe, ENTREE = CFG.entree;\n"
+        "  var hote = document.getElementById('app');\n"
+        "  var B = null, TOK = null, exp = 0, index = [], cache = {}, vues = {}, etat = {}, courant = null;\n"
+        "  function msg(t, d) { hote.innerHTML = '<div class=msg><b>' + t + '</b>'\n"
+        "    + (d ? '<i>' + d + '</i>' : '') + '</div>'; }\n"
+        "  async function jeton() {\n"
+        "    if (TOK && Date.now() < exp) return;\n"
+        "    var tk = await grist.docApi.getAccessToken({ readOnly: false });\n"
+        "    B = tk.baseUrl; TOK = tk.token;\n"
+        "    exp = Date.now() + Math.max(30000, (tk.ttlMsecs || 900000) * 0.8);\n"
+        "  }\n"
+        "  async function sql(q, args) {\n"
+        "    await jeton();\n"
+        "    var r = await fetch(B + '/sql?auth=' + encodeURIComponent(TOK), { method: 'POST',\n"
+        "      headers: { 'Content-Type': 'application/json' },\n"
+        "      body: JSON.stringify({ sql: q, args: args || [] }) });\n"
+        "    if (!r.ok) throw new Error('SQL HTTP ' + r.status);\n"
+        "    return (await r.json()).records.map(function (x) { return x.fields; });\n"
+        "  }\n"
+        "  function injecter(src) {\n"
+        "    var tag = '<' + 'script>' + RUNTIME + '<' + '/script>';\n"
+        "    var fin = '<' + '/head>';\n"
+        "    return src.indexOf(fin) >= 0 ? src.replace(fin, tag + fin) : tag + src;\n"
+        "  }\n"
+        "  async function monter(nom) {\n"
+        "    if (vues[nom]) return vues[nom];\n"
+        "    if (!cache[nom]) {\n"
+        "      var r = await sql('select Code from Artefacts where Nom = ?', [nom]);\n"
+        "      if (!r.length || !r[0].Code) return null;\n"
+        "      cache[nom] = r[0].Code;\n"
+        "    }\n"
+        "    var f = document.createElement('iframe');\n"
+        "    f.setAttribute('data-module', nom);\n"
+        "    f.style.cssText = 'border:0;width:100%;height:100%;display:none';\n"
+        "    f.addEventListener('load', function () { try {\n"
+        "      f.contentWindow.postMessage({ __st: 1, state: etat }, '*');\n"
+        "      f.contentWindow.postMessage({ __ev: 1, ev: 'monte', data: { nom: nom } }, '*');\n"
+        "    } catch (e) {} });\n"
+        "    f.srcdoc = injecter(cache[nom]);\n"
+        "    hote.appendChild(f); vues[nom] = f; return f;\n"
+        "  }\n"
+        "  async function naviguer(nom) {\n"
+        "    var f = await monter(nom);\n"
+        "    if (!f) return msg('Ecran introuvable : ' + nom,\n"
+        "      'Ajouter une ligne nommee ainsi dans la table Artefacts.');\n"
+        "    for (var k in vues) vues[k].style.display = (k === nom ? 'block' : 'none');\n"
+        "    courant = nom; diffuser('navigate', { nom: nom });\n"
+        "  }\n"
+        "  function chaque(fn) { for (var k in vues) { try { fn(vues[k].contentWindow); } catch (e) {} } }\n"
+        "  function diffuser(ev, d) { chaque(function (w) { w.postMessage({ __ev: 1, ev: ev, data: d }, '*'); }); }\n"
+        "  window.addEventListener('message', function (e) {\n"
+        "    var m = e.data; if (!m) return;\n"
+        "    if (m.__q) {\n"
+        "      var rep = function (v, err) { e.source.postMessage({ __r: 1, id: m.id, val: v, err: err }, '*'); };\n"
+        "      if (m.k === '__modules') return rep(index.slice());\n"
+        "      var api = grist.docApi[m.k];\n"
+        "      if (!api) return rep(null, 'methode indisponible : ' + m.k);\n"
+        "      Promise.resolve(api.apply(grist.docApi, m.a || [])).then(function (v) { rep(v); })\n"
+        "        .catch(function (err) { rep(null, String(err && err.message || err)); });\n"
+        "      return;\n"
+        "    }\n"
+        "    if (m.__nav) naviguer(m.nom);\n"
+        "    if (m.__emit) diffuser(m.ev, m.data);\n"
+        "    if (m.__set) { for (var k in m.state) etat[k] = m.state[k];\n"
+        "      chaque(function (w) { w.postMessage({ __st: 1, state: etat }, '*'); }); }\n"
+        "  });\n"
+        "  (async function () {\n"
+        "    try {\n"
+        "      var idx = await sql('select Nom from Artefacts where Nom like ? order by Nom', [PREFIXE + '%']);\n"
+        "      index = idx.map(function (r) { return r.Nom; });\n"
+        "      if (!index.length) return msg('Aucun ecran dans la table Artefacts.',\n"
+        "        'Chaque ligne nommee ' + PREFIXE + '... est un ecran de l application.');\n"
+        "      await naviguer(index.indexOf(ENTREE) >= 0 ? ENTREE : index[0]);\n"
+        "    } catch (e) { msg('Chargement impossible.', String(e && e.message || e)); }\n"
+        "  })();\n"
+        "})();\n"
+        "<" + "/script>\n</body></html>"
+    )
+
 
 # ── SAMPLING HELPERS ──────────────────────────────────────────────────────────
 
@@ -1586,11 +1758,17 @@ TOOLS = [
      ),
      "inputSchema": {"type": "object",
                      "properties": {
-                         "artefact":    {"type": "string",  "description": "Nom de l artefact a publier (table Artefacts)"},
+                         "mode":        {"type": "string", "enum": ["artefact", "app"],
+                                         "description": ("artefact (defaut) = un artefact, un widget. "
+                                                         "app = publie un SHELL qui monte a la demande les ecrans "
+                                                         "nommes 'app/...' de la table Artefacts : une application "
+                                                         "multi-ecrans dans un seul widget, chargement paresseux.")},
+                         "entree":      {"type": "string",  "description": "mode app : ecran d ouverture (defaut : premier par ordre alphabetique)."},
+                         "prefixe":     {"type": "string",  "description": "mode app : prefixe des lignes traitees comme ecrans (defaut 'app/')."},
+                         "artefact":    {"type": "string",  "description": "Nom de l artefact a publier (table Artefacts). Inutile en mode app."},
                          "section_ref": {"type": "integer", "description": "Section custom existante a reconfigurer. Absent = nouvelle page."},
                          "table_id":    {"type": "string",  "description": "Table source de la nouvelle page (requis si pas de section_ref)"},
-                         "page_name":   {"type": "string",  "description": "Nom de la nouvelle page (defaut : nom de l artefact)"}},
-                     "required": ["artefact"]}},
+                         "page_name":   {"type": "string",  "description": "Nom de la nouvelle page (defaut : nom de l artefact)"}}}},
 
     # Grist lecture
     {"name": "grist_schema",
@@ -3564,9 +3742,20 @@ STATIC_RESOURCES = [
 
 DOCS_PUBLICATION = """GRIST CODER - Publication autonome (artefact_publish)
 =====================================================
-Fige un artefact HTML termine en widget custom 100% autonome, stocke DANS le
-document Grist. Apres publication : AUCUNE dependance au serveur MCP au runtime
-— le widget survit a l arret du serveur et voyage avec le doc (copies, exports).
+Fige un artefact HTML termine en widget custom stocke DANS le document Grist.
+Apres publication : AUCUNE dependance au serveur MCP au runtime — le widget
+survit a l arret du pod et voyage avec le doc (copies, exports).
+
+Ce que « autonome » veut dire exactement, et ce qu il ne veut pas dire :
+  - independant du POD : oui, verifie. artefact_publish REFUSE un artefact dont
+    le code reference /ai-proxy, /llm-proxy, /webhook-receive, HOST_URL ou l URL
+    du pod. Un tel widget mourrait avec le serveur.
+  - independant de TOUT serveur : non. Le widget est rendu par le widget de
+    galerie 'custom-widget-builder', servi depuis gristgouv.github.io. Si cet
+    hebergement tombe, les widgets publies deviennent blancs. C est vrai de tous
+    les widgets publies, avant comme apres cette note.
+  - les <script src=...> vers un CDN ne s executent PAS : ils restent dans _html,
+    insere comme markup. Toute librairie doit etre INLINE dans le code.
 
 ## Quand publier
 En PHASE 4 (livraison), pour chaque artefact html finalise que l utilisateur
@@ -5210,7 +5399,9 @@ async def call_tool(uid_key, mcp_sid, name, args):
                "workspace_id": ws_id, "org": org, "_key_source": key_source,
                "_next": f"Document cree. Ouvrir : {doc_url}"}
         if args.get("add_coder_widget", True):
-            widget_url = _coder_widget_url()
+            # URL avec app_token : sans lui la garde du pod refuse POST /register
+            # et le widget s'affiche sans jamais ouvrir de session.
+            widget_url = _coder_widget_url(avec_token=True)
             out["coder_widget_url"] = widget_url
             if "localhost" in widget_url or "127.0.0.1" in widget_url:
                 out["coder_widget_warning"] = (
@@ -6376,26 +6567,61 @@ async def call_tool(uid_key, mcp_sid, name, args):
             return {"error": str(e)}
 
     if name == "artefact_publish":
+        mode        = (args.get("mode") or "artefact").strip().lower()
         artefact    = (args.get("artefact") or "").strip()
         section_ref = int(args.get("section_ref") or 0)
         table_id    = args.get("table_id") or ""
-        page_name   = args.get("page_name") or artefact
-        if not artefact:
+        page_name   = args.get("page_name") or artefact or "Application"
+        if mode not in ("artefact", "app"):
+            return {"error": f"mode inconnu : {mode} (attendus : artefact, app)"}
+        if mode == "artefact" and not artefact:
             return {"error": "artefact requis"}
         try:
-            # 1. Lire la source dans la table Artefacts
-            rows = await grist_post(ctx, "sql", {
-                "sql": "SELECT id, Nom, Type, Code FROM Artefacts WHERE Nom = ?",
-                "args": [artefact]})
-            recs = rows.get("records", [])
-            if not recs:
-                return {"error": f"Artefact '{artefact}' introuvable dans la table Artefacts"}
-            art_row  = recs[0]["fields"]
-            art_type = (art_row.get("Type") or "html").lower()
-            code     = art_row.get("Code") or ""
-            if not code.strip():
-                return {"error": f"Artefact '{artefact}' : Code vide dans Grist — "
-                                 "sauvegarder l artefact (canvas_write + Save) avant de publier"}
+            if mode == "app":
+                # Magasin d'app : on publie le SHELL, pas un artefact. Les ecrans
+                # restent des lignes de la table, montees a la demande par le shell.
+                prefixe = (args.get("prefixe") or APP_MODULE_PREFIXE)
+                entree  = (args.get("entree") or "").strip()
+                mods = await grist_post(ctx, "sql", {
+                    "sql": "SELECT Nom FROM Artefacts WHERE Nom LIKE ? ORDER BY Nom",
+                    "args": [prefixe + "%"]})
+                noms = [r["fields"]["Nom"] for r in mods.get("records", [])]
+                if not noms:
+                    return {"error": f"Aucun ecran '{prefixe}...' dans la table Artefacts.",
+                            "_hint": (f"Creer les ecrans comme artefacts nommes {prefixe}Accueil, "
+                                      f"{prefixe}Detail, ... puis republier en mode app.")}
+                if entree and entree not in noms:
+                    return {"error": f"Ecran d'entree '{entree}' introuvable.",
+                            "ecrans_disponibles": noms}
+                art_type = "html"
+                code     = _app_shell_html(entree or noms[0], prefixe)
+                modules_publies = noms
+            else:
+                # 1. Lire la source dans la table Artefacts
+                rows = await grist_post(ctx, "sql", {
+                    "sql": "SELECT id, Nom, Type, Code FROM Artefacts WHERE Nom = ?",
+                    "args": [artefact]})
+                recs = rows.get("records", [])
+                if not recs:
+                    return {"error": f"Artefact '{artefact}' introuvable dans la table Artefacts"}
+                art_row  = recs[0]["fields"]
+                art_type = (art_row.get("Type") or "html").lower()
+                code     = art_row.get("Code") or ""
+                modules_publies = None
+                if not code.strip():
+                    return {"error": f"Artefact '{artefact}' : Code vide dans Grist — "
+                                     "sauvegarder l artefact (canvas_write + Save) avant de publier"}
+            # Garde d'autonomie : un widget publie ne doit dependre ni du pod ni
+            # d'un CDN. Verifie, plutot que promis par la documentation.
+            bloquants, cdn = _audit_autonomie(code)
+            if bloquants:
+                return {"error": ("Publication refusee : cet artefact dependrait du serveur MCP "
+                                  "et cesserait de fonctionner a l'arret du pod."),
+                        "dependances": bloquants,
+                        "_hint": ("Un widget publie voyage avec le document. Remplacer ces appels "
+                                  "par grist.docApi (donnees du doc) ou par un calcul local. "
+                                  "Pour un artefact destine a rester servi par le pod, utiliser "
+                                  "grist_view_create au lieu de artefact_publish.")}
             if art_type not in ("html", "svg"):
                 return {"error": f"Type '{art_type}' non publiable en widget autonome "
                                  "(supportes : html, svg).",
@@ -6483,16 +6709,35 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 pass
 
             _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
-            return {
+            sortie = {
                 "ok": True, "artefact": artefact,
                 "section_ref": section_ref, "view_ref": view_ref,
                 "page_name": page_name if view_ref else None,
                 "autonomous": True,
                 "hint": ("Widget fige dans le doc (options de section, builder galerie). "
-                         "Plus aucune dependance au serveur MCP au runtime."),
+                         "Aucune dependance au serveur MCP au runtime — le widget survit a "
+                         "l arret du pod et voyage avec le doc. Il reste servi par le widget "
+                         "de galerie 'custom-widget-builder' (heberge hors du pod)."),
                 "_next": "Recharger la page Grist pour verifier le rendu. "
                          "Pour mettre a jour : modifier l artefact source puis republier.",
             }
+            if modules_publies:
+                sortie["mode"] = "app"
+                sortie["ecrans"] = modules_publies
+                sortie["hint"] = (
+                    "Shell d'application publie. Les ecrans restent des lignes de la table "
+                    "Artefacts : les modifier puis recharger la page suffit, PAS besoin de "
+                    "republier. Republier seulement pour changer l'ecran d'entree.")
+                sortie["_next"] = ("Ajouter un ecran = ajouter une ligne " + APP_MODULE_PREFIXE
+                                   + "Nom dans Artefacts. Depuis un ecran : app.navigate(nom), "
+                                     "app.setState(o), app.emit(ev,d), app.on(ev,cb).")
+            if cdn:
+                sortie["avertissement_cdn"] = (
+                    "Ces <script src=...> ne s executeront PAS : dans un widget publie ils "
+                    "restent dans _html, insere comme markup. La librairie sera absente "
+                    "silencieusement — l inliner dans le code de l artefact.")
+                sortie["scripts_externes_inertes"] = cdn
+            return sortie
         except Exception as e:
             return {"error": str(e)}
 
