@@ -566,6 +566,52 @@ def _has_live_widget(uid_key) -> bool:
     return any(_sid_uid.get(sid) == uid_key and sid not in mcp_sids for sid in _queues)
 
 
+def _contient_balises_nues(records) -> bool:
+    """Detecte du JSX / des balises hors chaine dans des valeurs a ecrire — la forme
+    que le WAF refuse depuis le serveur (voir _waf_json)."""
+    txt = json.dumps(records, ensure_ascii=False)
+    # une balise suivie d'un retour ou d'un accolade JSX, non precedee d'un guillemet
+    return bool(re.search(r"[^\"'\\](<)\s*[A-Za-z][\w.-]*[^>]{0,120}>\s*\{", txt)) or \
+           bool(re.search(r"return\s*\(\s*<[A-Za-z]", txt))
+
+
+async def _ecrire_donnees(uid_key, ctx, table_id, records, *, mode="upsert"):
+    """Ecrit des enregistrements, avec repli navigateur sur refus du WAF.
+
+    Une source JSX est rejetee en 403 par le WAF quand elle part du serveur (le
+    detail est dans _waf_json). Le navigateur, lui, ecrit en same-origin : on lui
+    passe la main plutot que de rendre un 403 opaque."""
+    try:
+        if mode == "upsert":
+            await grist_put(ctx, f"tables/{table_id}/records", {"records": records})
+        else:
+            return await grist_post(ctx, f"tables/{table_id}/records", {"records": records})
+        return {"ok": True}
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code != 403:
+            raise
+        actions = [["AddRecord", table_id, None, r.get("fields", r)] for r in records]
+        if mode == "upsert":
+            actions = [["AddRecord", table_id, None,
+                        dict(r.get("require", {}), **r.get("fields", {}))] for r in records]
+        if _has_live_widget(uid_key):
+            ok, err = await _browser_apply(uid_key, ctx, actions)
+            if ok:
+                return {"ok": True, "_via": "navigateur",
+                        "_note": ("Ecriture serveur refusee par le WAF (source contenant des "
+                                  "balises hors chaine, typiquement du JSX). Le widget a pris "
+                                  "le relais.")}
+            raise RuntimeError(f"serveur refuse (WAF) et navigateur en echec : {err}")
+        indice = (" Le contenu ressemble a du JSX : c'est la forme que le WAF refuse."
+                  if _contient_balises_nues(records) else "")
+        raise RuntimeError(
+            "Ecriture refusee par le WAF de l'instance Grist (403)." + indice
+            + " Deux issues : ouvrir le widget Coder sur ce document et reecrire par"
+              " canvas_write (la sauvegarde transite alors par le navigateur), ou ecrire"
+              " la source en h(...) / React.createElement plutot qu'en JSX — elle se"
+              " bundle aussi bien a la publication.")
+
+
 async def _apply_meta(uid_key, ctx, actions, *, timeout=20.0):
     """Ecriture de tables meta (_grist_Views*), par le chemin le plus court disponible.
 
@@ -716,9 +762,23 @@ def _grist_client():
 
 def _waf_json(obj) -> str:
     """Serialise en JSON en echappant < et > en \\u003c / \\u003e. Grist les redecode
-    a l'identique (JSON \\u003c == '<'), mais le payload BRUT ne contient plus
-    '<script>' -> ne declenche plus le 403 du WAF Incapsula sur les valeurs
-    contenant du HTML/JS. A utiliser pour tout body d'ecriture passant par le serveur."""
+    a l'identique (JSON \\u003c == '<'). A utiliser pour tout body d'ecriture serveur.
+
+    ATTENTION — protection PARTIELLE, contrairement a ce qui etait ecrit ici.
+    Le WAF normalise les echappements JSON avant inspection : il voit les balises
+    malgre \\u003c. Mesure sur grist.numerique.gouv.fr, meme session, meme endpoint :
+
+        pas de HTML .................................. passe
+        h('div', ...) / React.createElement .......... passe
+        innerHTML = '<table class="t">...' ........... passe   (balises ENTRE guillemets)
+        JSX : return (<div><h2>T</h2></div>) ......... 403
+        idem sans gestionnaire d'evenement ........... 403
+
+    Le declencheur est donc la presence de balises HORS chaine de caracteres — la
+    signature du JSX. Ni la taille, ni l'endpoint, ni le mode d'authentification
+    n'entrent en jeu. Une source JSX ne peut pas etre ecrite depuis le serveur :
+    passer par le navigateur (canvas_write, qui fait sauvegarder le widget) ou
+    ecrire en h(...) / createElement, qui se bundle aussi bien."""
     return json.dumps(obj).replace("<", "\\u003c").replace(">", "\\u003e")
 
 async def grist_get(ctx, path):
@@ -6505,9 +6565,8 @@ async def call_tool(uid_key, mcp_sid, name, args):
         # Garde-fou pedagogique : ecrire dans une meta-table via REST casse le frontend
         if table_id.startswith("_grist_"):
             return {"error": f"Ecriture REST interdite sur la meta-table {table_id}. {_META_TABLE_HINT}"}
-        result = await grist_post(ctx, f"tables/{table_id}/records",
-                                  {"records": args["records"]})
-        ids = [r["id"] for r in result.get("records", [])]
+        result = await _ecrire_donnees(uid_key, ctx, table_id, args["records"], mode="add")
+        ids = [r["id"] for r in (result or {}).get("records", [])]
         _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
         return {"ok": True, "created": len(ids), "ids": ids,
                 "_next": f"Verifier context/{ctx.token} (_quality) ; toute table metier -> une page Grist."}
@@ -6525,10 +6584,12 @@ async def call_tool(uid_key, mcp_sid, name, args):
         table_id = args["table_id"]
         if table_id.startswith("_grist_"):
             return {"error": f"Upsert REST interdit sur la meta-table {table_id}. {_META_TABLE_HINT}"}
-        await grist_put(ctx, f"tables/{table_id}/records",
-                        {"records": args["records"]})
+        res = await _ecrire_donnees(uid_key, ctx, table_id, args["records"], mode="upsert")
         _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
-        return {"ok": True, "upserted": len(args["records"])}
+        sortie = {"ok": True, "upserted": len(args["records"])}
+        if res.get("_via"):
+            sortie["_via"] = res["_via"]; sortie["_note"] = res.get("_note")
+        return sortie
 
     # ── Document structure
     if name == "grist_apply":
