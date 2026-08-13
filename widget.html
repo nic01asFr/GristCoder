@@ -1050,6 +1050,12 @@ function listenSSE() {
 // l'instance ET privileges owner (ecriture des tables meta _grist_Views_section). Acquitte
 // sur /apply-result/{token} : {} en succes, {error} si echec.
 async function applyFromServer(actions, token) {
+  // Garde d'isolation : le fan-out SSE diffuse a TOUTES les connexions du compte,
+  // sans filtrer par document. Sans ce controle, un widget ouvert sur un document
+  // executerait des UserActions destinees a un autre — et ecrirait dans le sien.
+  // On n'applique que ce qui porte NOTRE token de session, et on ne repond pas au
+  // reste (l'ack appartient au widget concerne).
+  if (token && _token && token !== _token) return;
   var payload = {};
   try {
     if (!(window.grist && grist.docApi && grist.docApi.applyUserActions))

@@ -501,6 +501,7 @@ _apply_waiters: dict[str, asyncio.Future] = {}
 _client_capabilities: dict[str, dict] = {}   # uid_key -> capabilities déclarées par le client MCP
 _mcp_client_sids: dict[str, str] = {}        # uid_key -> sid SSE du client MCP (Claude Desktop)
 _display_sids: set[str] = set()              # sids des widgets en display mode (?a=...) — pas de replay wizard
+_sid_token: dict[str, str] = {}             # sid SSE -> token de session widget (quel DOCUMENT il couvre)
 _sampling_waiters: dict[str, asyncio.Future] = {}  # smp_id -> Future pour sampling/createMessage
 _chat_waiters: dict[str, asyncio.Future] = {}      # uid_key -> Future pour wait_for_chat
 
@@ -558,12 +559,23 @@ def _notify_resource(uid_key, uri):
                     "params": {"uri": uri}})
 
 
-def _has_live_widget(uid_key) -> bool:
+def _has_live_widget(uid_key, token: str = "") -> bool:
     """Vrai si un widget navigateur (SSE) est connecte pour ce user. Exclut la connexion
     SSE du client MCP lui-meme (Claude Desktop ouvre aussi un GET /mcp) : elle n'execute
-    pas applyUserActions et ne doit pas compter comme un widget capable d'ecrire."""
+    pas applyUserActions et ne doit pas compter comme un widget capable d'ecrire.
+
+    token : restreint au widget couvrant CE document. Sans ce filtre, un widget ouvert
+    sur un autre doc faisait croire qu'un relais existait — on tentait l'ecriture
+    navigateur, elle expirait au bout de 20 s, et l'utilisateur recevait un timeout
+    au lieu du message actionnable."""
     mcp_sids = set(_mcp_client_sids.values())
-    return any(_sid_uid.get(sid) == uid_key and sid not in mcp_sids for sid in _queues)
+    for sid in _queues:
+        if _sid_uid.get(sid) != uid_key or sid in mcp_sids:
+            continue
+        if token and _sid_token.get(sid) != token:
+            continue
+        return True
+    return False
 
 
 def _contient_balises_nues(records) -> bool:
@@ -594,7 +606,7 @@ async def _ecrire_donnees(uid_key, ctx, table_id, records, *, mode="upsert"):
         if mode == "upsert":
             actions = [["AddRecord", table_id, None,
                         dict(r.get("require", {}), **r.get("fields", {}))] for r in records]
-        if _has_live_widget(uid_key):
+        if _has_live_widget(uid_key, ctx.token):
             ok, err = await _browser_apply(uid_key, ctx, actions)
             if ok:
                 return {"ok": True, "_via": "navigateur",
@@ -629,7 +641,7 @@ async def _apply_meta(uid_key, ctx, actions, *, timeout=20.0):
             return True, None
         except Exception as e:
             err_srv = _scrub_secrets(str(e))
-        if not _has_live_widget(uid_key):
+        if not _has_live_widget(uid_key, ctx.token):
             return False, (f"Ecriture serveur refusee ({err_srv}) et aucun widget Coder "
                            "ouvert pour prendre le relais.")
     else:
@@ -7730,6 +7742,7 @@ async def mcp_sse(request: Request,
     is_display = request.query_params.get("display") == "1"
     _queues[sid] = asyncio.Queue(maxsize=64)
     _sid_uid[sid] = uid_key
+    _sid_token[sid] = request.query_params.get("token") or ""   # document couvert
     if is_display:
         _display_sids.add(sid)
     if is_mcp_client:
@@ -7786,6 +7799,7 @@ async def mcp_sse(request: Request,
         finally:
             _queues.pop(sid, None)
             _sid_uid.pop(sid, None)
+            _sid_token.pop(sid, None)
             _display_sids.discard(sid)
             # Nettoyer le sid MCP client si c'était lui + cancel any sampling
             # waiters that were targeting this disconnected client
@@ -7806,6 +7820,7 @@ async def mcp_sse(request: Request,
 async def mcp_delete(mcp_session_id: str | None = Header(default=None, alias="Mcp-Session-Id")):
     _queues.pop(mcp_session_id, None)
     _sid_uid.pop(mcp_session_id, None)
+    _sid_token.pop(mcp_session_id, None)
     return Response(status_code=204)
 
 
