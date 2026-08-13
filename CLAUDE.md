@@ -27,7 +27,7 @@ Or with Docker: `docker compose up -d`
 
 ## Code structure
 
-Everything lives in `grist_coder.py` (~5300 lines). Key sections in order:
+Everything lives in `grist_coder.py` (~8200 lines). Key sections in order:
 
 | Section | Role |
 |---------|------|
@@ -36,7 +36,7 @@ Everything lives in `grist_coder.py` (~5300 lines). Key sections in order:
 | `SessionCtx` / `UserRegistry` | In-memory session store, keyed by `uid:{grist_user_id}` |
 | SSE helpers (`_push`, `_notify_resource`) | Server-Sent Events fan-out to widget clients |
 | Grist HTTP helpers (`grist_get/post/patch/put/delete`) | Wrappers for Grist REST API |
-| `TOOLS` list | MCP tool definitions (28 tools) |
+| `TOOLS` list | MCP tool definitions (34 tools) |
 | `PROMPTS` list + `_prompt_messages()` | MCP prompts |
 | `STATIC_RESOURCES` / `RESOURCE_TEMPLATES` | MCP resources + inline docs |
 | `call_tool()` | Tool dispatch logic |
@@ -57,6 +57,26 @@ Identity is based on `uid:{grist_user_id}` — stable numeric ID shared between 
 
 - **Widget**: `grist.docApi.getAccessToken()` → `POST /register` → session token
 - **Claude Desktop**: `Authorization: Bearer <grist_key>` → `GET /api/profile/user` → same uid namespace
+
+## Publishing rules (learned the hard way)
+
+- **Never write the script closing sequence literally** in `widget.html` or in any
+  artefact — even inside a comment. The HTML parser ends the script element as soon
+  as it sees it, truncating everything after. Write `'<' + '/script>'`.
+- **A published artefact must not reference the pod** (`/ai-proxy`, `/llm-proxy`,
+  `/webhook-receive`, its URL). `artefact_publish` refuses it — the widget would die
+  with the server.
+- **npm imports are bundled at publish time** (esbuild, no Node). JSX is fine inside a
+  `html` artefact. A screen-blank preview is expected for artefacts with imports —
+  the browser does not resolve them.
+- **JSX source cannot be written server-side** on WAF-protected instances: bare HTML
+  tags trigger a 403 and escaping does not help. Write through `canvas_write` with an
+  open widget, or use `h(...)` / `React.createElement`.
+- **Meta tables** (`_grist_Views*`): `grist_apply` with `UpdateRecord`, never REST
+  PATCH — and `customView` is a JSON **string**, not an object, or the document
+  becomes unopenable.
+- **Session routing is per call**: pass `token=` to every tool when several documents
+  are open. `session_select` only pins a default for one connection.
 
 ## Common errors
 

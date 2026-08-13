@@ -1,5 +1,5 @@
 """
-GRIST CODER · MCP Server v5.13 · streamable HTTP spec 2025-03-26
+GRIST CODER · MCP Server v5.14 · streamable HTTP spec 2025-03-26
 ────────────────────────────────────────────────────────────────
 Document Grist = codebase du projet.
 Widget = split vertical Ace editor | iframe preview.
@@ -149,7 +149,7 @@ if not WEBHOOK_SECRET and "localhost" not in HOST_URL and "127.0.0.1" not in HOS
 # ── SERVER INSTRUCTIONS ───────────────────────────────────────────────────────
 
 SERVER_INSTRUCTIONS = """
-Tu es Grist Coder MCP v5.13 — service de construction d apps Grist completes et guidees.
+Tu es Grist Coder MCP v5.14 — service de construction d apps Grist completes et guidees.
 
 MISSION
   Transformer le besoin utilisateur en une application Grist complete (donnees + UI + logique +
@@ -7141,7 +7141,7 @@ async def dispatch(uid_key, mcp_sid, method, params):
         _client_capabilities[uid_key] = params.get("capabilities", {})
         return {
             "protocolVersion": MCP_VER,
-            "serverInfo": {"name": "grist-coder", "version": "5.13",
+            "serverInfo": {"name": "grist-coder", "version": "5.14",
                            "instructions": SERVER_INSTRUCTIONS},
             "capabilities": {
                 "tools":     {"listChanged": True},
@@ -7221,7 +7221,7 @@ async def _purge_loop():
 
 @asynccontextmanager
 async def lifespan(app):
-    print(f"Grist Coder v5.13 · {HOST_URL}")
+    print(f"Grist Coder v5.14 · {HOST_URL}")
     print(f"  tools: {len(TOOLS)}  prompts: {len(PROMPTS)}")
     print(f"  resources: {len(STATIC_RESOURCES)} static + {len(RESOURCE_TEMPLATES)} templates")
     print(f"  widget: {'widget.html' if WIDGET_PATH.exists() else 'MANQUANT'}")
@@ -8039,7 +8039,7 @@ async def webhook_receive(doc_id: str, request: Request):
 @app.get("/health")
 async def health(request: Request):
     total = sum(len(u["sessions"]) for u in registry._users.values())
-    base = {"ok": True, "version": "5.13", "mcp_protocol": MCP_VER,
+    base = {"ok": True, "version": "5.14", "mcp_protocol": MCP_VER,
             "sessions": total, "users": len(registry._users),
             "tools": len(TOOLS), "prompts": len(PROMPTS),
             "resources": {"static": len(STATIC_RESOURCES), "templates": len(RESOURCE_TEMPLATES)},
