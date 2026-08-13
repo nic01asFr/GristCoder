@@ -220,6 +220,35 @@ CYCLE GUIDE — 4 PHASES
       NE PAS injecter DSFR dans les artefacts utilisant des libs graphiques (MapLibre, Leaflet, Chart.js, D3)
       car le CSS global DSFR casse leurs rendus. Voir docs/artefacts pour le catalogue.
 
+    LIBRAIRIES ET PUBLICATION — regles mesurees, pas theoriques :
+      npm : un artefact peut faire `import x from "pkg"`. artefact_publish le bundle
+        (esbuild cote serveur, paquets tires du registre a la demande). Le JSX passe,
+        dans un artefact de type html — le controle de type porte sur Artefacts.Type,
+        pas sur le contenu. La PREVISUALISATION restera vide : le navigateur ne resout
+        pas les imports, seul le publie est bundle.
+      Ecriture d'une source JSX : IMPOSSIBLE depuis le serveur sur une instance derriere
+        un WAF (403 sur les balises hors chaine ; echapper < et > n'y change rien, le WAF
+        normalise les echappements JSON). Passer par canvas_write avec un widget ouvert —
+        le repli est automatique — ou ecrire en h(...) / React.createElement.
+      CDN : un <script src=...> FONCTIONNE dans un widget publie (mesure). Il est signale,
+        pas bloque : le widget depend alors de ce CDN a l'execution.
+      Poids : preact 5 Ko gzip, preact/compat 10, leaflet 42, chart.js 59, react+dom 59,
+        recharts ~105 hors React. Preact divise une app complete par ~1,5 face a React.
+        Imports nommes, jamais `import *` : ECharts -50%, Recharts -29%.
+      INTERDIT dans un artefact publie : toute reference au pod (/ai-proxy, /llm-proxy,
+        /webhook-receive, son URL). artefact_publish refuse — le widget mourrait avec le
+        serveur. Pour un artefact qui doit rester servi par le pod : grist_view_create.
+
+    APPLICATION MULTI-ECRANS — artefact_publish(mode="app") :
+      Les lignes nommees app/Xxx deviennent les ecrans ; un shell les monte a la demande.
+      Gain mesure sur 3 ecrans : 6,5 Ko de metadonnees de section contre 755 Ko pour un
+      artefact monolithique — or Grist retelecharge TOUTES les tables _grist_* a chaque
+      ouverture du document. Un ecran jamais visite n'est jamais telecharge (237 o d'index
+      au demarrage). Modifier un ecran = modifier la ligne + recharger, sans republier.
+      LIMITE : les ecrans ne sont PAS bundles (c'est ce qui permet l'edition a chaud).
+      Un ecran qui importe un paquet npm rendra VIDE. L'ecrire sans import.
+      Depuis un ecran : app.navigate(nom), app.setState(o), app.emit(ev,d), app.on(ev,cb).
+
     Pour chaque artefact (dashboard -> fiches -> composants) :
       docs/artefacts -> LIRE AVANT canvas_write (templates, API Grist, patterns lies, composants DSFR)
       context/{token}/page/{page_id} -> contexte page : schema table source, liaisons entrantes/
@@ -4107,6 +4136,32 @@ injoignable. Pour une autonomie totale, inliner la librairie dans le code.
 artefact_publish signale les CDN detectes sans bloquer — seule une dependance au
 POD est bloquante.
 
+MODE APPLICATION — artefact_publish(mode="app")
+Les lignes nommees app/Xxx deviennent les ecrans d'une application ; un shell de
+~6,5 Ko est publie dans la section et les monte a la demande.
+
+Pourquoi : Grist retelecharge TOUTES les tables _grist_* a chaque ouverture du
+document. Un artefact monolithique y pese son poids entier, pour tout le monde,
+a chaque fois. Mesure sur un cas reel : 755 Ko de metadonnees pour un artefact
+seul, contre 6,5 Ko pour une application de trois ecrans. Les ecrans arrivent
+ensuite une requete SQL a la fois — 237 octets d'index au demarrage, et un ecran
+que personne ne visite n'est jamais telecharge.
+
+Editer un ecran : modifier la ligne et recharger la page. PAS de republication.
+Republier seulement pour changer l'ecran d'entree.
+
+LIMITE — les ecrans ne sont PAS bundles. C'est le prix de l'edition a chaud : le
+shell lit le code tel quel dans la table. Un ecran qui fait `import x from "pkg"`
+monte mais rend VIDE, son script echouant sur l'import non resolu. Ecrire les
+ecrans sans import : h(...) / React.createElement, ou une librairie en
+<script src=...> CDN, qui fonctionne. artefact_publish le signale a la publication.
+
+API disponible dans un ecran :
+  app.navigate(nom)     changer d'ecran
+  app.setState(objet)   etat partage entre ecrans (rejoue au montage)
+  app.emit(ev, donnees) / app.on(ev, callback)   bus d'evenements
+  grist.docApi.fetchTable / applyUserActions     relayes jusqu'au shell
+
 ## Contraintes (IMPORTANT)
 - Types publiables : html, svg UNIQUEMENT. Un artefact `react`/`app` est REFUSE
   (Babel ne survit pas au split) -> le convertir en html (React.createElement ou
@@ -6964,9 +7019,17 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 prefixe = (args.get("prefixe") or APP_MODULE_PREFIXE)
                 entree  = (args.get("entree") or "").strip()
                 mods = await grist_post(ctx, "sql", {
-                    "sql": "SELECT Nom FROM Artefacts WHERE Nom LIKE ? ORDER BY Nom",
+                    "sql": "SELECT Nom, Code FROM Artefacts WHERE Nom LIKE ? ORDER BY Nom",
                     "args": [prefixe + "%"]})
                 noms = [r["fields"]["Nom"] for r in mods.get("records", [])]
+                # Les ecrans ne sont PAS bundles : le shell les lit tels quels dans la
+                # table au moment du montage, ce qui permet de les modifier sans
+                # republier. Un ecran qui importe un paquet npm ne peut donc pas
+                # s'executer — il monte, mais son script echoue et il rend vide.
+                # Asymetrie assumee avec le mode artefact ; on la signale.
+                ecrans_a_imports = {r["fields"]["Nom"]: imports_npm(r["fields"].get("Code") or "")
+                                    for r in mods.get("records", [])}
+                ecrans_a_imports = {k: v for k, v in ecrans_a_imports.items() if v}
                 if not noms:
                     return {"error": f"Aucun ecran '{prefixe}...' dans la table Artefacts.",
                             "_hint": (f"Creer les ecrans comme artefacts nommes {prefixe}Accueil, "
@@ -7121,6 +7184,14 @@ async def call_tool(uid_key, mcp_sid, name, args):
                     "Shell d'application publie. Les ecrans restent des lignes de la table "
                     "Artefacts : les modifier puis recharger la page suffit, PAS besoin de "
                     "republier. Republier seulement pour changer l'ecran d'entree.")
+                if ecrans_a_imports:
+                    sortie["avertissement_ecrans"] = (
+                        "Ces ecrans importent des paquets npm et rendront VIDE : les ecrans "
+                        "d'une application ne sont pas bundles, le shell les lit tels quels "
+                        "pour qu'ils restent modifiables sans republier. Les reecrire sans "
+                        "import — h(...) / React.createElement, ou une librairie en "
+                        "<script src=...> CDN qui, elle, fonctionne dans un widget publie.")
+                    sortie["ecrans_a_corriger"] = ecrans_a_imports
                 sortie["_next"] = ("Ajouter un ecran = ajouter une ligne " + APP_MODULE_PREFIXE
                                    + "Nom dans Artefacts. Depuis un ecran : app.navigate(nom), "
                                      "app.setState(o), app.emit(ev,d), app.on(ev,cb).")
