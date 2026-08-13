@@ -281,7 +281,7 @@ Architecture:
 │  ← MCP protocol (Streamable HTTP, JSON-RPC) →       │
 ├─────────────────────────────────────────────────────┤
 │  GristCoderMCP Server (Python, FastAPI, port 8742)   │
-│  ├── 28 tools (contextual, phase-filtered)           │
+│  ├── 34 tools (contextual, phase-filtered)           │
 │  ├── 8 prompts (explore, build, patch, debug...)     │
 │  ├── 17 resources (docs + live context + examples)   │
 │  ├── 7 sub-agent roles (architect, designer, ...)    │
@@ -303,7 +303,7 @@ Architecture:
 └─────────────────────────────────────────────────────┘
 ```
 
-**Single file server**: `grist_coder.py` (~5300 lines) — intentional, keeps deployment simple.
+**Single file server**: `grist_coder.py` (~8200 lines) — intentional, keeps deployment simple.
 
 **No database**: all persistent state lives in Grist. Server sessions are in-memory (lost on restart).
 

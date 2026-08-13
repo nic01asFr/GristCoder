@@ -25,6 +25,7 @@
 | *"Add a chart showing sales by month"* | An HTML artefact with Chart.js, linked to your data via the Grist bridge |
 | *"Set up a webhook to notify Slack when a deal closes"* | A Grist webhook pointing to your Slack endpoint |
 | *"Fix the filter on the inventory page"* | Reads the artefact code, patches it, live-previews the result |
+| *"Ship it"* | Freezes the artefact into the document as a standalone widget — npm imports bundled, no dependency on this server, it keeps working if the server stops and travels with the document |
 
 Everything lives inside the Grist document. The artefacts (HTML/React widgets) are stored in an `Artefacts` table and rendered by the custom widget. Users interact with the finished app — they never see the AI or the code.
 
@@ -47,7 +48,7 @@ Layer          Built with                       What it is
 
 ### Contextual navigation — progressive tool disclosure
 
-The server does **not** expose all 28 tools at once. Instead, it tracks a **session context** that evolves through 6 phases:
+The server does **not** expose all 34 tools at once. Instead, it tracks a **session context** that evolves through 6 phases:
 
 ```
 qualifying → assessing → designing → building → verifying → done
@@ -57,12 +58,12 @@ At each phase, only the relevant tools are visible to the LLM client:
 
 | Phase | Tools available | Purpose |
 |-------|----------------|---------|
-| **qualifying** (13 tools) | sessions, wizard, plan, grist read, subagent, chat | Understand what the user needs |
-| **assessing** (16 tools) | + canvas_read, screenshot, views_list | Audit the existing document |
-| **designing** (19 tools) | + canvas_write, canvas_patch, canvas_type | Prototype the UI |
-| **building** (28 tools) | All tools | Full construction |
-| **verifying** (28 tools) | All tools | Quality check |
-| **done** (13 tools) | = qualifying | Delivered, ready for next project |
+| **qualifying** (15 tools) | sessions, wizard, plan, grist read, subagent, chat | Understand what the user needs |
+| **assessing** (19 tools) | + canvas_read, screenshot, views_list | Audit the existing document |
+| **designing** (22 tools) | + canvas_write, canvas_patch, canvas_type | Prototype the UI |
+| **building** (34 tools) | All tools | Full construction |
+| **verifying** (34 tools) | All tools | Quality check |
+| **done** (17 tools) | = qualifying | Delivered, ready for next project |
 
 Phase transitions are triggered by `plan_update(status=...)` which:
 1. Updates the session context
@@ -198,7 +199,7 @@ docker compose up -d
 
 ```bash
 curl http://localhost:8742/health
-# → {"ok": true, "version": "5.12", "tools": 28, ...}
+# → {"ok": true, "version": "5.14", "tools": 34, ...}
 ```
 
 ---
@@ -247,14 +248,19 @@ cp .mcp.json.example .mcp.json
 
 ---
 
-## MCP Tools (31)
+## MCP Tools (34)
 
 ### Sessions
 | Tool | Description |
 |------|-------------|
 | `sessions_list` | List open Grist documents — **call first** |
-| `session_select` | Switch to a specific session |
+| `session_open` | Open a document **without a browser**, from the caller's Grist key |
+| `session_select` | Pin a default session for this connection |
 | `session_info` | Full context: doc, tables, artefacts, canvas state |
+
+> Every document-scoped tool also accepts an optional `token` argument. Routing is
+> carried **per call**, not by shared server state — so several agents or browser
+> tabs can work on different documents in parallel.
 
 ### Plan & context
 | Tool | Description |
@@ -286,7 +292,7 @@ cp .mcp.json.example .mcp.json
 | Tool | Description |
 |------|-------------|
 | `artefact_init` | Create the `Artefacts` table if missing (idempotent) |
-| `artefact_publish` | Freeze a finished HTML artefact as a **fully standalone widget stored inside the doc** (gallery "Custom widget builder") — no MCP server needed at runtime |
+| `artefact_publish` | Freeze a finished HTML artefact as a **fully standalone widget stored inside the doc** (gallery "Custom widget builder") — no MCP server needed at runtime. Bundles npm imports automatically (esbuild), and refuses any artefact that would depend on the pod. `mode="app"` publishes a shell that lazily mounts the `app/…` rows as screens of a multi-screen application |
 
 ### Grist — Read
 | Tool | Description |
@@ -392,6 +398,54 @@ The widget renders artefacts in a sandboxed iframe with an auto-injected **Grist
 
 ---
 
+## Publishing — standalone widgets
+
+`artefact_publish` freezes an artefact into the document itself, in the section
+options of a gallery widget. **The published widget does not depend on this server
+at runtime**: it survives the pod being stopped and travels with the document
+(copies, exports).
+
+That promise is *verified*, not merely stated. Publication is refused when the
+code references the pod — `/ai-proxy`, `/llm-proxy`, `/webhook-receive`, or the
+pod's own URL — because such a widget would die with the server. Use
+`grist_view_create` instead for artefacts meant to stay served by the pod.
+
+**npm imports are bundled automatically.** An artefact doing
+`import { render } from 'preact'` cannot run in a browser as-is — it would render
+blank. On publish, the server resolves the imports with esbuild (a static Go
+binary in the image, no Node) and inlines everything. Packages are fetched from
+the npm registry on demand and cached. Transitive dependencies are resolved by
+retrying on esbuild's own "Could not resolve" errors, which converges without
+reimplementing npm.
+
+JSX works inside a `html` artefact — the type check applies to `Artefacts.Type`,
+not to the content.
+
+**External CDNs still work** in a published widget (measured: a `<script src>`
+pointing at jsDelivr does execute). They are reported, not blocked: the widget
+then depends on that CDN at runtime and breaks if it becomes unreachable.
+Bundling is therefore a robustness choice, not a technical necessity.
+
+### `mode="app"` — a multi-screen application in one widget
+
+Rows named `app/Accueil`, `app/Detail`… become **screens**. Publishing with
+`mode="app"` installs a small shell that lists them, mounts one on demand, and
+gives each screen `app.navigate()`, `app.emit()` / `app.on()`, `app.setState()`
+plus the Grist API relayed over postMessage.
+
+Two properties make this worth it. Section metadata stays tiny — Grist downloads
+all `_grist_*` tables in full on every document open, so a monolithic artefact
+costs that weight to everyone, every time. And screens are fetched **one SQL query
+at a time**: a screen nobody visits is never downloaded.
+
+Measured on a three-screen application against a monolithic artefact of comparable
+content: 6.5 KB of section metadata instead of 755 KB, 237 bytes transferred at
+open, and an unvisited screen never fetched.
+
+Editing a screen needs no republication — change the row, reload the page.
+
+---
+
 ## Authentication model
 
 ```
@@ -439,13 +493,16 @@ The server architecture supports multiple users: per-user sessions (`uid:{grist_
 ### Experimental / incomplete
 - **Plan persistence**: plans live in-memory (session), not in Grist. Server restart = plan lost. We intend to store plans in a Grist table.
 - **Webhook receiver** (`/webhook-receive/{docId}`): works in production with a public URL, but not usable on localhost without a tunnel (ngrok, etc.)
-- **DSFR auto-injection**: the French government design system (Système de Design de l'État) is injected inline into all artefacts. This is specific to our use case at Cerema — you may want to replace it with your own CSS framework.
+- **DSFR**: the French government design system (Système de Design de l'État) is *not* auto-injected — artefacts that want it declare the two jsDelivr `<link>` tags themselves. Prompts steer generation towards it; adapt them to your own design system if you fork this.
 
 ### Known limitations
-- Single file architecture (`grist_coder.py`, ~5300 lines) — intentional for deployment simplicity, but makes contribution harder
+- Single file architecture (`grist_coder.py`, ~8200 lines) — intentional for deployment simplicity, but makes contribution harder
 - In-memory sessions — no horizontal scaling, no persistence across restarts
 - The widget is vanilla JS (~2000 lines) — no framework, no build step, which keeps it simple but limits maintainability
 - `canvas_exec` and `/run` execute arbitrary Python — this is a feature for trusted environments, a risk for public ones
+- **A published widget still depends on the gallery builder** (`@berhalak/custom-widget-builder`, served from GitHub Pages). "No dependency on the MCP server" is exact; "no dependency at all" is not. Bundling removes the library CDN, not that one.
+- **Instances behind a WAF may refuse JSX source on server-side writes.** On `grist.numerique.gouv.fr`, a payload containing bare HTML tags (the JSX signature) is answered 403 — escaping `<`/`>` does not help, the WAF normalises JSON escapes. Writes fall back to the browser automatically when a widget is open; otherwise write the source with `h(...)` / `React.createElement`, which bundles just as well.
+- **`canvas_screenshot` needs an open widget** by nature — the iframe captures itself. It is the only tool `session_open` cannot serve.
 
 ---
 
@@ -453,7 +510,7 @@ The server architecture supports multiple users: per-user sessions (`uid:{grist_
 
 ```
 gristcoder_mcp/
-├── grist_coder.py       # MCP server (single file, ~5300 lines)
+├── grist_coder.py       # MCP server (single file, ~8200 lines)
 ├── widget.html           # Grist custom widget (IDE + preview + wizard)
 ├── requirements.txt      # Python dependencies
 ├── Dockerfile            # Container image
