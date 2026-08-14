@@ -527,6 +527,11 @@ _screenshot_waiters: dict[str, asyncio.Future] = {}
 # qui les execute via grist.docApi.applyUserActions (bypass WAF + privileges owner)
 # puis acquitte sur POST /apply-result/{token}.
 _apply_waiters: dict[str, asyncio.Future] = {}
+# Diagnostic de rendu : l'artefact remonte ses erreurs et l'etat de son rendu
+# (POST /art-diag/{token}). canvas_write l'attend brievement pour que l'agent
+# apprenne dans la MEME reponse si le code qu'il vient d'ecrire s'execute.
+_diag_waiters: dict[str, asyncio.Future] = {}
+_dernier_diag: dict[str, dict] = {}
 _client_capabilities: dict[str, dict] = {}   # uid_key -> capabilities déclarées par le client MCP
 _mcp_client_sids: dict[str, str] = {}        # uid_key -> sid SSE du client MCP (Claude Desktop)
 _display_sids: set[str] = set()              # sids des widgets en display mode (?a=...) — pas de replay wizard
@@ -651,6 +656,62 @@ async def _ecrire_donnees(uid_key, ctx, table_id, records, *, mode="upsert"):
               " canvas_write (la sauvegarde transite alors par le navigateur), ou ecrire"
               " la source en h(...) / React.createElement plutot qu'en JSX — elle se"
               " bundle aussi bien a la publication.")
+
+
+async def _attendre_diag(uid_key, ctx, *, timeout=3.0) -> dict | None:
+    """Attend le diagnostic de rendu de l'artefact qu'on vient d'ecrire.
+
+    Court par construction : on ne bloque pas l'agent pour un confort. Sans widget
+    ouvert, on ne tente rien — le rendu n'a simplement pas lieu."""
+    if not _has_live_widget(uid_key, ctx.token):
+        return None
+    loop = asyncio.get_event_loop()
+    fut = loop.create_future()
+    ancien = _diag_waiters.pop(ctx.token, None)
+    if ancien and not ancien.done():
+        ancien.cancel()
+    _diag_waiters[ctx.token] = fut
+    try:
+        return await asyncio.wait_for(fut, timeout=timeout)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        return None
+    finally:
+        if _diag_waiters.get(ctx.token) is fut:
+            _diag_waiters.pop(ctx.token, None)
+
+
+def _lire_diag(diag: dict) -> dict | None:
+    """Traduit le diagnostic brut en verdict actionnable, ou None si tout va bien."""
+    if not diag:
+        return None
+    erreurs = diag.get("erreurs") or []
+    rejets = diag.get("rejets") or []
+    cerr = diag.get("console_error") or []
+    ress = diag.get("ressources") or []
+    rendu = diag.get("rendu") or {}
+    out, quoi = {}, []
+    if erreurs:
+        out["erreurs"] = erreurs[:5]
+        quoi.append(f"{len(erreurs)} exception(s)")
+    if rejets:
+        out["rejets_de_promesse"] = rejets[:5]; quoi.append(f"{len(rejets)} rejet(s)")
+    if cerr:
+        out["console_error"] = cerr[:5]; quoi.append(f"{len(cerr)} console.error")
+    if ress:
+        out["ressources_non_chargees"] = ress[:5]
+        quoi.append(f"{len(ress)} ressource(s) non chargee(s)")
+    # Le cas sans exception : le script echoue en amont, le markup s'affiche, rien d'autre.
+    if rendu.get("vide"):
+        out["rendu_vide"] = True
+        quoi.append("rendu vide")
+    if not quoi:
+        return None
+    out["resume"] = "Artefact en echec au rendu : " + ", ".join(quoi) + "."
+    out["_next"] = ("Corriger puis reecrire — le diagnostic revient a chaque canvas_write. "
+                    "Rendu vide sans exception : verifier les imports npm (non resolus en "
+                    "previsualisation, ils le seront a la publication) et les identifiants "
+                    "vises par getElementById.")
+    return out
 
 
 async def _apply_meta(uid_key, ctx, actions, *, timeout=20.0):
@@ -6020,6 +6081,12 @@ async def call_tool(uid_key, mcp_sid, name, args):
             _next = "canvas_screenshot pour valider, puis grist_view_create pour creer la page associee."
         sortie_w = {"ok": True, "sha": sha, "art_nom": art_nom, "art_type": art_type,
                     "art_id": art_id, "created": is_new, "_next": _next}
+        # Diagnostic du rendu declenche par cette ecriture. L'agent apprend dans la
+        # MEME reponse si son code s'execute — sans capture d'ecran ni intervention.
+        _diag = _lire_diag(await _attendre_diag(uid_key, ctx))
+        if _diag:
+            sortie_w["diagnostic"] = _diag
+            sortie_w["_next"] = _diag.pop("_next")
         # Un artefact qui importe des paquets npm rend BLANC en previsualisation :
         # le navigateur ne resout pas les imports. Il sera bundle a la publication.
         # On le dit ici plutot que de laisser un canvas vide inexplique.
@@ -8035,6 +8102,24 @@ async def apply_result(token: str, request: Request):
         fut.set_result(body or {})
         return {"ok": True}
     return {"ok": False, "error": "Pas de waiter actif pour ce token."}
+
+
+@app.post("/art-diag/{token}")
+async def art_diag(token: str, request: Request):
+    """Diagnostic de rendu remonte par un artefact (capteur injecte dans son iframe).
+
+    Le capteur envoie plusieurs fois : a chaque erreur, puis apres mesure du rendu.
+    On garde le dernier etat, cumulatif cote artefact, et on debloque canvas_write
+    des que la mesure de rendu est arrivee — c'est elle qui clot l'observation."""
+    body, err = await _read_json(request, default={})
+    if err: return err
+    diag = (body or {}).get("diag") or {}
+    _dernier_diag[token] = {"artefact": (body or {}).get("artefact"), **diag}
+    if diag.get("rendu") is not None:
+        fut = _diag_waiters.pop(token, None)
+        if fut and not fut.done():
+            fut.set_result(_dernier_diag[token])
+    return {"ok": True}
 
 
 @app.post("/wizard/{token}")
