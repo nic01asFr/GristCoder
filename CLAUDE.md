@@ -75,6 +75,12 @@ Identity is based on `uid:{grist_user_id}` — stable numeric ID shared between 
 - **Meta tables** (`_grist_Views*`): `grist_apply` with `UpdateRecord`, never REST
   PATCH — and `customView` is a JSON **string**, not an object, or the document
   becomes unopenable.
+- **canvas_write returns render errors** when a widget is open on that document —
+  exceptions with line numbers, failed resources, and whether anything was rendered
+  at all. Read them before declaring success; `session_info` returns the last one.
+- **After deploying a change to `widget.html`, a real page reload is required.**
+  The widget reconnects and re-registers by itself after a pod restart, which looks
+  like it picked up the new code — it did not.
 - **Session routing is per call**: pass `token=` to every tool when several documents
   are open. `session_select` only pins a default for one connection.
 
