@@ -415,6 +415,44 @@ const GRIST_BRIDGE_SCRIPT =
   "})();";
 
 // ── APP RUNTIME SCRIPT (injecte dans les iframes) ──────────────────────────
+// ── CAPTEUR DE DIAGNOSTIC ────────────────────────────────────────────────────
+// Injecte dans CHAQUE artefact rendu. Sans lui, un artefact qui echoue rend une
+// page blanche et l'agent qui l'a ecrit n'apprend rien : il faut un humain qui
+// ouvre la console. On remonte donc au parent les exceptions, les rejets de
+// promesse, les console.error, les ressources qui ne chargent pas — et l'etat du
+// rendu.
+//
+// Ce dernier point est le plus important : une erreur n'est pas necessaire pour
+// qu'un artefact soit casse. Un ecran qui monte son markup mais dont le script
+// echoue en amont n'emet AUCUNE exception — il affiche juste un titre et rien.
+// On mesure donc ce qui a ete rendu, pas seulement ce qui a plante.
+const DIAG_SCRIPT =
+  "(function(){" +
+  "var D={erreurs:[],rejets:[],console_error:[],ressources:[]};" +
+  "function envoi(){try{parent.postMessage({type:'art-diag',diag:D},'*');}catch(e){}}" +
+  "window.addEventListener('error',function(e){" +
+    "if(e.target&&e.target!==window&&(e.target.src||e.target.href)){" +
+      "D.ressources.push(String(e.target.src||e.target.href).slice(0,160));" +
+    "}else{D.erreurs.push({message:String(e.message||e.error||'erreur'),"+
+      "ligne:e.lineno||0,colonne:e.colno||0,"+
+      "pile:String((e.error&&e.error.stack)||'').split('\\n').slice(0,3).join(' | ').slice(0,300)});}" +
+    "envoi();},true);" +
+  "window.addEventListener('unhandledrejection',function(e){" +
+    "D.rejets.push(String((e.reason&&(e.reason.message||e.reason))||'rejet').slice(0,300));envoi();});" +
+  "var _ce=console.error;console.error=function(){" +
+    "try{D.console_error.push(Array.prototype.map.call(arguments,function(a){" +
+      "return (a&&a.message)?a.message:String(a);}).join(' ').slice(0,300));}catch(e){}" +
+    "envoi();return _ce.apply(console,arguments);};" +
+  "function mesure(){" +
+    "var b=document.body;" +
+    "D.rendu={elements:b?b.querySelectorAll('*').length:0," +
+             "texte:b?(b.innerText||'').trim().length:0," +
+             "canvas:b?b.querySelectorAll('canvas,svg').length:0};" +
+    "D.rendu.vide=(D.rendu.elements<3&&D.rendu.texte<3&&D.rendu.canvas===0);envoi();}" +
+  "if(document.readyState==='complete')setTimeout(mesure,350);" +
+  "else window.addEventListener('load',function(){setTimeout(mesure,350);});" +
+  "})();";
+
 const APP_RUNTIME_SCRIPT =
   "(function(){" +
   "var _s=Object.assign({},window.__APP_STATE__||{});var _ls={};" +
@@ -501,7 +539,10 @@ function prepareWidgetHTML(html, ctx) {
     return JSON.stringify(o).replace(/</g, '\\u003c').replace(/>/g, '\\u003e')
                             .replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
   };
-  var init = dsfrInject + bridgeTag + '<script>window.__APP_STATE__=' + jsonForScript(stateClean) +
+  // Le capteur EN PREMIER : il doit etre en place avant le pont et avant le code
+  // de l'artefact, sinon une erreur survenue pendant leur initialisation echappe.
+  var diagTag = '<' + 'script>' + DIAG_SCRIPT + '<' + '/script>';
+  var init = diagTag + dsfrInject + bridgeTag + '<script>window.__APP_STATE__=' + jsonForScript(stateClean) +
     ';window.__APP_ROUTE__=' + jsonForScript(ctx.route || '/') + ';' + APP_RUNTIME_SCRIPT + '<' + '/script>';
   return html.includes('</head>') ? html.replace('</head>', init + '</head>') : init + html;
 }
@@ -633,6 +674,18 @@ window.addEventListener('message', async function(e) {
   }
   if (m.type === 'app-setState') Object.assign(_sharedState, m.state);
   if (m.type === 'app-notification') showToast(m.msg, m.notifType||'info');
+
+  // Diagnostic de rendu remonte par l'artefact -> serveur, pour que l'agent qui a
+  // ecrit le code sache immediatement s'il s'execute. Envoye tel quel : c'est le
+  // serveur qui decide quoi en faire (canvas_write l'attend brievement).
+  if (m.type === 'art-diag' && _token) {
+    try {
+      fetch(BASE + '/art-diag/' + encodeURIComponent(_token), {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ artefact: (_currentArt && _currentArt.Nom) || null, diag: m.diag })
+      });
+    } catch (_) {}
+  }
 
   // ── Python console ─────────────────────────────────────────────────────────
   if (m.type === 'python-run' && _currentArt && _currentArt.Type === 'python') {
