@@ -398,6 +398,48 @@ The widget renders artefacts in a sandboxed iframe with an auto-injected **Grist
 
 ---
 
+## Render diagnostics — the correction loop
+
+An artefact that fails renders a blank page, and the agent that just wrote it
+learns nothing. Without feedback it either declares success on broken code, or
+needs a human to open the console.
+
+A probe is injected into every rendered artefact — **before** the Grist bridge and
+before the artefact's own code, so initialisation errors are caught too. It
+reports back exceptions (message, line, column, first stack frames), unhandled
+promise rejections, `console.error`, resources that failed to load, and **the
+state of the render**: element count, text length, canvas/svg presence.
+
+That last one matters most, and it is not obvious. An error is not required for an
+artefact to be broken: a screen whose script fails early shows its markup and
+nothing else, without throwing anything. A headless render would report "page
+loaded, zero errors". Measuring what was *rendered*, not just what *crashed*,
+catches it.
+
+`canvas_write` waits briefly for the result and returns it in the same response:
+
+```json
+{
+  "ok": true, "sha": "4d9f44f7",
+  "diagnostic": {
+    "erreurs": [{"message": "Uncaught ReferenceError: calculerTotal is not defined",
+                 "ligne": 8, "colonne": 13, "pile": "..."}],
+    "resume": "Artefact en echec au rendu : 1 exception(s)."
+  },
+  "_next": "Corriger puis reecrire — le diagnostic revient a chaque canvas_write."
+}
+```
+
+The agent fixes and rewrites; the diagnostic disappears. No screenshot, no console,
+no human in the loop.
+
+Two limits. It needs **a widget open on that document** — nothing renders without a
+browser, so there is nothing to observe. And it covers the **initial render**: an
+error triggered by a later click is captured but no longer awaited — read it back
+with `session_info`, which returns the last diagnostic.
+
+---
+
 ## Publishing — standalone widgets
 
 `artefact_publish` freezes an artefact into the document itself, in the section
@@ -485,6 +527,7 @@ Both paths resolve to the same `uid:{userId}` identity. Sessions are shared betw
 The server architecture supports multiple users: per-user sessions (`uid:{grist_user_id}`), isolated SSE streams (events filtered server-side), and per-user Grist API credentials. However, it has only been tested in single-user local deployments. Multi-user and remote deployments are untested and would require additional hardening (HTTPS reverse proxy, rate limiting, `canvas_exec` sandboxing).
 
 ### Beta — functional but needs work
+- **Render diagnostics**: exceptions, rejections and failed resources come back reliably. The "rendered nothing without throwing" heuristic is cruder — it flags a body with almost no elements and no text, which can produce a false positive on a deliberately minimal artefact.
 - **Wizard system**: multi-card overlay works, but UI polish is lacking. Transitions between phases can feel abrupt. The `data-import` card type is useful but fragile with malformed API responses.
 - **Chat integration**: `chat_reply` and `wait_for_chat` work, but there's no message persistence — refreshing the widget loses chat history.
 - **Sub-agents**: `subagent_call` works when the MCP client supports `sampling/createMessage` (Claude Desktop). Fallback mode (for Claude Code and other clients) works but the LLM must manually adopt the sub-agent role, which is less reliable.
