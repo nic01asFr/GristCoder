@@ -658,11 +658,13 @@ async def _ecrire_donnees(uid_key, ctx, table_id, records, *, mode="upsert"):
               " bundle aussi bien a la publication.")
 
 
-async def _attendre_diag(uid_key, ctx, *, timeout=3.0) -> dict | None:
+async def _attendre_diag(uid_key, ctx, *, timeout=6.0) -> dict | None:
     """Attend le diagnostic de rendu de l'artefact qu'on vient d'ecrire.
 
-    Court par construction : on ne bloque pas l'agent pour un confort. Sans widget
-    ouvert, on ne tente rien — le rendu n'a simplement pas lieu."""
+    La fenetre couvre la sauvegarde Grist QUI PRECEDE le rendu (applyUserActions,
+    aller-retour reseau) puis le chargement de l'iframe. Trop courte, on rate la
+    mesure de rendu — celle qui detecte l'artefact vide sans exception. Ce qui
+    arrive apres reste lisible par session_info : rien n'est perdu."""
     if not _has_live_widget(uid_key, ctx.token):
         return None
     loop = asyncio.get_event_loop()
@@ -5970,6 +5972,13 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 info["hint"] = f"Lire grist-coder://context/{ctx.token} pour snapshot complet"
             except Exception:
                 info["artefacts_count"] = 0
+        # Dernier diagnostic de rendu : recuperable meme s'il est arrive apres la
+        # fenetre d'attente de canvas_write (sauvegarde Grist lente, gros artefact).
+        _d = _lire_diag(_dernier_diag.get(ctx.token))
+        if _d:
+            info["dernier_diagnostic"] = _d
+            info["_next"] = _d.pop("_next")
+
         # Cards actives dans le canvas (visibles par l'utilisateur)
         if ctx._active_wizard_cards:
             info["active_cards"] = [
