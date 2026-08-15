@@ -8511,6 +8511,7 @@ async def llm_proxy(path: str, request: Request):
     # Relaye l'auth + les headers utiles aux API LLM (Anthropic exige anthropic-version).
     # Liste blanche pour ne pas propager d'en-tetes navigateur non pertinents.
     headers = {}
+    cle_du_pod = False
     if auth := request.headers.get("authorization"):
         headers["Authorization"] = auth
     else:
@@ -8519,6 +8520,7 @@ async def llm_proxy(path: str, request: Request):
         srv_key = await _resolve_llm_key()
         if srv_key:
             headers["Authorization"] = f"Bearer {srv_key}"
+            cle_du_pod = True
     for h in ("anthropic-version", "anthropic-beta", "openai-organization", "x-api-key"):
         v = request.headers.get(h)
         if v:
@@ -8531,6 +8533,16 @@ async def llm_proxy(path: str, request: Request):
                 body = await request.body()
                 headers["Content-Type"] = "application/json"
                 resp = await client.post(target_url, content=body, headers=headers)
+        # La passerelle LLM du datalab est adossee a la session OIDC : ses cles
+        # vieillissent. Une cle adoptee au demarrage peut donc mourir en cours de
+        # vie du pod, et le cache la servirait jusqu'au prochain redemarrage. Sur
+        # un refus d'authentification, on oublie ce qu'on croyait savoir : l'appel
+        # suivant refait la recherche et pourra reprendre une cle fraiche.
+        if cle_du_pod and resp.status_code in (401, 403):
+            _llm_key_cache["key"] = None
+            _llm_key_cache["loaded"] = False
+            print(f"[llm] cle du pod refusee ({resp.status_code}) — cache oublie,"
+                  f" nouvelle recherche au prochain appel", file=sys.stderr)
         return Response(
             content=resp.content, status_code=resp.status_code,
             headers={
