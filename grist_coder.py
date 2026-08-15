@@ -573,6 +573,13 @@ def _push(uid_key, event):
     for sid, q in _queues.items():
         if _sid_uid.get(sid) != uid_key:
             continue  # Router uniquement vers les SSE de ce user (pas de pollution cross-user)
+        # Isolation par DOCUMENT. Un event wizard porte le token de sa session : sans
+        # ce filtre, la card s'affichait dans tous les widgets du compte, et la reponse
+        # pouvait partir du mauvais — le waiter attendait alors 300 s. Meme classe de
+        # probleme que l'isolation des ecritures, restee ouverte cote wizard.
+        _tok = event.get('token')
+        if _tok and _sid_token.get(sid) and _sid_token[sid] != _tok:
+            continue
         if is_wizard_event and sid in _display_sids:
             continue  # Ne pas envoyer les events wizard aux widgets en display mode
         try:
@@ -6299,16 +6306,41 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 step.setdefault("type", "info")
                 step["content"] = f"Erreur génération {source} : {e}"
         step_type = step.get("type", "info")
-        interactive = step_type in ("choice", "form", "confirm", "input", "preview", "data-import") or (
-            step_type == "info" and (
-                step.get("actions") or step.get("choices") or
-                step.get("fields") or step.get("input")
-            )
+        # SOURCE DE VERITE UNIQUE du caractere bloquant. Le widget avait sa propre
+        # regle (_wzIsBlocking) et les deux divergeaient sur trois cas : info avec
+        # choices/fields/input (le serveur attendait, le widget ne rendait pas de quoi
+        # repondre), progress avec actions (le widget bloquait, le serveur non), et
+        # preview sans interaction. Chaque divergence = un gel de 300 s ou un clic
+        # dans le vide. On decide ici, et on transmet la decision dans l'etape.
+        a_de_quoi_repondre = bool(step.get('actions') or step.get('choices')
+                                  or step.get('fields') or step.get('input'))
+        interactive = step_type in ('choice', 'form', 'confirm', 'input', 'data-import') or (
+            step_type in ('info', 'plan', 'progress', 'preview') and a_de_quoi_repondre
         )
+        # Un preview sans action est un simple affichage — c'est ce que dit sa propre
+        # documentation, et c'est ce que produit canvas_wizard(source=...), qui n'ajoute
+        # aucune action : il bloquait jusqu'ici sans aucun moyen de repondre.
         is_async = bool(step.get("async"))
         timeout  = float(step.get("timeout", 300))
         default  = step.get("default")  # valeur par défaut si timeout
         step_id  = step.get("id") or uuid.uuid4().hex[:8]
+        # Ne JAMAIS bloquer sans destinataire : sans widget ouvert sur CE document,
+        # personne ne peut repondre et l'appel gelait 300 s en silence.
+        if interactive and not is_async and not _has_live_widget(uid_key, ctx.token):
+            return {'error': ('Aucun widget Coder ouvert sur ce document : personne ne '
+                              'pourrait repondre a cette card.'),
+                    '_next': ('Ouvrir le widget Coder dans Grist puis relancer, ou utiliser '
+                              'une card non interactive (info/progress sans actions), qui '
+                              "s'affiche sans attendre de reponse.")}
+
+        # Un id deja actif ecraserait l'Event de la card en cours : celle-ci ne serait
+        # jamais debloquee, et le nettoyage de la nouvelle supprimerait l'ancienne.
+        if step_id in ctx._wizard_events:
+            return {'error': f"Une card '{step_id}' est deja en attente de reponse.",
+                    '_next': 'Utiliser un id different, ou canvas_wizard_close(card_id) avant.'}
+
+        step = dict(step)
+        step['_blocking'] = bool(interactive and not is_async)
         ev = {"type": "wizard_step", "token": ctx.token, "step": step}
         ctx._active_wizard_cards[step_id] = {**ev, "_is_async": is_async}
         _push(uid_key, ev)
@@ -6343,6 +6375,9 @@ async def call_tool(uid_key, mcp_sid, name, args):
             ctx._wizard_events.pop(step_id, None)
             ctx._active_wizard_cards.pop(step_id, None)
             ctx._async_wizard_responses.pop(step_id, None)
+            # Sans ca, la card restait affichee apres expiration : l'utilisateur
+            # repondait dans le vide et le LLM ne voyait jamais sa reponse.
+            _push(uid_key, {'type': 'wizard_close', 'card_id': step_id, 'token': ctx.token})
 
     if name == "canvas_wizard_close":
         card_id = args.get("card_id")
