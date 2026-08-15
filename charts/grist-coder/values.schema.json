@@ -64,8 +64,8 @@
       "properties": {
         "autoFromDatalab": {
           "type": "boolean",
-          "title": "Recuperer la cle depuis le datalab SSPCloud",
-          "description": "Lit automatiquement la config AI Assistant du datalab (necessite le service lance avec le role Kubernetes 'edit'). Sinon, renseigner la cle ci-dessous.",
+          "title": "Reprendre la cle du profil Onyxia",
+          "description": "Si la cle n'est pas fournie ci-dessous, le pod la cherche dans les services deja lances depuis l'interface Onyxia, qui portent la cle du profil AI Assistant (necessite le role Kubernetes 'edit'). Utile pour une installation en ligne de commande, ou le placeholder Onyxia n'est pas resolu.",
           "default": true
         },
         "baseUrl": {
@@ -76,14 +76,18 @@
         "model": {
           "type": "string",
           "title": "Modele",
-          "default": "gemma3-27b-it"
+          "description": "Le catalogue SSPCloud change. Verifier avec GET {baseUrl}/v1/models : un modele disparu ne produit qu'un 'Model not found' qui ne le designe pas. Testes bons pour le tool-calling : qwen3-6-35b-moe, qwen3-cursor, gemma4-26b-moe.",
+          "default": "qwen3-6-35b-moe"
         },
         "apiKey": {
           "type": "string",
-          "title": "Cle API LLM (repli)",
-          "description": "Laisser vide si recuperation auto depuis le datalab.",
+          "title": "Cle API LLM",
+          "description": "Prerempli avec la cle du profil Onyxia (onglet AI Assistant) quand le service est lance depuis l'interface. Laisser vide pour la reprise automatique.",
           "default": "",
-          "render": "password"
+          "render": "password",
+          "x-onyxia": {
+            "overwriteDefaultWith": "{{userProfileValues.aiAssistant.apiKey}}"
+          }
         }
       }
     },

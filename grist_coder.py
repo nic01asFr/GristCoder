@@ -90,14 +90,67 @@ def _owner_gate(uid_key) -> bool:
 _llm_key_cache: dict = {"key": None, "loaded": False}
 
 
+_CLES_LLM_ENV = ("OPENAI_API_KEY", "LLM_API_KEY")
+_BASES_LLM_ENV = ("OPENAI_BASE_URL", "LLM_BASE_URL", "OPENAI_API_BASE")
+
+
+def _hote(url: str) -> str:
+    try:
+        return (urllib.parse.urlsplit(url).hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def _cle_dans_conteneurs(spec: dict, hote_attendu: str):
+    """Cherche une cle LLM dans les variables d un pod template.
+
+    On n accepte QUE des valeurs litterales : une valueFrom pointe un Secret que
+    nous n avons pas forcement le droit de lire, et surtout la cle du profil
+    Onyxia arrive justement en clair dans le manifeste.
+
+    Quand le workload declare aussi sa base LLM, on exige qu elle designe le meme
+    hote que le notre : sans ce filtre on ramasserait la cle OpenAI d un tout
+    autre service et on la presenterait a SSPCloud, qui repondrait 401.
+    """
+    for c in (spec.get("containers") or []):
+        env = {e.get("name"): e.get("value") for e in (c.get("env") or [])
+               if isinstance(e, dict) and e.get("value")}
+        cle = next((env[n] for n in _CLES_LLM_ENV if env.get(n)), None)
+        if not cle:
+            continue
+        base = next((env[n] for n in _BASES_LLM_ENV if env.get(n)), "")
+        if hote_attendu and base and _hote(base) != hote_attendu:
+            continue
+        return cle
+    return None
+
+
 async def _datalab_llm_key():
-    """Lit la cle LLM depuis le Secret AI Assistant du datalab SSPCloud (pattern qgis-sspcloud).
-    Le pod doit tourner avec kubernetes.role: edit (lecture des Secrets du namespace).
-    Retourne la cle ou None. Resultat mis en cache (une seule lecture par process)."""
+    """Recupere la cle LLM du profil Onyxia, telle qu elle existe REELLEMENT.
+
+    Onyxia demande la cle une fois dans le profil utilisateur (onglet AI Assistant)
+    et resout le placeholder {{userProfileValues.aiAssistant.apiKey}} AU LANCEMENT,
+    depuis son interface. Deux consequences :
+
+      - un service installe en `helm install` ne recoit rien : personne n a resolu
+        le placeholder. C est notre cas, et celui de qgis-hub, dont le pod tourne
+        avec un LLM_API_KEY vide bien que son chart porte le placeholder ;
+      - le service lance depuis l interface, lui, se retrouve avec la cle ECRITE
+        EN CLAIR dans son manifeste (env OPENAI_API_KEY).
+
+    On lit donc la ou elle est : les workloads du namespace de l utilisateur — son
+    propre espace, avec les droits que le chart accorde deja (ClusterRole edit).
+    Le Secret *secretassistant reste teste en second : d autres versions d Onyxia
+    le creent, celle-ci ne depose que -secrettoken/-secretgit/-secrets3/-secretvault.
+
+    Retourne la cle ou None. Une seule lecture par process (cache best-effort).
+    """
     if _llm_key_cache["loaded"]:
         return _llm_key_cache["key"]
     _llm_key_cache["loaded"] = True
     sa_dir = "/var/run/secrets/kubernetes.io/serviceaccount"
+    moi = os.getenv("HOSTNAME", "")
+    hote_attendu = _hote(LLM_BASE_URL_DEFAULT)
     try:
         with open(f"{sa_dir}/token", encoding="utf-8") as f:
             sa_token = f.read().strip()
@@ -105,14 +158,40 @@ async def _datalab_llm_key():
         if not ns:
             with open(f"{sa_dir}/namespace", encoding="utf-8") as f:
                 ns = f.read().strip()
+        entetes = {"Authorization": f"Bearer {sa_token}"}
+        racine = f"https://kubernetes.default.svc"
         async with httpx.AsyncClient(verify=f"{sa_dir}/ca.crt", timeout=10.0) as c:
-            r = await c.get(
-                f"https://kubernetes.default.svc/api/v1/namespaces/{ns}/secrets",
-                headers={"Authorization": f"Bearer {sa_token}"})
-            r.raise_for_status()
-            for item in r.json().get("items", []):
-                name = (item.get("metadata", {}) or {}).get("name", "")
-                if name.endswith("secretassistant"):
+            for genre in ("deployments", "statefulsets"):
+                try:
+                    r = await c.get(f"{racine}/apis/apps/v1/namespaces/{ns}/{genre}",
+                                    headers=entetes)
+                    r.raise_for_status()
+                except Exception as e:
+                    print(f"[llm] {genre} illisibles : {type(e).__name__}", file=sys.stderr)
+                    continue
+                for item in r.json().get("items", []):
+                    nom = (item.get("metadata", {}) or {}).get("name", "")
+                    # Ne pas se relire soi-meme : on y trouverait au mieux le vide
+                    # qu on cherche justement a combler.
+                    if nom and moi.startswith(nom):
+                        continue
+                    spec = (((item.get("spec") or {}).get("template") or {})
+                            .get("spec") or {})
+                    cle = _cle_dans_conteneurs(spec, hote_attendu)
+                    if cle:
+                        _llm_key_cache["key"] = cle
+                        print(f"[llm] cle du profil Onyxia reprise depuis {genre[:-1]}"
+                              f" '{nom}'", file=sys.stderr)
+                        return cle
+
+            # Repli : versions d Onyxia qui materialisent le profil en Secret.
+            try:
+                r = await c.get(f"{racine}/api/v1/namespaces/{ns}/secrets", headers=entetes)
+                r.raise_for_status()
+                for item in r.json().get("items", []):
+                    name = (item.get("metadata", {}) or {}).get("name", "")
+                    if not name.endswith("secretassistant"):
+                        continue
                     raw = (item.get("data", {}) or {}).get("config.json")
                     if not raw:
                         continue
@@ -120,8 +199,11 @@ async def _datalab_llm_key():
                     key = (cfg.get("api_keys", {}) or {}).get("OPENAI_API_KEY", "")
                     if key:
                         _llm_key_cache["key"] = key
-                        print(f"[llm] cle recuperee du datalab (Secret {name})", file=sys.stderr)
+                        print(f"[llm] cle recuperee du Secret {name}", file=sys.stderr)
                         return key
+            except Exception as e:
+                print(f"[llm] secrets illisibles : {type(e).__name__}", file=sys.stderr)
+        print("[llm] aucune cle de profil trouvee dans le namespace", file=sys.stderr)
     except Exception as e:
         print(f"[llm] lecture datalab echouee : {type(e).__name__}: {e}", file=sys.stderr)
     return None
