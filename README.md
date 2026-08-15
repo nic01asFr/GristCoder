@@ -520,7 +520,7 @@ supply it. When it can't, it says so plainly instead of refusing generically.
 
 ```bash
 LLM_BASE_URL=https://llm.lab.sspcloud.fr/api
-LLM_MODEL=gemma3-27b-it
+LLM_MODEL=qwen3-6-35b-moe
 LLM_PROXY_ALLOWED_HOSTS=llm.lab.sspcloud.fr,albert.api.etalab.gouv.fr
 LLM_API_KEY=...                 # or LLM_AUTO_FROM_DATALAB=true on SSPCloud
 ```
@@ -533,13 +533,34 @@ without it there is no Secret to read, and `/llm-config` correctly answers
 The **Arreter** button in the panel stops a running agent and hands the render pane
 back to the server driver.
 
+### Choosing the model — check the catalogue first
+
+The SSPCloud catalogue changes under you. `gemma3-27b-it`, the previous default here,
+no longer exists, and the only symptom is a flat `{"detail":"Model not found"}` from
+the proxy — nothing points at the model name. List what is actually served before
+configuring anything:
+
+```bash
+curl -s "$LLM_BASE_URL/v1/models" -H "Authorization: Bearer $LLM_API_KEY" | jq '.data[].id'
+```
+
+Measured on `llm.lab.sspcloud.fr` (emits a structured `tool_calls`, **and** uses the
+tool result on the next turn instead of calling it again):
+
+| Model | Tool-calling |
+|-------|--------------|
+| `qwen3-6-35b-moe` | works — current default |
+| `qwen3-cursor` | works — leans towards code |
+| `gemma4-26b-moe` | works |
+| `qwen3-vl` | unusable: server started without `--enable-auto-tool-choice` |
+
 ### Honest status
 
-The plumbing is verified: the modules load, the panel prefills from the pod, the proxy
-injects the pod key when the browser sends none, and the agent can be stopped. What is
-**not** verified is the part that decides everything else — whether native tool-calling
-works reliably with `gemma3-27b-it`. That test needs a working LLM key on the pod, and
-until it has run, treat the harness as unproven rather than merely rough.
+Native tool-calling is verified end to end against this service: the model emits the
+call, the loop feeds the result back, and the model answers from it. What has not been
+exercised is a long build — many turns, many tools, an actual application produced
+from a blank document. Treat the harness as working-but-young: the mechanism holds,
+its stamina is unmeasured.
 
 ---
 
@@ -589,7 +610,7 @@ The server architecture supports multiple users: per-user sessions (`uid:{grist_
 - **Contextual tool filtering**: the phase-based tool disclosure works correctly, but the phase transitions could be smoother — sometimes the LLM needs a tool that's not yet available in the current phase.
 
 ### Experimental / incomplete
-- **Browser-side agent (harness)**: loads, configures itself from the pod, and stops cleanly — but its tool-calling has not been exercised against a real model yet. See the harness section above.
+- **Browser-side agent (harness)**: loads, configures itself from the pod, calls tools and consumes their results, and stops cleanly. What is untested is stamina — a full multi-turn build from a blank document. See the harness section above.
 - **Plan persistence**: plans live in-memory (session), not in Grist. Server restart = plan lost. We intend to store plans in a Grist table.
 - **Webhook receiver** (`/webhook-receive/{docId}`): works in production with a public URL, but not usable on localhost without a tunnel (ngrok, etc.)
 - **DSFR**: the French government design system (Système de Design de l'État) is *not* auto-injected — artefacts that want it declare the two jsDelivr `<link>` tags themselves. Prompts steer generation towards it; adapt them to your own design system if you fork this.
