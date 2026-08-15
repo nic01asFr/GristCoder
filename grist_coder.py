@@ -968,6 +968,14 @@ def _gh(ctx):
     return h
 
 def _aq(ctx):
+    # Une cle API porte plus de droits qu'un accessToken de widget, et ne perime
+    # pas avec la session du navigateur. Envoyer les deux laissait Grist se fier
+    # au token de requete et refuser en 401 des qu'il avait expire, alors que la
+    # cle en en-tete etait valide. Vecu : document devenu inouvrable dans le
+    # navigateur, donc plus de token frais, donc TOUS les outils en 401 — y
+    # compris ceux qui auraient permis de le reparer.
+    if ctx.grist_key:
+        return {}
     return {"auth": ctx.access_token} if ctx.access_token else {}
 
 def _base(ctx): return f"{ctx.site_url}/api/docs/{ctx.doc_id}"
