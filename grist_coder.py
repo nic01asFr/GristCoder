@@ -1180,6 +1180,10 @@ async def grist_apply(ctx, actions: list) -> dict:
     chaque lot beneficie du retry. Les timeouts ne sont PAS rejoues (evite le double
     insert add-only). NB : le decoupage sacrifie l'atomicite (import partiel possible)
     au profit du passage sous le WAF -- c'est le bon compromis pour les imports massifs."""
+    # Les champs meta attendus en chaine JSON sont serialises ici, une fois pour
+    # tous les appelants (voir _normalise_json_meta : un objet passe brut devient
+    # du repr Python cote sandbox et rend le document inouvrable).
+    actions = _normalise_json_meta(actions)
     # Session navigateur (pas de cle API) : reecrire les UserActions restreintes.
     if not ctx.grist_key:
         actions = _rewrite_browser_actions(actions)
@@ -5825,6 +5829,67 @@ def _validate_formula(formula, colset):
             "corrected_formula": fixed if fixed != formula else None,
             "issues": issues}
 
+# Champs des tables meta que Grist stocke en CHAINE contenant du JSON. Y passer
+# un objet le fait traverser le sandbox Python, qui le serialise en repr() :
+# {'choices': ['a']} avec des apostrophes simples. Grist l'accepte sans broncher,
+# puis le frontend fait JSON.parse dessus, echoue en position 1, et le document
+# devient INOUVRABLE — « Cannot read properties of undefined (reading 'all') ».
+# Vecu : un agent a brique un document en creant une colonne Choice.
+_CHAMPS_JSON_META = ("widgetOptions", "options", "layoutSpec", "customView",
+                     "filter", "rules")
+
+
+def _ressemble_repr_python(v) -> bool:
+    """Chaine qui ouvre comme du JSON mais n'en est pas (repr Python typique)."""
+    if not isinstance(v, str):
+        return False
+    s = v.strip()
+    if not s or s[0] not in "{[":
+        return False
+    try:
+        json.loads(s)
+        return False
+    except Exception:
+        return True
+
+
+def _normalise_json_meta(valeur):
+    """Serialise en JSON les champs meta que Grist attend en chaine.
+
+    Un agent qui ecrit widgetOptions={"choices": [...]} pense bien faire : c'est
+    la forme naturelle en JSON-RPC. On la traduit ici plutot que d'exiger de lui
+    une double serialisation qu'il oubliera. Une chaine deja fournie passe telle
+    quelle — nos propres appels, qui font deja json.dumps, ne sont pas touches.
+    """
+    if isinstance(valeur, dict):
+        return {k: (json.dumps(v, ensure_ascii=False)
+                    if k in _CHAMPS_JSON_META and isinstance(v, (dict, list))
+                    else _normalise_json_meta(v))
+                for k, v in valeur.items()}
+    if isinstance(valeur, list):
+        return [_normalise_json_meta(v) for v in valeur]
+    return valeur
+
+
+def _erreurs_json_meta(valeur, chemin="") -> list:
+    """Signale les champs meta fournis en chaine NON-JSON (repr Python)."""
+    erreurs = []
+    if isinstance(valeur, dict):
+        for k, v in valeur.items():
+            if k in _CHAMPS_JSON_META and _ressemble_repr_python(v):
+                erreurs.append(
+                    f"{chemin or 'action'}: '{k}' n'est pas du JSON valide "
+                    f"({v.strip()[:60]}...). Grist le stocke tel quel et le frontend "
+                    f"echoue a le relire : le document devient inouvrable. Fournir un "
+                    f"objet (il sera serialise) ou une chaine JSON avec des guillemets doubles.")
+            else:
+                erreurs += _erreurs_json_meta(v, f"{chemin}.{k}" if chemin else k)
+    elif isinstance(valeur, list):
+        for i, v in enumerate(valeur):
+            erreurs += _erreurs_json_meta(v, f"{chemin}[{i}]")
+    return erreurs
+
+
 def _validate_actions(actions, existing_tables, existing_cols=None):
     """Pre-vol : detecte les erreurs frequentes AVANT grist_apply.
 
@@ -5838,6 +5903,7 @@ def _validate_actions(actions, existing_tables, existing_cols=None):
     errors, warnings = [], []
     if not isinstance(actions, list):
         return {"ok": False, "errors": ["'actions' doit etre une liste de UserActions"], "warnings": []}
+    errors += _erreurs_json_meta(actions)
     known = set(existing_tables)  # tables qui existeront au moment de chaque action du batch
     existing_cols = existing_cols or {}
     table_cols = {t: set(cs) for t, cs in existing_cols.items()}  # colset connu par table
