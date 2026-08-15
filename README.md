@@ -525,10 +525,39 @@ LLM_PROXY_ALLOWED_HOSTS=llm.lab.sspcloud.fr,albert.api.etalab.gouv.fr
 LLM_API_KEY=...                 # or LLM_AUTO_FROM_DATALAB=true on SSPCloud
 ```
 
-`LLM_AUTO_FROM_DATALAB` reads the key from the datalab's AI-assistant Secret
-(`*secretassistant` in the namespace). It needs that service to have been launched —
-without it there is no Secret to read, and `/llm-config` correctly answers
-`cle_serveur: false`.
+### Reusing the Onyxia profile key
+
+Onyxia asks for the LLM key once, in the user profile (*AI Assistant* tab), and resolves
+`{{userProfileValues.aiAssistant.apiKey}}` **at launch time, from its own UI**. The chart
+declares that placeholder, so launching this service from the Onyxia catalogue fills the
+key field by itself.
+
+Installing with `helm install` gets none of that — nobody resolved the placeholder. This
+is worth stating because the failure is silent: the pod simply has no key. The chart alone
+is not enough, and a chart carrying the placeholder proves nothing about a CLI-installed
+release.
+
+So `LLM_AUTO_FROM_DATALAB=true` recovers the key where it actually sits. A service launched
+from the Onyxia UI ends up with the key **written literally into its manifest**
+(`OPENAI_API_KEY`), and the pod reads the workloads of its own namespace — the user's own
+space, with the `edit` ClusterRole the chart already grants. Guards, each earned:
+
+- our own workload is skipped — it holds the emptiness we are trying to fill;
+- only literal values count, never a `valueFrom` pointing at a Secret we may not read;
+- when the source declares its own LLM base, it must match ours — otherwise another
+  service's OpenAI key gets offered to SSPCloud, which answers 401;
+- **candidates are validated** against `{base}/v1/models` before being adopted, newest
+  workload first. A key frozen in a manifest ages: the one sitting in a four-day-old
+  StatefulSet was already answering *"session has expired"*. Announcing `cle_serveur: true`
+  for a dead key is worse than admitting there is none — the widget stops asking for a key
+  and the failure surfaces later, somewhere unrelated.
+
+The log distinguishes *nothing found* from *found but refused*, and names the source: the
+remedy differs. Relaunching any service from the Onyxia UI refreshes the key frozen in its
+manifest; otherwise set `LLM_API_KEY` on the pod.
+
+Some Onyxia versions instead materialise the profile as a `*secretassistant` Secret; that
+path is still tried, second, and validated the same way.
 
 The **Arreter** button in the panel stops a running agent and hands the render pane
 back to the server driver.
