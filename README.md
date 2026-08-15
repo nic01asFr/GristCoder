@@ -556,6 +556,21 @@ The log distinguishes *nothing found* from *found but refused*, and names the so
 remedy differs. Relaunching any service from the Onyxia UI refreshes the key frozen in its
 manifest; otherwise set `LLM_API_KEY` on the pod.
 
+**These keys age by design.** The region declares its AI gateway as OIDC-backed
+(`oauthProvider: oidc`, a token-exchange bridge) and states that credentials are injected
+*at each service start*. A rejected key therefore means "stale", not "wrong". So a key the
+pod adopted at boot can die mid-life, and a cache would keep serving it until the next
+restart — on a `401`/`403` from the gateway the pod forgets what it thought it knew and
+searches again on the following call.
+
+**Only the key is taken from the profile.** The profile also shows a *Default model* and an
+*API base URL*, but the profile's default model is not guaranteed to exist on the gateway
+the key opens: measured here, the profile said `devstral-2:123b` while the gateway answered
+`Model not found` and served `qwen3-*` / `gemma4-*` instead. Wiring the model through would
+reintroduce exactly the opaque failure this section exists to prevent. The corresponding
+Onyxia placeholder paths are also unverified — a placeholder pointing at a path that does
+not exist resolves to empty, which would silently wipe a working base URL at launch.
+
 Some Onyxia versions instead materialise the profile as a `*secretassistant` Secret; that
 path is still tried, second, and validated the same way.
 
