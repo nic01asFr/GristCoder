@@ -31,6 +31,37 @@
 
   var LS_KEY = 'gcHarnessLLM';
 
+  // Ce que le pod sait deja (GET /llm-config) : base, modele, et surtout s il
+  // dispose lui-meme d une cle. Tant que ce n etait pas demande, chaque poste
+  // devait ressaisir une cle qui finissait dans le localStorage du navigateur.
+  var SERVEUR = { base: '', modele: '', cle_serveur: false, charge: false };
+
+  function _origine() {
+    return (typeof window !== 'undefined' && window.BASE)
+      || (typeof window !== 'undefined' && window.location && window.location.origin)
+      || '';
+  }
+
+  function chargerServeur() {
+    if (SERVEUR.charge) return Promise.resolve(SERVEUR);
+    var h = {};
+    if (typeof window !== 'undefined' && window.__APP_TOKEN__) {
+      h['X-App-Token'] = window.__APP_TOKEN__;
+    }
+    return fetch(_origine() + '/llm-config', { headers: h })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        SERVEUR.charge = true;
+        if (d) {
+          SERVEUR.base = d.base || '';
+          SERVEUR.modele = d.modele || '';
+          SERVEUR.cle_serveur = !!d.cle_serveur;
+        }
+        return SERVEUR;
+      })
+      .catch(function () { SERVEUR.charge = true; return SERVEUR; });
+  }
+
   var DEFAULTS = {
     provider: 'openai',   // 'openai' (Albert / etalab) | 'anthropic' (experimental)
     baseUrl: '',          // hote+prefixe passe en X-LLM-Base (sans le path adaptateur)
@@ -131,6 +162,10 @@
     } catch (e) {
       // localStorage corrompu / indisponible -> defaults, ne pas crasher
     }
+    // Ce que l utilisateur n a pas saisi, le pod le sait souvent : base et modele
+    // sont deja dans son environnement. Les redemander n apportait rien.
+    if (!cfg.baseUrl && SERVEUR.base) cfg.baseUrl = SERVEUR.base;
+    if (!cfg.model && SERVEUR.modele) cfg.model = SERVEUR.modele;
     return cfg;
   }
 
@@ -171,8 +206,12 @@
     if (!cfg.model || !String(cfg.model).trim()) {
       return { ok: false, field: 'model', error: 'Modele requis.' };
     }
-    if (!cfg.apiKey || !String(cfg.apiKey).trim()) {
-      return { ok: false, field: 'apiKey', error: 'Cle LLM requise (saisie, jamais stockee en dur).' };
+    // Cle exigee seulement si le pod n en a pas. Quand il en a une, la laisser
+    // vide est le bon choix : elle reste cote serveur au lieu de dormir dans le
+    // localStorage de chaque navigateur.
+    if ((!cfg.apiKey || !String(cfg.apiKey).trim()) && !SERVEUR.cle_serveur) {
+      return { ok: false, field: 'apiKey',
+               error: 'Cle LLM requise : ce pod n en fournit pas (ni LLM_API_KEY, ni Secret datalab).' };
     }
     var mt = parseInt(cfg.maxTokens, 10);
     if (!isFinite(mt) || mt <= 0) {
@@ -264,6 +303,7 @@
       + '<div id="hcMsg" class="hc-msg" hidden></div>'
       + '<div class="hc-actions">'
       + '  <button type="button" id="hcSave">Enregistrer</button>'
+      + '  <button type="button" id="hcStop" hidden>Arreter</button>'
       + '  <button type="button" id="hcLaunch">Lancer</button>'
       + '</div>';
   }
@@ -339,11 +379,45 @@
     return cfg;
   }
 
+  // Etat des boutons Lancer / Arreter selon que l agent tourne ou non.
+  function _refletAgent() {
+    var lch = _q('hcLaunch');
+    var stp = _q('hcStop');
+    var actif = !!(window.HarnessAgent
+                   && typeof window.HarnessAgent.isStarted === 'function'
+                   && window.HarnessAgent.isStarted());
+    if (lch) lch.hidden = actif;
+    if (stp) stp.hidden = !actif;
+  }
+
+  function stopAgent() {
+    if (window.HarnessAgent && typeof window.HarnessAgent.stop === 'function') {
+      try { window.HarnessAgent.stop(); } catch (e) { showError(e); }
+    }
+    if (window.HarnessRender && typeof window.HarnessRender.setDriver === 'function') {
+      window.HarnessRender.setDriver('sse');   // le rendu repasse au pilote serveur
+    }
+    _refletAgent();
+    _msg('ok', 'Agent arrete. Le rendu repasse au pilote serveur (SSE).');
+  }
+
+  function _refletServeur() {
+    var k = _q('hcKey');
+    if (!k) return;
+    k.placeholder = SERVEUR.cle_serveur
+      ? 'Fournie par le pod — laisser vide'
+      : 'Cle LLM (ce pod n en fournit pas)';
+  }
+
   function openPanel() {
     _ensureStyle();
     var panel = _q('hcPanel');
     if (!panel) return;
     _fillForm(get());
+    // Le panneau s ouvre tout de suite ; ce que le pod sait arrive juste apres et
+    // vient completer les champs restes vides.
+    chargerServeur().then(function () { _fillForm(get()); _refletServeur(); });
+    _refletAgent();
     panel.hidden = false;
     var btn = _q('hcLLMBtn');
     if (btn) btn.classList.add('on');
@@ -440,6 +514,7 @@
       if (sp) sp.style.display = 'block';
 
       var ret = window.HarnessAgent.start(cfg);
+      _refletAgent();
       closePanel();
       // start() peut etre async : capte un rejet eventuel pour l'afficher.
       if (ret && typeof ret.then === 'function') {
@@ -457,6 +532,11 @@
     var lch = _q('hcLaunch');
     if (save) save.addEventListener('click', function () { _saveFromForm(); });
     if (lch) lch.addEventListener('click', function () { launch(); });
+
+    // HarnessAgent.stop() existait mais rien ne l appelait : un agent lance ne
+    // pouvait plus etre interrompu autrement qu en rechargeant la page.
+    var stp = _q('hcStop');
+    if (stp) stp.addEventListener('click', function () { stopAgent(); });
 
     var presets = panel.querySelectorAll('.hc-preset');
     for (var i = 0; i < presets.length; i++) {
@@ -515,6 +595,9 @@
 
   function _autoInject() {
     injectUI();
+    // Interroger le pod des le depart : le bouton « Lancer » doit pouvoir marcher
+    // sans passer par le panneau quand la configuration vient deja du serveur.
+    chargerServeur().then(_refletServeur);
     // Si #navbar n'existait pas encore, retente brievement (widget async).
     if (!_injected) {
       var tries = 0;
@@ -540,12 +623,15 @@
     get: get,
     set: set,
     validate: validate,
+    serveur: SERVEUR,
+    chargerServeur: chargerServeur,
     applyPreset: applyPreset,
     injectUI: injectUI,
     openPanel: openPanel,
     closePanel: closePanel,
     togglePanel: togglePanel,
     launch: launch,
+    stopAgent: stopAgent,
     showError: showError
   };
 })();
