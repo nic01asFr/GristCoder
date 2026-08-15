@@ -333,6 +333,9 @@ cp .mcp.json.example .mcp.json
 | `DELETE` | `/mcp` | Close an SSE session |
 | `POST` | `/register` | Widget auto-registration |
 | `POST` | `/wizard/{token}` | Wizard form response from widget |
+| `GET` | `/llm-config` | What the pod knows about the LLM (base, model, *whether* it holds a key — never the key itself) |
+| `POST` | `/llm-proxy/{path}` | CORS-free relay to an allowlisted LLM host; injects the pod key when the browser sends none |
+| `GET` | `/harness/{file}` | Browser-side agent modules |
 | `POST` | `/webhook-receive/{docId}` | Grist webhook receiver → SSE fan-out (production, public URL required) |
 | `GET` | `/` | Serves the custom widget |
 | `GET` | `/health` | Health check |
@@ -488,6 +491,58 @@ Editing a screen needs no republication — change the row, reload the page.
 
 ---
 
+## Browser-side agent (harness)
+
+Everything above assumes an external MCP client — Claude Desktop, Claude Code — driving
+the tools. The harness is the other way round: an LLM agent that runs **inside the widget**,
+in the browser, and calls the same MCP tools over the same `/mcp` endpoint. The document
+then builds itself from Grist alone, with no desktop client in the loop.
+
+Seven vanilla-JS modules under `harness/`, served by the pod at `/harness/{file}`:
+
+| Module | Role |
+|--------|------|
+| `boot.js` | Load order and wiring into the widget |
+| `config-panel.js` | LLM configuration + the robot button in the navbar |
+| `llm-client.js` | Transport to `/llm-proxy`, timeouts, scrubbed errors |
+| `agent-loop.js` | The turn loop: prompt → tool calls → observations |
+| `mcp-tools.js` | Tool discovery and invocation against `/mcp` |
+| `agent-memory.js` | Conversation memory across turns |
+| `render-bridge.js` | Who drives the render pane — `local` (agent) or `sse` (server) |
+
+### Configuration comes from the pod
+
+The LLM key used to live in the browser's `localStorage`, retyped on every machine.
+It doesn't have to: the pod usually holds one already, and knows which base and model
+to use. `GET /llm-config` reports that — **never the key itself**, only whether one
+exists. The panel prefills base and model, and stops demanding a key when the pod can
+supply it. When it can't, it says so plainly instead of refusing generically.
+
+```bash
+LLM_BASE_URL=https://llm.lab.sspcloud.fr/api
+LLM_MODEL=gemma3-27b-it
+LLM_PROXY_ALLOWED_HOSTS=llm.lab.sspcloud.fr,albert.api.etalab.gouv.fr
+LLM_API_KEY=...                 # or LLM_AUTO_FROM_DATALAB=true on SSPCloud
+```
+
+`LLM_AUTO_FROM_DATALAB` reads the key from the datalab's AI-assistant Secret
+(`*secretassistant` in the namespace). It needs that service to have been launched —
+without it there is no Secret to read, and `/llm-config` correctly answers
+`cle_serveur: false`.
+
+The **Arreter** button in the panel stops a running agent and hands the render pane
+back to the server driver.
+
+### Honest status
+
+The plumbing is verified: the modules load, the panel prefills from the pod, the proxy
+injects the pod key when the browser sends none, and the agent can be stopped. What is
+**not** verified is the part that decides everything else — whether native tool-calling
+works reliably with `gemma3-27b-it`. That test needs a working LLM key on the pod, and
+until it has run, treat the harness as unproven rather than merely rough.
+
+---
+
 ## Authentication model
 
 ```
@@ -534,6 +589,7 @@ The server architecture supports multiple users: per-user sessions (`uid:{grist_
 - **Contextual tool filtering**: the phase-based tool disclosure works correctly, but the phase transitions could be smoother — sometimes the LLM needs a tool that's not yet available in the current phase.
 
 ### Experimental / incomplete
+- **Browser-side agent (harness)**: loads, configures itself from the pod, and stops cleanly — but its tool-calling has not been exercised against a real model yet. See the harness section above.
 - **Plan persistence**: plans live in-memory (session), not in Grist. Server restart = plan lost. We intend to store plans in a Grist table.
 - **Webhook receiver** (`/webhook-receive/{docId}`): works in production with a public URL, but not usable on localhost without a tunnel (ngrok, etc.)
 - **DSFR**: the French government design system (Système de Design de l'État) is *not* auto-injected — artefacts that want it declare the two jsDelivr `<link>` tags themselves. Prompts steer generation towards it; adapt them to your own design system if you fork this.

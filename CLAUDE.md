@@ -4,7 +4,7 @@ Instructions for AI assistants (Claude Code, Cursor, etc.) working on this codeb
 
 ## What this project is
 
-A single-file Python MCP server (`grist_coder.py`) + custom widget (`widget.html`) that turns a Grist document into a complete business application via AI.
+A single-file Python MCP server (`grist_coder.py`) + custom widget (`widget.html`) that turns a Grist document into a complete business application via AI. Alongside them, `harness/` (7 vanilla-JS modules, ~2700 lines) runs an LLM agent inside the widget so the document can build itself without an external MCP client. Its LLM config comes from the pod via `GET /llm-config` — the key stays server-side.
 
 **4-layer app architecture** (all buildable from this MCP):
 1. **Data** — Grist tables + column formulas
