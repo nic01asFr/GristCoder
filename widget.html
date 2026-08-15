@@ -1881,13 +1881,20 @@ function _wzBuildCard(id, step) {
     + '</div>';
 }
 
+// Le caractere bloquant est decide par le SERVEUR et transmis dans step._blocking.
+// Le widget avait sa propre regle, et les deux divergeaient : une card ou le serveur
+// attendait sans que le widget rende de quoi repondre gelait l'agent 300 s ; l'inverse
+// faisait cliquer dans le vide. Une seule autorite, plus de divergence possible.
+// Le repli local ne sert qu'aux cards produites par le harness navigateur, qui ne
+// passent pas par le serveur.
 function _wzIsBlocking(step) {
   if (!step) return false;
+  if (typeof step._blocking === 'boolean') return step._blocking;
   var t = step.type;
-  return t==='choice'||t==='form'||t==='confirm'||t==='input'||t==='preview'||t==='data-import'
-    ||(t==='plan'&&((step.actions||[]).length>0||!!step.input))
-    ||(t==='info'&&(step.actions||[]).length>0)
-    ||(t==='progress'&&((step.actions||[]).length>0||!!step.input));
+  var repondable = (step.actions||[]).length > 0 || !!step.input
+                   || (step.choices||[]).length > 0 || (step.fields||[]).length > 0;
+  return t==='choice'||t==='form'||t==='confirm'||t==='input'||t==='data-import'
+    || ((t==='info'||t==='plan'||t==='progress'||t==='preview') && repondable);
 }
 
 // ── WIZARD ────────────────────────────────────────────────────────────────────
