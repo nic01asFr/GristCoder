@@ -1135,7 +1135,14 @@ async function tool(name, args) {
                           params:{name:name,arguments:args||{}}})});
   var d = await r.json();
   if (d.error) throw new Error(d.error.message);
-  return JSON.parse(d.result.content[0].text);
+  // Tout ne revient pas en JSON : un contenu non-texte (image de canvas_screenshot)
+  // ou une reponse en texte simple faisait echouer JSON.parse sur un resultat
+  // pourtant valide, avec une SyntaxError qui ne disait rien de la cause.
+  var c = (d.result && d.result.content) || [];
+  var t = c.length ? c[0] : null;
+  if (!t) return null;
+  if (typeof t.text !== 'string') return t;      // image, ressource, etc.
+  try { return JSON.parse(t.text); } catch (_) { return t.text; }
 }
 
 async function loadCanvasIntoEditor() {
@@ -1857,6 +1864,10 @@ function _updateChatVisibility() {
   // Show chat if any wizard cards are active or chat has history
   var hasMsgs = document.getElementById('chatMsgs').children.length > 0;
   cs.classList.toggle('active', _wzOrder.length > 0 || hasMsgs);
+  // Pendant une card bloquante, le LLM attend la reponse du formulaire, pas un
+  // message de chat : la saisie restait active et un message tape la partait
+  // dans le vide pendant que l'agent continuait d'attendre.
+  _wzUpdateChatState();
 }
 
 function _wzHasChatHistory() {
@@ -1869,11 +1880,18 @@ function _wzBuildCard(id, step) {
   var isPlan   = (step.type === 'plan');
   var cls = 'wz-card'+(blocking?' card-blocking':'')+(isPlan?' card-plan':'');
   var esc = _wzEsc(id);
+  var jid = _wzJs(id);   // meme id, mais destine a un litteral JS dans un onclick
+  // Toute card se ferme, y compris bloquante. Une card bloquante sans sortie
+  // laissait l'agent attendre 300 s des qu'on ne voulait pas y repondre ; la
+  // fermer envoie desormais une annulation, que l'agent recoit et peut traiter.
+  var fermeture = blocking
+    ? '<button class="wz-hd-x" onclick="wzCancel(\''+jid+'\')" title="Annuler">✕</button>'
+    : '<button class="wz-hd-x" onclick="closeWizardCard(\''+jid+'\')" title="Fermer">✕</button>';
   var hd  = '<div class="wz-hd"><div class="wz-hd-l">'
     + '<div class="wz-title">'+_wzEsc(step.title||'')+'</div>'
     + (step.subtitle?'<div class="wz-subtitle">'+_wzEsc(step.subtitle)+'</div>':'')
     + '</div>'
-    + (!blocking?'<button class="wz-hd-x" onclick="closeWizardCard(\''+esc+'\')" title="Fermer">✕</button>':'')
+    + fermeture
     + '</div>';
   return '<div class="'+cls+'" data-wid="'+esc+'">'
     + hd
@@ -1974,7 +1992,7 @@ function _wzPlan(step, cid) {
   if ((step.sections||[]).length) {
     h += '<div class="ctx-sections">';
     step.sections.forEach(function(s){
-      var st = s.style||'default';
+      var st = _wzEsc(s.style||'default');  // interpole dans un attribut class
       h += '<div class="ctx-section '+st+'">';
       if (s.label) h += '<span class="ctx-label">'+_wzEsc(s.label)+'</span>';
       h += '<span class="ctx-content">'+(ICONS[st]||'')+_wzEsc(s.content||'')+'</span></div>';
@@ -2006,7 +2024,10 @@ function _wzChoice(step, cid) {
   (step.choices||[]).forEach(function(c) {
     var choiceId = _wzEsc(c.id||'');
     html += '<button class="wz-choice" data-cid="'+choiceId+'" onclick="wzChoiceClick(this,\''+cid+'\','+multi+')">';
-    if (c.icon) html += '<span class="wz-choice-icon">'+c.icon+'</span>';
+    // Echappe : le contenu d'etape vient du LLM, et le widget porte le token de
+    // session et l'accessToken Grist. Une icone laissee brute permettait d'executer
+    // du script dans cette origine. Un emoji passe l'echappement sans dommage.
+    if (c.icon) html += '<span class="wz-choice-icon">'+_wzEsc(c.icon)+'</span>';
     html += '<span class="wz-choice-label">'+_wzEsc(c.label||c.id)+'</span>';
     if (c.desc) html += '<span class="wz-choice-desc">'+_wzEsc(c.desc)+'</span>';
     html += '</button>';
@@ -2121,7 +2142,7 @@ function _wzProgress(step) {
   if ((step.sections||[]).length) {
     html += '<div class="ctx-sections">';
     step.sections.forEach(function(s) {
-      var st = s.style||'default';
+      var st = _wzEsc(s.style||'default');  // interpole dans un attribut class
       html += '<div class="ctx-section '+st+'">';
       if (s.label) html += '<span class="ctx-label">'+_wzEsc(s.label)+'</span>';
       html += '<span class="ctx-content">'+_wzEsc(s.content||'')+'</span></div>';
@@ -2130,7 +2151,7 @@ function _wzProgress(step) {
   }
   html += '<div class="wz-progress">';
   (step.steps||[]).forEach(function(s) {
-    var st = s.status||'pending';
+    var st = _wzEsc(s.status||'pending');  // interpole dans un attribut class
     html += '<div class="wz-progress-step '+st+'">'
       + '<span class="wz-step-icon">'+(icons[st]||'·')+'</span>'
       + '<span>'+_wzEsc(s.label)+'</span></div>';
@@ -2160,7 +2181,7 @@ function _wzInfo(step, cid) {
   if ((step.sections||[]).length) {
     html += '<div class="ctx-sections">';
     step.sections.forEach(function(s){
-      var st = s.style||'default';
+      var st = _wzEsc(s.style||'default');  // interpole dans un attribut class
       html += '<div class="ctx-section '+st+'">';
       if (s.label) html += '<span class="ctx-label">'+_wzEsc(s.label)+'</span>';
       html += '<span class="ctx-content">'+(ICONS[st]||'')+_wzEsc(s.content||'')+'</span></div>';
@@ -2508,15 +2529,27 @@ function _wzUpdateChatState() {
   inp.placeholder = hasBlocking ? 'Réponds au formulaire ci-dessus…' : 'Message…';
 }
 
+// Refus explicite d'une card bloquante : l'agent recoit status:'cancelled' et un
+// indice lui disant de ne pas reposer la meme question, au lieu d'attendre le delai.
+async function wzCancel(cid) {
+  await wzPost(cid, 'cancel', {cancelled: true});
+}
+
 async function wzPost(cid, type, values) {
-  closeWizardCard(cid);
+  // La card etait fermee AVANT l'envoi : si le POST echouait, la reponse etait
+  // perdue et l'utilisateur n'avait plus aucun moyen de repondre, pendant que
+  // l'agent attendait ses 300 s. On ne ferme qu'une fois la reponse acceptee.
   try {
-    await fetch(BASE+'/wizard/'+_token, {
+    var r = await fetch(BASE+'/wizard/'+_token, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({step_id: cid, type: type, values: values})
     });
-  } catch(e) { showToast('Erreur: '+e.message, 'error'); }
+    if (!r.ok) throw new Error('HTTP '+r.status);
+    closeWizardCard(cid);
+  } catch(e) {
+    showToast('Reponse non transmise ('+e.message+') — reessayez.', 'error');
+  }
 }
 </script>
 <!-- ── HARNESS AGENT LLM (navigateur) ─────────────────────────────────────────

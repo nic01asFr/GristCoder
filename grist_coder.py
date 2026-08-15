@@ -5311,6 +5311,15 @@ def _enrich_wizard_response(resp: dict, step_id: str, step_type: str, ctx) -> No
     plan        = ctx.project_plan
     status      = plan.get("status", "qualifying")
     values_str  = json.dumps(resp.get("values", {}), ensure_ascii=False)
+    # Une card bloquante n avait aucun moyen d etre refusee : l utilisateur qui ne
+    # voulait pas ou ne pouvait pas repondre laissait l agent attendre 300 s. Le
+    # widget peut desormais annuler ; l agent doit comprendre que c est un refus,
+    # pas une reponse vide.
+    if resp.get("type") == "cancel":
+        resp["status"] = "cancelled"
+        resp["hint"] = ("L utilisateur a ferme la card sans repondre. Ne pas la reposer "
+                        "telle quelle : reformuler, proposer un autre chemin, ou demander "
+                        "ce qui bloque.")
     resp["_ux_context"] = {
         "plan_status":          status,
         "active_cards":         list(ctx._active_wizard_cards.keys()),
