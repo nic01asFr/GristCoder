@@ -65,7 +65,12 @@ llm:
   autoFromDatalab: true
   # Endpoint LLM SSPCloud (OpenAI-compatible).
   baseUrl: "https://llm.lab.sspcloud.fr/api"
-  model: "gemma3-27b-it"
+  # Le catalogue SSPCloud change : gemma3-27b-it a disparu et le service repondait
+  # "Model not found" sans autre indice. Verifier avec GET {baseUrl}/v1/models.
+  # Teste bon pour le tool-calling (appel emis ET resultat exploite) :
+  # qwen3-6-35b-moe, qwen3-cursor, gemma4-26b-moe. qwen3-vl n a pas le tool choice
+  # automatique active cote serveur.
+  model: "qwen3-6-35b-moe"
   # Cle explicite (repli si autoFromDatalab echoue ou hors SSPCloud). Dans TON Secret.
   apiKey: ""
 

@@ -592,6 +592,11 @@
     _stopped = true;
     if (_activeController) { try { _activeController.abort(); } catch (_) {} }
     _busy = false;
+    // _stopped seul n'interrompait que le tour en cours : userTurn le remet a false
+    // et le message suivant relancait l'agent comme si de rien n'etait. Le bouton
+    // Arreter, lui, promet l'inverse de Lancer. On coupe donc pour de bon ; un
+    // nouveau Lancer refait start(), qui reseme le contexte.
+    _started = false;
   }
 
   function isBusy() { return _busy; }
