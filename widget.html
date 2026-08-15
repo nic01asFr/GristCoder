@@ -157,6 +157,8 @@ body{display:flex;flex-direction:column}
   font-size:1rem;padding:2px 4px;line-height:1;opacity:.35;flex-shrink:0;
   border-radius:4px;transition:opacity .12s,background .12s}
 .wz-hd-x:hover{opacity:1;background:rgba(0,0,0,.05)}
+/* Compteur de file : plusieurs cards bloquantes attendent leur tour. */
+.wz-file{margin-top:8px;text-align:center;font-size:.7rem;color:var(--text2);opacity:.8}
 .wz-body{padding:18px 16px;display:flex;flex-direction:column}
 .wz-inner{width:100%;max-width:520px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
 /* choice */
@@ -600,9 +602,28 @@ function _normalizeUserActions(actions) {
 }
 
 // ── GristBridgeParent ───────────────────────────────────────────────────────
+// Le pont relaie des actions privilegiees — applyUserActions, et surtout
+// getAccessToken — a qui lui ecrit. Les artefacts que nous hebergeons doivent y
+// acceder : c'est leur seule voie vers Grist. Mais rien d'autre. Un contrôle sur
+// l'origine ne conviendrait pas (nos iframes srcdoc/blob n'en ont pas de stable) ;
+// ce qui distingue vraiment un artefact a nous, c'est d'etre un cadre de CE
+// document. Une fenetre tierce detenant un handle (popup, opener) ne l'est pas.
+function _estNotreCadre(src) {
+  if (!src) return false;
+  var cadres = document.getElementsByTagName('iframe');
+  for (var i = 0; i < cadres.length; i++) {
+    try { if (cadres[i].contentWindow === src) return true; } catch (_) {}
+  }
+  return false;
+}
+
 window.addEventListener('message', async function(e) {
   var m = e.data; if (!m) return;
   if (m.type === 'grist-bridge') {
+    if (!_estNotreCadre(e.source)) {
+      console.warn('[bridge] message refuse : emetteur exterieur au widget');
+      return;
+    }
     var action = m.action, args = m.args||[], cid = m.callbackId, src = e.source;
     try {
       var result = null;
@@ -1788,14 +1809,7 @@ function showWizardCard(step, token) {
   if (_wzIsBlocking(step)) {
     // Blocking card → Zone 2 modal. Masquer le panneau bas tant que le modal
     // est ouvert (evite tout recouvrement du bouton submit).
-    var backdrop = document.getElementById('wizardBackdrop');
-    var modal = document.getElementById('wizardModal');
-    modal.innerHTML = _wzBuildCard(id, step);
-    // Activate mermaid iframes if present
-    modal.querySelectorAll('iframe[data-srcdoc-b64]').forEach(function(fr) {
-      try { fr.srcdoc = decodeURIComponent(escape(atob(fr.getAttribute('data-srcdoc-b64')))); } catch(e) {}
-    });
-    backdrop.style.display = 'flex';
+    _wzRenderModal();
     document.getElementById('statusPanel').style.display = 'none';
     _updateChatVisibility();
   } else {
@@ -1804,6 +1818,37 @@ function showWizardCard(step, token) {
     document.getElementById('statusPanel').style.display = 'block';
     _updateChatVisibility();
   }
+}
+
+// Le modal ne montre qu'UNE card bloquante a la fois — la plus ancienne. Deux
+// cards bloquantes simultanees s'ecrasaient dans le meme conteneur : la premiere
+// disparaissait de l'ecran tout en restant en attente cote serveur, donc son
+// appel gelait jusqu'au delai sans que personne puisse la voir. Les suivantes
+// patientent et prennent la place des qu'on a repondu a celle du dessus.
+function _wzRenderModal() {
+  var backdrop = document.getElementById('wizardBackdrop');
+  var modal = document.getElementById('wizardModal');
+  if (!backdrop || !modal) return;
+  var files = _wzOrder.filter(function(xid) {
+    var c = _wzCards[xid]; return c && _wzIsBlocking(c.step);
+  });
+  if (!files.length) {
+    backdrop.style.display = 'none';
+    modal.innerHTML = '';
+    return;
+  }
+  var id = files[0];
+  var html = _wzBuildCard(id, _wzCards[id].step);
+  if (files.length > 1) {
+    html += '<div class="wz-file">1 sur ' + files.length
+          + ' — les suivantes s\'afficheront apres celle-ci</div>';
+  }
+  modal.innerHTML = html;
+  // Activate mermaid iframes if present
+  modal.querySelectorAll('iframe[data-srcdoc-b64]').forEach(function(fr) {
+    try { fr.srcdoc = decodeURIComponent(escape(atob(fr.getAttribute('data-srcdoc-b64')))); } catch(e) {}
+  });
+  backdrop.style.display = 'flex';
 }
 
 function _rebuildStatusCards() {
@@ -1834,14 +1879,8 @@ function closeWizardCard(id) {
 function _wzRemove(id) {
   _wzOrder = _wzOrder.filter(function(x){return x!==id;});
   delete _wzCards[id];
-  // Close backdrop if no blocking cards remain
-  var hasBlocking = _wzOrder.some(function(xid) {
-    var c = _wzCards[xid]; return c && _wzIsBlocking(c.step);
-  });
-  if (!hasBlocking) {
-    document.getElementById('wizardBackdrop').style.display = 'none';
-    document.getElementById('wizardModal').innerHTML = '';
-  }
+  // Affiche la card bloquante suivante, ou ferme le modal s'il n'en reste plus.
+  _wzRenderModal();
   // _rebuildStatusCards restaure aussi le panneau bas masque pendant un modal bloquant
   _rebuildStatusCards();
   _updateChatVisibility();

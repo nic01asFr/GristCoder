@@ -126,9 +126,14 @@
     var url = _base() + "/llm-proxy/" + path;
     var headers = {
       "Content-Type": "application/json",
-      "X-LLM-Base": opts.baseUrl || "",
-      "Authorization": "Bearer " + (opts.apiKey || "")
+      "X-LLM-Base": opts.baseUrl || ""
     };
+    // Sans cle cote navigateur, on n envoie PAS d en-tete vide : le proxy sait
+    // alors injecter celle du pod. Un "Bearer " vide, lui, ecrasait ce repli et
+    // partait se faire refuser par l API.
+    if (opts.apiKey && String(opts.apiKey).trim()) {
+      headers["Authorization"] = "Bearer " + String(opts.apiKey).trim();
+    }
     // Garde du pod (deploiement Onyxia) : /llm-proxy exige X-App-Token quand active.
     if (typeof window !== "undefined" && window.__APP_TOKEN__) {
       headers["X-App-Token"] = window.__APP_TOKEN__;

@@ -8416,6 +8416,29 @@ async def llm_proxy(path: str, request: Request):
         return JSONResponse({"error": _scrub_secrets(str(e))}, status_code=502)
 
 
+@app.get("/llm-config")
+async def llm_config(request: Request):
+    """Ce que le pod sait deja du LLM, pour que le widget n ait pas a le redemander.
+
+    La cle LLM vivait dans le localStorage du navigateur, saisie a la main a chaque
+    poste. Le pod, lui, en a souvent une (env explicite ou Secret du datalab) et sait
+    deja quelle base et quel modele utiliser. Cet endpoint le dit — SANS jamais
+    renvoyer la cle elle-meme : seulement si elle existe, pour que le panneau cesse
+    de l exiger quand le pod peut s en charger.
+    """
+    if not _check_app_token(request):
+        return JSONResponse({"error": "Garde du pod : X-App-Token manquant ou invalide."},
+                            status_code=401)
+    cle = await _resolve_llm_key()
+    return {
+        "base": LLM_BASE_URL_DEFAULT,
+        "modele": LLM_MODEL_DEFAULT,
+        "cle_serveur": bool(cle),
+        "proxy_actif": bool(LLM_PROXY_ALLOWED_HOSTS),
+        "hotes_autorises": sorted(LLM_PROXY_ALLOWED_HOSTS),
+    }
+
+
 HARNESS_DIR = Path(__file__).parent / "harness"
 _HARNESS_MIME = {".js": "application/javascript", ".css": "text/css",
                  ".json": "application/json", ".map": "application/json"}
