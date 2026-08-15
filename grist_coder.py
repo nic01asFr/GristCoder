@@ -101,6 +101,29 @@ def _hote(url: str) -> str:
         return ""
 
 
+async def _cle_acceptee(cle: str) -> bool:
+    """La cle est-elle encore acceptee par le service LLM ?
+
+    Une cle reprise d un manifeste a ete figee au lancement de CE service-la, et
+    les cles SSPCloud tournent : celle du statefulset jupyter, posee il y a quatre
+    jours, se fait repondre « session has expired ». Adopter la premiere venue
+    revient donc a promettre une cle morte, et /llm-config annoncait fierement
+    cle_serveur: true pour un appel qui echouait ensuite. On verifie avant.
+
+    Sans base LLM connue, on ne peut rien verifier : on accorde le benefice du doute.
+    """
+    if not LLM_BASE_URL_DEFAULT:
+        return True
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as c:
+            r = await c.get(f"{LLM_BASE_URL_DEFAULT}/v1/models",
+                            headers={"Authorization": f"Bearer {cle}"})
+        return r.status_code < 400
+    except Exception:
+        # Service injoignable : ne pas ecarter une cle peut-etre bonne sur un alea reseau.
+        return True
+
+
 def _cle_dans_conteneurs(spec: dict, hote_attendu: str):
     """Cherche une cle LLM dans les variables d un pod template.
 
@@ -150,6 +173,7 @@ async def _datalab_llm_key():
     _llm_key_cache["loaded"] = True
     sa_dir = "/var/run/secrets/kubernetes.io/serviceaccount"
     moi = os.getenv("HOSTNAME", "")
+    rejetees: list[str] = []
     hote_attendu = _hote(LLM_BASE_URL_DEFAULT)
     try:
         with open(f"{sa_dir}/token", encoding="utf-8") as f:
@@ -159,7 +183,7 @@ async def _datalab_llm_key():
             with open(f"{sa_dir}/namespace", encoding="utf-8") as f:
                 ns = f.read().strip()
         entetes = {"Authorization": f"Bearer {sa_token}"}
-        racine = f"https://kubernetes.default.svc"
+        racine = "https://kubernetes.default.svc"
         async with httpx.AsyncClient(verify=f"{sa_dir}/ca.crt", timeout=10.0) as c:
             for genre in ("deployments", "statefulsets"):
                 try:
@@ -169,7 +193,12 @@ async def _datalab_llm_key():
                 except Exception as e:
                     print(f"[llm] {genre} illisibles : {type(e).__name__}", file=sys.stderr)
                     continue
-                for item in r.json().get("items", []):
+                items = r.json().get("items", [])
+                # Le plus recent d abord : une cle figee vieillit, et le dernier
+                # service lance porte la version la plus fraiche du profil.
+                items.sort(key=lambda it: (it.get("metadata", {}) or {})
+                           .get("creationTimestamp", ""), reverse=True)
+                for item in items:
                     nom = (item.get("metadata", {}) or {}).get("name", "")
                     # Ne pas se relire soi-meme : on y trouverait au mieux le vide
                     # qu on cherche justement a combler.
@@ -178,11 +207,15 @@ async def _datalab_llm_key():
                     spec = (((item.get("spec") or {}).get("template") or {})
                             .get("spec") or {})
                     cle = _cle_dans_conteneurs(spec, hote_attendu)
-                    if cle:
-                        _llm_key_cache["key"] = cle
-                        print(f"[llm] cle du profil Onyxia reprise depuis {genre[:-1]}"
-                              f" '{nom}'", file=sys.stderr)
-                        return cle
+                    if not cle:
+                        continue
+                    if not await _cle_acceptee(cle):
+                        rejetees.append(f"{genre[:-1]} '{nom}'")
+                        continue
+                    _llm_key_cache["key"] = cle
+                    print(f"[llm] cle du profil Onyxia reprise depuis {genre[:-1]}"
+                          f" '{nom}'", file=sys.stderr)
+                    return cle
 
             # Repli : versions d Onyxia qui materialisent le profil en Secret.
             try:
@@ -197,13 +230,24 @@ async def _datalab_llm_key():
                         continue
                     cfg = json.loads(base64.b64decode(raw).decode())
                     key = (cfg.get("api_keys", {}) or {}).get("OPENAI_API_KEY", "")
-                    if key:
-                        _llm_key_cache["key"] = key
-                        print(f"[llm] cle recuperee du Secret {name}", file=sys.stderr)
-                        return key
+                    if not key:
+                        continue
+                    if not await _cle_acceptee(key):   # meme exigence que pour les workloads
+                        rejetees.append(f"Secret '{name}'")
+                        continue
+                    _llm_key_cache["key"] = key
+                    print(f"[llm] cle recuperee du Secret {name}", file=sys.stderr)
+                    return key
             except Exception as e:
                 print(f"[llm] secrets illisibles : {type(e).__name__}", file=sys.stderr)
-        print("[llm] aucune cle de profil trouvee dans le namespace", file=sys.stderr)
+        if rejetees:
+            # Distinguer « rien trouve » de « trouve mais perime » : le remede
+            # n est pas le meme (relancer un service, ou poser LLM_API_KEY).
+            print(f"[llm] cle(s) trouvee(s) mais refusee(s) par le service : "
+                  f"{', '.join(rejetees)} — relancer un service depuis l interface "
+                  f"Onyxia rafraichit la cle figee dans son manifeste", file=sys.stderr)
+        else:
+            print("[llm] aucune cle de profil trouvee dans le namespace", file=sys.stderr)
     except Exception as e:
         print(f"[llm] lecture datalab echouee : {type(e).__name__}: {e}", file=sys.stderr)
     return None
