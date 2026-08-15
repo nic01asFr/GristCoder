@@ -1018,36 +1018,80 @@ def _waf_json(obj) -> str:
     ecrire en h(...) / createElement, qui se bundle aussi bien."""
     return json.dumps(obj).replace("<", "\\u003c").replace(">", "\\u003e")
 
+# Signatures d une erreur que Grist ne resoudra jamais toute seule. Grist repond
+# 500 aussi bien pour un alea d infrastructure que pour une action invalide : sans
+# le corps, les deux sont indiscernables, et l agent reessaie l impossible.
+_ERREUR_DETERMINISTE = ("does not exist", "n'existe pas", "already exists", "invalid",
+                        "unknown", "nonetype", "keyerror", "attributeerror", "typeerror",
+                        "cannot ", "not allowed", "no such", "sandbox")
+
+
+def _leve_si_erreur(r) -> None:
+    """raise_for_status, mais SANS jeter l explication de Grist.
+
+    httpx ne garde que « Server error '500 Internal Server Error' for url ... ».
+    Grist, lui, dit dans le corps ce qui ne va pas — table inexistante, colonne
+    invalide, erreur de sandbox. Sans ce detail, toutes les pannes se ressemblent :
+    un agent voit un 500 anonyme, croit a un alea, et reessaie une action qui ne
+    marchera jamais. Observe en vrai : 32 iterations brulees sur ce malentendu.
+    """
+    if r.status_code < 400:
+        return
+    detail = ""
+    try:
+        corps = r.text or ""
+    except Exception:
+        corps = ""
+    if corps:
+        try:
+            d = json.loads(corps)
+            detail = d.get("error") or d.get("detail") or d.get("message") or corps
+            if not isinstance(detail, str):
+                detail = json.dumps(detail, ensure_ascii=False)
+        except Exception:
+            detail = corps
+        detail = _scrub_secrets(str(detail)).strip().replace("\n", " ")[:400]
+    msg = (f"Grist a repondu {r.status_code}"
+           + (f" : {detail}" if detail else " sans detail"))
+    raise httpx.HTTPStatusError(msg, request=r.request, response=r)
+
+
+def _est_deterministe(e) -> bool:
+    """L erreur nomme-t-elle une cause que rejouer ne changera pas ?"""
+    txt = str(e).lower()
+    return any(s in txt for s in _ERREUR_DETERMINISTE)
+
+
 async def grist_get(ctx, path):
     async with _grist_client() as c:
         r = await c.get(f"{_base(ctx)}/{path}", headers=_gh(ctx), params=_aq(ctx))
-        r.raise_for_status(); return r.json()
+        _leve_si_erreur(r); return r.json()
 
 async def grist_post(ctx, path, body, *, no_token=False):
     async with _grist_client() as c:
         r = await c.post(f"{_base(ctx)}/{path}", headers=_gh(ctx),
                          params={} if no_token else _aq(ctx),
                          content=_waf_json(body))
-        r.raise_for_status(); return r.json()
+        _leve_si_erreur(r); return r.json()
 
 async def grist_patch(ctx, path, body, *, no_token=False):
     async with _grist_client() as c:
         r = await c.patch(f"{_base(ctx)}/{path}", headers=_gh(ctx),
                           params={} if no_token else _aq(ctx),
                           content=_waf_json(body))
-        r.raise_for_status(); return r.json()
+        _leve_si_erreur(r); return r.json()
 
 async def grist_put(ctx, path, body):
     async with _grist_client() as c:
         r = await c.put(f"{_base(ctx)}/{path}", headers=_gh(ctx), params=_aq(ctx),
                         content=_waf_json(body))
-        r.raise_for_status(); return r.json()
+        _leve_si_erreur(r); return r.json()
 
 async def grist_delete(ctx, path, *, no_token=False):
     async with _grist_client() as c:
         r = await c.delete(f"{_base(ctx)}/{path}", headers=_gh(ctx),
                            params={} if no_token else _aq(ctx))
-        r.raise_for_status()
+        _leve_si_erreur(r)
         return r.json() if r.content else {"ok": True}
 
 def _rewrite_browser_actions(actions):
@@ -1103,8 +1147,13 @@ async def _grist_apply_post(ctx, actions) -> dict:
             async with _grist_client() as c:
                 r = await c.post(f"{_base(ctx)}/apply", headers=_gh(ctx), params=_aq(ctx),
                                  content=body)
-                r.raise_for_status(); return r.json()
+                _leve_si_erreur(r); return r.json()
         except httpx.HTTPStatusError as e:
+            # Grist repond 500 aussi bien pour un alea WAF que pour une action
+            # invalide. Rejouer la seconde ne fait que perdre 2,4 s avant de
+            # rendre la meme erreur — et l agent, lui, rejouera encore.
+            if _est_deterministe(e):
+                raise
             if e.response is not None and e.response.status_code >= 500 and attempt < 2:
                 last = e
                 await asyncio.sleep(0.8 * (attempt + 1))  # backoff : 0.8s puis 1.6s
@@ -1166,7 +1215,7 @@ async def _fetch_builder_def(ctx) -> dict:
         base = f"{root.scheme}://{root.netloc}"
         async with _grist_client() as c:
             r = await c.get(f"{base}/api/widgets")
-            r.raise_for_status()
+            _leve_si_erreur(r)
             for w in r.json():
                 if w.get("widgetId") == _BUILDER_WIDGET_ID:
                     return w

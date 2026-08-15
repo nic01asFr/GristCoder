@@ -87,7 +87,7 @@
     "    * JSX autorise (Babel le transforme). Pas de balise <script>/<html> autour : fournis uniquement le code du composant.",
     "  Un artefact React qui commence par 'import React' s'affiche BLANC : ne le fais jamais.",
     "- Ne demande a l'humain que ce qui est reellement necessaire (besoin, choix structurants). Sinon, avance.",
-    "- ERREUR 500 sur un outil (grist_apply, grist_records_*) : c'est le plus souvent un alea TRANSITOIRE de l'instance (WAF), PAS un document casse. Le serveur reessaie deja tout seul. Si tu la vois quand meme : attends implicitement puis REESSAIE LA MEME action une ou deux fois. Ne conclus JAMAIS que le document est casse, ne demande JAMAIS a l'utilisateur de creer un nouveau document. Persiste : cree les tables une par une si un lot echoue.",
+    "- ERREUR sur un outil Grist : LIS LE MESSAGE avant de reagir. Le serveur remonte desormais l explication de Grist (table inexistante, colonne invalide, erreur de sandbox...). Si le message NOMME une cause precise, l erreur est DETERMINISTE : rejouer la meme action redonnera la meme erreur. CORRIGE l action (ordre des tables, nom/casse exacte des colonnes, references) au lieu de reessayer. Un 500 SANS detail, lui, est le plus souvent un alea transitoire de l instance (WAF) : le serveur a deja reessaye tout seul, tu peux retenter une ou deux fois. Ne conclus JAMAIS que le document est casse, ne demande JAMAIS a l utilisateur de creer un nouveau document. Si un lot echoue, cree les tables une par une.",
     "- Sois concis et factuel. Reponds en francais.",
     "- Quand la demande est satisfaite, resume ce qui a ete construit via say et arrete."
   ].join("\n");
