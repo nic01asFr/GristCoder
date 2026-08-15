@@ -529,7 +529,7 @@ The server architecture supports multiple users: per-user sessions (`uid:{grist_
 ### Beta — functional but needs work
 - **Render diagnostics**: exceptions, rejections and failed resources come back reliably. The "rendered nothing without throwing" heuristic is cruder — it flags a body with almost no elements and no text, which can produce a false positive on a deliberately minimal artefact.
 - **Wizard system**: multi-card overlay works, but UI polish is lacking. Transitions between phases can feel abrupt. The `data-import` card type is useful but fragile with malformed API responses.
-- **Chat integration**: `chat_reply` and `wait_for_chat` work, but there's no message persistence — refreshing the widget loses chat history.
+- **Chat integration**: `chat_reply` and `wait_for_chat` work. History is kept server-side (a 200-message ring per session) and replayed on SSE reconnect, so refreshing the widget no longer loses it — but a pod restart does, sessions being in memory.
 - **Sub-agents**: `subagent_call` works when the MCP client supports `sampling/createMessage` (Claude Desktop). Fallback mode (for Claude Code and other clients) works but the LLM must manually adopt the sub-agent role, which is less reliable.
 - **Contextual tool filtering**: the phase-based tool disclosure works correctly, but the phase transitions could be smoother — sometimes the LLM needs a tool that's not yet available in the current phase.
 
@@ -555,6 +555,14 @@ The server architecture supports multiple users: per-user sessions (`uid:{grist_
 gristcoder_mcp/
 ├── grist_coder.py       # MCP server (single file, ~8200 lines)
 ├── widget.html           # Grist custom widget (IDE + preview + wizard)
+├── harness/              # Browser-side LLM agent (see below) — 7 modules
+│   ├── boot.js           #   entry point, called once the widget is registered
+│   ├── agent-loop.js     #   the loop: tool definitions, execution, specialists
+│   ├── llm-client.js     #   LLM calls (through /llm-proxy)
+│   ├── mcp-tools.js      #   exposes the MCP tools to the agent
+│   ├── agent-memory.js   #   conversation memory
+│   ├── render-bridge.js  #   rendering into the widget
+│   └── config-panel.js   #   configuration UI + "Lancer" button
 ├── requirements.txt      # Python dependencies
 ├── Dockerfile            # Container image
 ├── docker-compose.yml    # One-command deployment

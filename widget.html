@@ -1894,6 +1894,15 @@ function _wzIsBlocking(step) {
 function _wzEsc(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+// Valeur destinee a un litteral JS entre simples quotes, DANS un attribut onclick.
+// Deux couches successives s'appliquent : le parseur HTML decode d'abord les entites,
+// puis JavaScript lit le resultat. Une entite &#39; redevient donc une apostrophe et
+// casse la chaine — verifie en navigateur. Il faut un echappement JS (antislash),
+// applique AVANT l'echappement HTML.
+//   « Modifier l'app » sans ca -> {value:'Modifier l'app'} -> bouton mort, 300 s d'attente.
+function _wzJs(s) {
+  return _wzEsc(String(s||'').replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
+}
 function _wzMd(md) {
   // Mini-markdown : headings, listes, tables, gras, italic, code
   var lines = _wzEsc(md).split('\n'), html = [], inTable = false;
@@ -1973,7 +1982,7 @@ function _wzPlan(step, cid) {
   if ((step.actions||[]).length) {
     h += '<div class="wz-actions">';
     step.actions.forEach(function(a,i){
-      h += '<button class="wz-btn '+(a.style||'secondary')+'" onclick="wzPost(\''+cid+'\',\'action\',{value:\''+_wzEsc(a.value||a.label)+'\'})">'+_wzEsc(a.label)+'</button>';
+      h += '<button class="wz-btn '+(a.style||'secondary')+'" onclick="wzPost(\''+cid+'\',\'action\',{value:\''+_wzJs(a.value||a.label)+'\'})">'+_wzEsc(a.label)+'</button>';
     });
     h += '</div>';
   }
@@ -2090,7 +2099,7 @@ function _wzConfirm(step, cid) {
   var actions = step.actions||[{id:'ok',label:'Valider',style:'primary'}];
   html += '<div class="wz-actions">';
   actions.forEach(function(a) {
-    html += '<button class="wz-btn '+(a.style||'secondary')+'" onclick="wzPost(\''+cid+'\',\'confirm\',{action:\''+_wzEsc(a.id)+'\'})">'+_wzEsc(a.label)+'</button>';
+    html += '<button class="wz-btn '+(a.style||'secondary')+'" onclick="wzPost(\''+cid+'\',\'confirm\',{action:\''+_wzJs(a.id)+'\'})">'+_wzEsc(a.label)+'</button>';
   });
   html += '</div>';
   return html;
@@ -2122,12 +2131,12 @@ function _wzProgress(step) {
   html += '</div>';
   if (step.input) {
     html += '<textarea id="wz-ta-'+_wzEsc(step.id||'')+'" class="wz-input wz-request-ta" placeholder="'+_wzEsc(step.input)+'" style="margin-top:10px"></textarea>';
-    html += '<div class="wz-actions"><button class="wz-btn primary" onclick="wzPlanInput(\''+_wzEsc(step.id||'')+'\')">Envoyer</button></div>';
+    html += '<div class="wz-actions"><button class="wz-btn primary" onclick="wzPlanInput(\''+_wzJs(step.id||'')+'\')">Envoyer</button></div>';
   }
   if ((step.actions||[]).length) {
     html += '<div class="wz-actions">';
     step.actions.forEach(function(a) {
-      html += '<button class="wz-btn '+(a.style||'secondary')+'" onclick="wzPost(\''+_wzEsc(step.id||'')+'\',\'action\',{value:\''+_wzEsc(a.value||a.label)+'\'})">'+_wzEsc(a.label)+'</button>';
+      html += '<button class="wz-btn '+(a.style||'secondary')+'" onclick="wzPost(\''+_wzJs(step.id||'')+'\',\'action\',{value:\''+_wzJs(a.value||a.label)+'\'})">'+_wzEsc(a.label)+'</button>';
     });
     html += '</div>';
   }
@@ -2155,7 +2164,7 @@ function _wzInfo(step, cid) {
   if (actions.length) {
     html += '<div class="wz-actions">';
     actions.forEach(function(a) {
-      html += '<button class="wz-btn '+(a.style||'primary')+'" onclick="wzPost(\''+cid+'\',\'action\',{value:\''+_wzEsc(a.value||a.label||a.id)+'\'})">'+_wzEsc(a.label)+'</button>';
+      html += '<button class="wz-btn '+(a.style||'primary')+'" onclick="wzPost(\''+cid+'\',\'action\',{value:\''+_wzJs(a.value||a.label||a.id)+'\'})">'+_wzEsc(a.label)+'</button>';
     });
     html += '</div>';
   }
@@ -2172,7 +2181,7 @@ function _wzInput(step, cid) {
   if ((step.suggestions||[]).length) {
     html += '<div class="wz-suggestions">';
     step.suggestions.forEach(function(s) {
-      html += '<button type="button" class="wz-suggestion" onclick="wzSuggestion(\''+cid+'\',\''+_wzEsc(s)+'\')">'+_wzEsc(s)+'</button>';
+      html += '<button type="button" class="wz-suggestion" onclick="wzSuggestion(\''+cid+'\',\''+_wzJs(s)+'\')">'+_wzEsc(s)+'</button>';
     });
     html += '</div>';
   }
@@ -2409,10 +2418,10 @@ function _wzPreview(step, cid) {
         var aId = _wzEsc(a.value||a.id||a.label);
         if (a.input_on) {
           var ph = _wzEsc(a.placeholder||'Votre commentaire…');
-          html += '<button class="wz-btn '+(a.style||'secondary')+'" onclick="wzRevealInput(\''+_wzEsc(cid)+'\',\''+aId+'\',\''+ph+'\')">'
+          html += '<button class="wz-btn '+(a.style||'secondary')+'" onclick="wzRevealInput(\''+_wzJs(cid)+'\',\''+aId+'\',\''+ph+'\')">'
             + _wzEsc(a.label) + '</button>';
         } else {
-          html += '<button class="wz-btn '+(a.style||'secondary')+'" onclick="wzPost(\''+_wzEsc(cid)+'\',\'action\',{value:\''+aId+'\'})">'
+          html += '<button class="wz-btn '+(a.style||'secondary')+'" onclick="wzPost(\''+_wzJs(cid)+'\',\'action\',{value:\''+aId+'\'})">'
             + _wzEsc(a.label) + '</button>';
         }
       });
