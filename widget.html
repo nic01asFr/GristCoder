@@ -366,7 +366,14 @@ const GRIST_BRIDGE_SCRIPT =
     "fromDate:function(x){if(x==null)return null;if(typeof x==='string')x=new Date(x);return Math.floor(x.getTime()/1000);}," +
     "refIds:function(l){return(l&&l[0]==='L')?l.slice(1):(Array.isArray(l)?l:[]);}," +
     "toRefList:function(a){return(a&&a.length)?['L'].concat(a.map(function(i){return parseInt(i,10);})):null;}," +
-    "esc:function(t){var d=document.createElement('div');d.textContent=(t==null?'':String(t));return d.innerHTML;}" +
+    "esc:function(t){var d=document.createElement('div');d.textContent=(t==null?'':String(t));return d.innerHTML;}," +
+    // Le piege le plus couteux observe : un artefact ecrit rows.MaTable en croyant
+    // recevoir du colonnaire. La valeur vaut undefined, un || [] l avale, et l ecran
+    // affiche des zeros sans la moindre erreur. Cinq artefacts sur six sont morts
+    // ainsi, en silence. Le tableau se laisse donc demander .MaTable — il se retourne
+    // lui-meme — et le dit dans la console, que le diagnostic de rendu remonte a
+    // l agent : le rendu est sauve ET la faute est nommee.
+    "tolerant:function(rows,n){if(!n||typeof Proxy==='undefined')return rows;try{return new Proxy(rows,{get:function(t,p){if(p===n&&!(p in t)){console.error('[pont] .'+n+' sur un resultat de loadTable : la fonction renvoie DEJA '+'le tableau de lignes. Ecrire rows.map(...), pas rows.'+n+'. Rendu sauve, source a corriger.');return t;}return t[p];}});}catch(e){return rows;}}" +
   "};" +
   "window.grist={" +
     "ready:function(){return Promise.resolve();}," +
@@ -375,12 +382,12 @@ const GRIST_BRIDGE_SCRIPT =
       // Charge une table et renvoie DIRECTEMENT un tableau d'objets [{id,col},...]
       // pret a afficher (fetchTable renvoie du colonnaire {id:[...],col:[...]} que
       // les LLM convertissent souvent mal). A utiliser pour remplir une liste.
-      "loadTable:function(n){return call('fetchTable',[n]).then(function(d){return util.toRows(d);});}," +
+      "loadTable:function(n){return call('fetchTable',[n]).then(function(d){return util.tolerant(util.toRows(d),n);});}," +
       "applyUserActions:function(a){return call('applyUserActions',[a]);}," +
       // Ecrit PUIS re-fetch la table impactee et renvoie les lignes converties.
       // Refresh deterministe independant de la table liee du widget (onRecords ne
       // se declenche pas pour une table que l'artefact ecrit lui-meme).
-      "applyAndFetch:function(a,tbl){return call('applyUserActions',[a]).then(function(){return call('fetchTable',[tbl]);}).then(function(d){return util.toRows(d);});}," +
+      "applyAndFetch:function(a,tbl){return call('applyUserActions',[a]).then(function(){return call('fetchTable',[tbl]);}).then(function(d){return util.tolerant(util.toRows(d),tbl);});}," +
       // CRUD foolproof : construisent la bonne UserAction (le format colonnaire /
       // le verbe correct sont geres) ET renvoient la liste A JOUR (tableau d'objets).
       // addRow(t,{col:val}) ajoute ; updateRow(t,id,{col:val}) modifie ; deleteRow(t,id) supprime.
