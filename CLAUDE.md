@@ -84,6 +84,28 @@ Identity is based on `uid:{grist_user_id}` — stable numeric ID shared between 
 - **Session routing is per call**: pass `token=` to every tool when several documents
   are open. `session_select` only pins a default for one connection.
 
+## Grist meta and auth — traps that cost a document
+
+- **A JSON-string meta field passed as an object bricks the document.** `widgetOptions`,
+  `options`, `layoutSpec`, `customView`, `filter`, `rules` are stored by Grist as *strings
+  containing JSON*. Hand it an object and it crosses the Python sandbox, comes back as
+  `{'choices': [...]}` — `repr()`, single quotes — and the frontend can no longer parse it:
+  the document stops opening, with `Cannot read properties of undefined`. The real clue is
+  the *first* error of the cascade, `Expected property name … at position 1`.
+  `_normalise_json_meta` now serialises these on the way in, and pre-flight refuses a
+  string that opens like JSON without being JSON. Repair path: `UpdateRecord` on
+  `_grist_Tables_column` with a properly encoded string.
+- **Never send an `accessToken` when the session holds an API key.** Grist trusts the
+  query token and rejects on expiry, even with a valid key in the header. When the document
+  is unopenable there is no browser to mint a fresh token, so *every* tool returns 401 —
+  including the ones needed to repair it. `_aq()` returns `{}` when `ctx.grist_key` is set.
+- **Surface the Grist error body.** `raise_for_status()` throws away the explanation;
+  use `_leve_si_erreur(r)`. Without it every failure looks the same and an agent told
+  "500 is transient, retry" will retry a permanent error until its budget is gone.
+- **`RemoveTable` cascades to views.** Deleting the tables of an app also removes their
+  raw views *and* the pages holding sections on them — convenient for cleanup, surprising
+  if unexpected.
+
 ## Common errors
 
 | Error | Cause | Fix |

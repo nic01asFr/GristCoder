@@ -646,6 +646,30 @@ Both paths resolve to the same `uid:{userId}` identity. Sessions are shared betw
 
 The server architecture supports multiple users: per-user sessions (`uid:{grist_user_id}`), isolated SSE streams (events filtered server-side), and per-user Grist API credentials. However, it has only been tested in single-user local deployments. Multi-user and remote deployments are untested and would require additional hardening (HTTPS reverse proxy, rate limiting, `canvas_exec` sandboxing).
 
+### Errors that used to be silent — now named
+
+Three failures cost the most time here, and all three were silent in the same way: the
+thing that broke was never the thing the message described. They are worth stating,
+because the fixes are the reason the current version behaves.
+
+**A Grist `500` with no explanation.** `httpx` keeps only `Server error '500 …' for url`
+and discards the body — which is exactly where Grist says *what* is wrong. Every failure
+looked identical, so an agent told to retry a transient error retried a permanent one:
+one run burned its entire 32-iteration budget that way. The body now reaches the caller,
+and an error naming its own cause is no longer replayed.
+
+**A document made unopenable by a `Choice` column.** An agent passed `widgetOptions` as
+an object — the natural form over JSON-RPC. It crossed Grist's Python sandbox, came back
+as `{'choices': [...]}` in `repr()` form, and the frontend could no longer parse it: the
+document stopped opening entirely. Meta fields that Grist stores as JSON strings are now
+serialised on the way in, and a string that opens like JSON without being JSON is refused
+before anything is written.
+
+**An expired widget token shadowing a valid API key.** The query token was sent whenever
+present, so once the document became unopenable — no browser, no fresh token — every tool
+answered `401`, including the ones needed to repair it. A session holding an API key now
+uses only that.
+
 ### Beta — functional but needs work
 - **Render diagnostics**: exceptions, rejections and failed resources come back reliably. The "rendered nothing without throwing" heuristic is cruder — it flags a body with almost no elements and no text, which can produce a false positive on a deliberately minimal artefact.
 - **Wizard system**: multi-card overlay works, but UI polish is lacking. Transitions between phases can feel abrupt. The `data-import` card type is useful but fragile with malformed API responses.
@@ -660,6 +684,9 @@ The server architecture supports multiple users: per-user sessions (`uid:{grist_
 - **DSFR**: the French government design system (Système de Design de l'État) is *not* auto-injected — artefacts that want it declare the two jsDelivr `<link>` tags themselves. Prompts steer generation towards it; adapt them to your own design system if you fork this.
 
 ### Known limitations
+- **The documentation this server carries does not reach the agent it embeds.** Eleven `docs/*` resources and eight example domains are served as MCP *resources* — reachable by Claude Desktop or Claude Code, invisible to the browser-side harness, which speaks only `tools/list` and `tools/call`. It reads exactly one resource, `context/{token}`, to drive the plan banner. Measured consequence on a real build: the agent rewrote its own `toDate` although `grist.util.toDate` is injected into every artefact, used `grist.util` nowhere at all, produced no styling, and hardcoded the current user as row 1. It was not disobeying — it had the system prompt, the tool descriptions and the document schema, nothing else.
+- **A second corpus is not here at all.** `Widgets Grist/skills/` holds ~2200 lines of proven widget patterns — base template, modals, toasts, filters, CSS theme variables, status mappings — referenced only from a code comment.
+- **No access control.** Nothing in this server knows Grist access rules exist: no tool, no resource, no prompt line. An app built here can present per-role screens while enforcing nothing, and an artefact has no way to learn who is looking at it — hence the hardcoded row 1 above. Both halves need work: `grist.user` in the bridge (display), and access rules on the data (enforcement).
 - Single file architecture (`grist_coder.py`, ~8200 lines) — intentional for deployment simplicity, but makes contribution harder
 - In-memory sessions — no horizontal scaling, no persistence across restarts
 - The widget is vanilla JS (~2000 lines) — no framework, no build step, which keeps it simple but limits maintainability
