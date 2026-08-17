@@ -28,6 +28,9 @@ print('esbuild binaire', len(b), 'o')" \
 COPY grist_coder.py .
 COPY widget.html .
 COPY harness/ ./harness/
+# Le corpus de savoir doit etre dans l'image : un index qui n'existe qu'en dev ne
+# sert a rien en production. Vecu avec shared/ et docs/, absents du conteneur.
+COPY knowledge/ ./knowledge/
 
 # Port du service (surchargable via $PORT, injecte par le chart Onyxia)
 EXPOSE 8742
