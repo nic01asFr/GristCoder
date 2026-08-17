@@ -53,6 +53,43 @@ Un custom widget qui veut réagir aux sélections d'autres vues a besoin du cham
 `linking` dans ses `InteractionOptions`. Sans lui, il reste **aveugle** aux sélections —
 sans erreur, simplement rien ne se passe.
 
+## Volumes — mesurés en charge, pas lus dans une doc
+
+Recommandation Grist : rester sous **100 000 lignes et 20 Mo par document**.
+
+Ordre de grandeur vérifié sur SURFAC²E : 500 bâtiments produisent 57 000 lignes de
+cotations — confortable. Et une lecture de 834 entités avec agrégats récursifs prend
+**294 ms** : une formule d'agrégat en cascade n'est pas, en soi, un risque de
+performance.
+
+## Pièces jointes — la limite qui surprend
+
+Les pièces jointes **internes** sont plafonnées à **1 Go par document**. Un usage photo
+de terrain sature ça vers **cinquante bâtiments**.
+
+Les pièces jointes **externes** existent, activables par document — section « Stockage
+des pièces jointes » dans les paramètres. Elle est **masquée en session anonyme**, ce qui
+a longtemps fait croire qu'elle n'existait pas. En auto-hébergé :
+`GRIST_EXTERNAL_ATTACHMENTS_MODE=snapshots` et un bucket S3/MinIO versionné
+(`GRIST_DOCS_MINIO_*`).
+
+Deux conséquences découvertes en vérifiant, pas en lisant :
+
+**La duplication de document est désactivée** quand les pièces jointes externes sont
+actives.
+
+**Un document TÉLÉCHARGÉ a ses pièces jointes cassées définitivement.** Remettre un
+document à un tiers doit donc passer par un **transfert de propriété** — jamais par un
+téléchargement suivi d'un ré-envoi.
+
+## Deux comportements de schéma à connaître
+
+Grist **retire le préfixe underscore** des `colId` à la création : `_agg` devient `agg`.
+Un code qui attend le préfixe cherchera une colonne qui n'existe pas.
+
+Une colonne formule jamais écrite reste `isFormula=true` avec une formule vide. C'est un
+**état normal**, pas le signe d'un schéma cassé.
+
 ## Le WAF, sur les instances qui en ont un
 
 Sur `grist.numerique.gouv.fr`, Incapsula refuse en 403 les charges utiles contenant des

@@ -12,7 +12,15 @@
   },
   "recette": "6 besoins reels servent de test. Recherche par mots-cles seule : 2 reussites sur 6. Objectif apres qualification : au moins 5 sur 6.",
   "mis_a_jour": "2026-08-17",
-  "regle_inclusion": "Avant de traiter un dossier de Widgets Grist/projects/ comme source de verite, verifier qu'il n'existe pas un depot dedie du meme nom : girabase, zebra et observatoire-eclext ont leur canonique ailleurs, la copie locale n'est qu'un plan de travail. Regle donnee par Claude-Desktop, 17 aout 2026."
+  "regle_inclusion": "Avant de traiter un dossier de Widgets Grist/projects/ comme source de verite, verifier qu'il n'existe pas un depot dedie du meme nom : girabase, zebra et observatoire-eclext ont leur canonique ailleurs, la copie locale n'est qu'un plan de travail. Regle donnee par Claude-Desktop, 17 aout 2026.",
+  "couches": {
+   "1_plateforme": "faits Grist purs, version-dependants, independants de tout projet. Verite unique, jamais dupliquee par projet.",
+   "2_patterns": "solutions recurrentes prouvees sur au moins deux projets, chacune avec son contexte d'usage ET l'alternative ecartee. La couche la plus utile a un agent qui doit CHOISIR une approche.",
+   "3_catalogue": "un par projet reel : statut (prod/poc/draft/copie-de-travail), emplacement canonique REEL, et quels patterns de la couche 2 il utilise.",
+   "4_pieges": "au niveau du symptome ET de la cause — pas une liste de rappels.",
+   "5_arbitrages": "les cas ou deux approches ont coexiste et ou une decision a tranche, avec sa raison. Pour ne pas re-debattre ce qui est tranche.",
+   "_origine": "structure proposee par Claude-Desktop le 17 aout 2026, depuis la memoire des projets. Adoptee : mes 144 unites couvrent surtout les couches 3 et 4 ; les couches 1 et 2 etaient structurellement absentes d'un inventaire disque."
+  }
  },
  "unites": [
   {
@@ -37,7 +45,8 @@
    "piege": "resultat.MaTable sur un retour de loadTable vaut undefined ; un || [] l'avale et l'ecran affiche des zeros sans erreur",
    "remplace": [
     "skills/data-conversion#format-colonaire (11 fevrier, decrit la voie manuelle)"
-   ]
+   ],
+   "couche": 1
   },
   {
    "id": "pont#ecrire",
@@ -61,7 +70,8 @@
      "BulkAdd"
     ]
    },
-   "piege": "BulkAddOrReplaceRecord est refuse depuis un navigateur (not controlled)"
+   "piege": "BulkAddOrReplaceRecord est refuse depuis un navigateur (not controlled)",
+   "couche": 1
   },
   {
    "id": "pont#convertir",
@@ -89,7 +99,8 @@
    "piege": "Grist stocke les dates en SECONDES : la valeur brute affiche 1704067200. Et une cellule placee dans innerHTML sans esc() fait du contenu du document du code",
    "remplace": [
     "skills/data-conversion#dates (11 fevrier)"
-   ]
+   ],
+   "couche": 1
   },
   {
    "id": "pont#utilisateur",
@@ -113,7 +124,8 @@
    "piege": "un identifiant en dur pour designer l'utilisateur courant montre la meme ligne a tout le monde",
    "voir_aussi": [
     "Atlas/docs/CADRAGE-IDENTITE-ACL.md — verifie le 5 aout : les regles ACL sont evaluees cote serveur, le widget n'a pas besoin de l'e-mail"
-   ]
+   ],
+   "couche": 1
   },
   {
    "id": "pont#style",
@@ -135,7 +147,8 @@
    },
    "voir_aussi": [
     "skills/patterns#variables-css"
-   ]
+   ],
+   "couche": 1
   },
   {
    "id": "plateforme#meta-json",
@@ -158,7 +171,8 @@
      "ModifyColumn"
     ]
    },
-   "piege": "un objet passe la ou Grist attend une chaine JSON rend le document INOUVRABLE"
+   "piege": "un objet passe la ou Grist attend une chaine JSON rend le document INOUVRABLE",
+   "couche": 4
   },
   {
    "id": "plateforme#concurrence",
@@ -176,7 +190,8 @@
      "canvas_write"
     ]
    },
-   "piege": "deux sessions qui ecrivent le meme widget s'ecrasent en silence — perte constatee sur budget_app"
+   "piege": "deux sessions qui ecrivent le meme widget s'ecrasent en silence — perte constatee sur budget_app",
+   "couche": 4
   },
   {
    "id": "plateforme#pas-natif",
@@ -193,7 +208,8 @@
     ],
     "code": []
    },
-   "piege": "l'import mappe n'est ni persiste ni expose en REST ; il n'y a pas d'email natif"
+   "piege": "l'import mappe n'est ni persiste ni expose en REST ; il n'y a pas d'email natif",
+   "couche": 1
   },
   {
    "id": "plateforme#api-details",
@@ -213,7 +229,8 @@
      "onRecord"
     ]
    },
-   "piege": "sans le champ linking dans InteractionOptions, le widget est aveugle aux selections"
+   "piege": "sans le champ linking dans InteractionOptions, le widget est aveugle aux selections",
+   "couche": 1
   },
   {
    "id": "plateforme#waf",
@@ -231,7 +248,77 @@
      "Incapsula"
     ]
    },
-   "piege": "le challenge est INTERMITTENT : un meme appel passe, echoue, puis repasse"
+   "piege": "le challenge est INTERMITTENT : un meme appel passe, echoue, puis repasse",
+   "couche": 1
+  },
+  {
+   "id": "plateforme#volumes",
+   "couche": 1,
+   "fichier": "knowledge/plateforme.md",
+   "titre": "Volumes — mesures en charge",
+   "nature": "explication",
+   "besoin": "savoir si un document tiendra la charge",
+   "marqueurs": {
+    "intention": [
+     "combien de lignes",
+     "performance",
+     "gros volume",
+     "charge"
+    ],
+    "code": []
+   },
+   "piege": "recommande sous 100 000 lignes et 20 Mo ; un agregat recursif sur 834 entites coute 294 ms, ce n'est pas la ou est le risque",
+   "source": "SURFAC2E, mesure reelle"
+  },
+  {
+   "id": "plateforme#pieces-jointes",
+   "couche": 1,
+   "fichier": "knowledge/plateforme.md",
+   "titre": "Pieces jointes — la limite qui surprend",
+   "nature": "regle",
+   "besoin": "stocker des photos ou des documents dans un doc Grist",
+   "marqueurs": {
+    "intention": [
+     "photo",
+     "piece jointe",
+     "attachment",
+     "terrain",
+     "document"
+    ],
+    "code": [
+     "Attachments"
+    ]
+   },
+   "piege": "1 Go par document en interne — sature vers 50 batiments en usage photo. Et un document TELECHARGE a ses pieces jointes cassees DEFINITIVEMENT : remettre un doc passe par transfert de propriete, jamais par download",
+   "source": "SURFAC2E, verifie"
+  },
+  {
+   "id": "plateforme#schema-quirks",
+   "couche": 1,
+   "fichier": "knowledge/plateforme.md",
+   "titre": "Deux comportements de schema",
+   "nature": "regle",
+   "besoin": "creer des colonnes par programme et retrouver ses petits",
+   "marqueurs": {
+    "intention": [
+     "creer des colonnes",
+     "schema",
+     "colId"
+    ],
+    "code": [
+     "AddColumn",
+     "isFormula",
+     "colId"
+    ]
+   },
+   "piege": "Grist retire le prefixe underscore des colId (_agg devient agg) ; une colonne formule jamais ecrite reste isFormula=true avec formule vide, c'est normal",
+   "source": "SURFAC2E, verifie"
   }
+ ],
+ "_a_venir": [
+  "Couche 2 (patterns transversaux) : a construire — c'est la couche la plus utile et la plus absente. Premiers candidats fournis par Claude-Desktop : client dual-mode en ligne/hors-ligne, frontiere invariant/configurable, miroir JS<->Python des formules metier, registre de modules avec formFactor, pattern objet_id+niveau plutot qu'un Ref en dur, etats propose/valide.",
+  "SURFAC2E : codebase le plus mature (gitlab.cerema.fr/nicolas.laval/surfac2e), hors de tout inventaire disque. Notre depot porte deja une branche feat/surfac2e-assistant (26 juillet, 1752 insertions, shared/assistant_manifest.py + manifeste) non fusionnee.",
+  "observatoire-eclext : federation multi-documents — registre Reg_Index resolvant une ressource logique vers (source, table, mode d'acces) sans doc_id en dur, moteur d'import a 4 controles, fusion incrementale a 3 strategies.",
+  "Arbitrage acte (couche 5) : widget<->widget = BroadcastChannel nomme par domaine, preuve de prod sur CRM Territorial Med. EventBus et PostMessage sont d'autres briques, pas des concurrentes."
  ]
 }
