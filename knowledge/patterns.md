@@ -1,0 +1,94 @@
+# Patterns transversaux
+
+> Couche 2 : les solutions récurrentes, chacune avec **l'alternative écartée et
+> pourquoi**. C'est ce qui aide à *choisir*, non à faire — et c'est la couche qu'un
+> inventaire par répertoire ne peut pas produire, puisqu'elle vit à cheval sur des
+> projets qui ne sont pas au même endroit.
+>
+> Un mot sur la confiance : la définition de cette couche demande une preuve sur au
+> moins deux projets. Cinq des six ci-dessous viennent d'un seul — SURFAC²E, le
+> codebase Grist le plus mature, mais un seul. Le sixième est confirmé
+> indépendamment sur un second. La distinction est portée par chaque fiche.
+
+## Client dual-mode — en ligne et hors-ligne
+
+Un client unique bascule entre l'API plugin de Grist (en ligne) et REST + IndexedDB
+(hors-ligne), avec cache marqué et persistant.
+
+**Alternative écartée** : deux clients séparés, un widget Grist standard et une
+application terrain distincte.
+**Pourquoi** : cela duplique toute la logique métier, qui diverge vite. C'est
+exactement le risque déjà matérialisé ailleurs — un widget écrasé par une réécriture
+concurrente, faute d'un modèle unique.
+
+*SURFAC²E `_core/grist-client.js`, juillet 2026. Confirmé sur un projet.*
+
+## Frontière invariant / configurable
+
+On sépare explicitement ce qui ne bouge jamais — `colId`, formules, jointures — de ce
+qui se paramètre : libellés, choix, valeurs par défaut, visibilité. Le paramétrable vit
+dans une table Config versionnée, pas dans le code.
+
+**Alternative écartée** : tout coder en dur dans chaque widget.
+**Pourquoi** : chaque nouveau déploiement oblige alors à *forker* le code au lieu de
+l'*instancier* par configuration.
+
+*SURFAC²E `config.js`, juillet 2026 — principe nommé « pas assez fait jusqu'ici » avant
+d'être posé. Confirmé sur un projet.*
+
+## Miroir JS ↔ Python des formules métier
+
+Toute formule métier qui doit aussi tourner côté client, donc hors ligne, est dupliquée
+en JS pur dans un fichier dédié, documenté comme miroir à maintenir des deux côtés.
+
+**Alternative écartée** : ne calculer que côté serveur Grist, en Python, et forcer une
+lecture réseau.
+**Pourquoi** : cela casse le hors-ligne, qui est l'usage terrain principal. Le coût de
+la double maintenance est *accepté* contre cette capacité — et le piège, connu, est la
+dérive silencieuse entre les deux calculs.
+
+*SURFAC²E `applicabilite.js`, recette du 23 juillet 2026 — miroir vérifié identique à
+la formule Python sur un cas réel. Confirmé sur un projet.*
+
+## Registre de modules avec `formFactor`
+
+Un `manifest.json` déclare `{widgetId, name, url, requiredAccess, formFactor}` où
+`formFactor` vaut `desktop` ou `mobile`. Ajouter un module, c'est un dossier et une
+entrée.
+
+**Alternative écartée** : une application par plateforme, bureau et mobile séparées.
+**Pourquoi** : même raison que le client dual-mode — duplication, puis divergence.
+
+*SURFAC²E `_core/manifest.json`, convergence actée le 23 juillet 2026. Même famille que
+le manifeste App Store d'Artefactory, avec `formFactor` en plus. Confirmé sur un projet.*
+
+## Ancrage générique `objet_id + niveau`
+
+Une table `Entites` générique — `objet_id`, `niveau`, `parent` — porte l'arbre ; les
+tables métier référencent leur ligne d'`Entites` plutôt que d'être visées directement.
+
+**Alternative écartée** : lier chaque donnée à sa table métier, `Ref:Batiments` en dur.
+**Pourquoi** : constaté noir sur blanc — ajouter plus tard un niveau plus fin (une zone
+fonctionnelle sous le bâtiment) **n'est pas additif** avec un ancrage spécifique : il
+faut reprendre le cœur, formules et jointures comprises. Le poser générique pendant que
+le modèle est jeune coûte moins cher.
+
+*SURFAC²E, audit du schéma v2 le 23 juillet 2026 — le problème a été constaté, puis le
+document repris à vide sur le schéma générique. Confirmé sur un projet.*
+
+## États `propose` / `valide`, dérivés de l'origine de la valeur
+
+Le statut ne se choisit pas, il se **dérive de la source** : une valeur produite
+automatiquement ou semi-automatiquement naît `propose` et demande une confirmation
+humaine avant de compter ; une valeur saisie sur le terrain naît `valide`, parce que
+l'agent sur place *est* le contrôle humain.
+
+**Alternative écartée** : écrire la valeur finale dès qu'une source la produit, sans
+distinction de statut.
+**Pourquoi** : on ne distingue plus une donnée vérifiée d'une proposition automatique,
+et l'erreur se propage silencieusement dans les calculs et les exports.
+
+*SURFAC²E, règle non négociable, implémentée le 23 juillet 2026. **Confirmé
+indépendamment sur un second projet non colocalisé** : observatoire-eclext porte le même
+principe sous un autre nom — `niveau_source` et modération pour arbitrer doublons et
+conflits. C'est le seul des six à satisfaire pleinement le critère de la couche 2.*

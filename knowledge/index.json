@@ -8,7 +8,8 @@
    "grist_coder.py DOCS_*": "74 unites, deja embarquees, a indexer sur place",
    "Widgets Grist/skills/": "59 unites, source de verite ailleurs — on n'en garde ici que l'index et des extraits bornes",
    "projets Widgets Grist": "472 ko de doc projet — a trier document par document, les projets melangent Grist, QGIS et 3D",
-   "knowledge/plateforme.md": "faits de plateforme etablis par incident ou verification — non deductibles du code"
+   "knowledge/plateforme.md": "faits de plateforme etablis par incident ou verification — non deductibles du code",
+   "knowledge/patterns.md": "couche 2 — patterns transversaux avec leur alternative ecartee. Le champ confirmation dit sur combien de projets chacun est atteste : la definition de la couche en demande deux, cinq des six n'en ont qu'un."
   },
   "recette": "6 besoins reels servent de test. Recherche par mots-cles seule : 2 reussites sur 6. Objectif apres qualification : au moins 5 sur 6.",
   "mis_a_jour": "2026-08-17",
@@ -313,10 +314,157 @@
    },
    "piege": "Grist retire le prefixe underscore des colId (_agg devient agg) ; une colonne formule jamais ecrite reste isFormula=true avec formule vide, c'est normal",
    "source": "SURFAC2E, verifie"
+  },
+  {
+   "id": "patterns#dual-mode",
+   "couche": 2,
+   "fichier": "knowledge/patterns.md",
+   "titre": "Client dual-mode — en ligne et hors-ligne",
+   "nature": "regle",
+   "besoin": "faire marcher une app Grist sur le terrain, sans reseau",
+   "marqueurs": {
+    "intention": [
+     "hors ligne",
+     "offline",
+     "terrain",
+     "mobile",
+     "pwa",
+     "sans reseau"
+    ],
+    "code": [
+     "IndexedDB",
+     "navigator.onLine",
+     "localStorage"
+    ]
+   },
+   "alternative_ecartee": "deux clients separes, un widget Grist et une app terrain distincte — la logique metier diverge",
+   "confirmation": "un projet (SURFAC2E)",
+   "source": "Claude-Desktop, memoire des projets, 17 aout 2026"
+  },
+  {
+   "id": "patterns#invariant-configurable",
+   "couche": 2,
+   "fichier": "knowledge/patterns.md",
+   "titre": "Frontiere invariant / configurable",
+   "nature": "regle",
+   "besoin": "rendre une app deployable chez plusieurs organisations sans la forker",
+   "marqueurs": {
+    "intention": [
+     "plusieurs collectivites",
+     "parametrer",
+     "reutilisable",
+     "deployer ailleurs",
+     "template"
+    ],
+    "code": [
+     "config",
+     "Config"
+    ]
+   },
+   "alternative_ecartee": "tout coder en dur par widget — chaque deploiement oblige a forker au lieu d'instancier",
+   "confirmation": "un projet (SURFAC2E)",
+   "source": "Claude-Desktop, memoire des projets, 17 aout 2026"
+  },
+  {
+   "id": "patterns#miroir-js-python",
+   "couche": 2,
+   "fichier": "knowledge/patterns.md",
+   "titre": "Miroir JS <-> Python des formules metier",
+   "nature": "regle",
+   "besoin": "un calcul metier doit tourner cote Grist ET cote client",
+   "marqueurs": {
+    "intention": [
+     "formule metier",
+     "calcul hors ligne",
+     "meme calcul des deux cotes"
+    ],
+    "code": [
+     "isFormula",
+     "applicabilite"
+    ]
+   },
+   "alternative_ecartee": "ne calculer que cote serveur — casse le hors-ligne, qui est l'usage terrain principal",
+   "confirmation": "un projet (SURFAC2E)",
+   "source": "Claude-Desktop, memoire des projets, 17 aout 2026"
+  },
+  {
+   "id": "patterns#registre-modules",
+   "couche": 2,
+   "fichier": "knowledge/patterns.md",
+   "titre": "Registre de modules avec formFactor",
+   "nature": "regle",
+   "besoin": "une application faite de plusieurs ecrans, bureau et mobile",
+   "marqueurs": {
+    "intention": [
+     "plusieurs ecrans",
+     "modules",
+     "application multi-ecrans",
+     "bureau et mobile"
+    ],
+    "code": [
+     "manifest",
+     "widgetId",
+     "formFactor"
+    ]
+   },
+   "alternative_ecartee": "une application par plateforme — duplication puis divergence",
+   "confirmation": "un projet (SURFAC2E), meme famille que le manifeste Artefactory",
+   "source": "Claude-Desktop, memoire des projets, 17 aout 2026"
+  },
+  {
+   "id": "patterns#ancrage-generique",
+   "couche": 2,
+   "fichier": "knowledge/patterns.md",
+   "titre": "Ancrage generique objet_id + niveau",
+   "nature": "regle",
+   "besoin": "modeliser une hierarchie qui gagnera des niveaux plus tard",
+   "marqueurs": {
+    "intention": [
+     "hierarchie",
+     "arborescence",
+     "site batiment",
+     "niveaux",
+     "parent"
+    ],
+    "code": [
+     "Ref:",
+     "parent",
+     "niveau"
+    ]
+   },
+   "alternative_ecartee": "un Ref vers la table metier en dur — ajouter un niveau plus fin n'est PAS additif, il faut reprendre le coeur",
+   "confirmation": "un projet (SURFAC2E), constate a posteriori sur son propre schema v2",
+   "source": "Claude-Desktop, memoire des projets, 17 aout 2026"
+  },
+  {
+   "id": "patterns#propose-valide",
+   "couche": 2,
+   "fichier": "knowledge/patterns.md",
+   "titre": "Etats propose / valide derives de l'origine",
+   "nature": "regle",
+   "besoin": "distinguer une donnee verifiee d'une proposition automatique",
+   "marqueurs": {
+    "intention": [
+     "validation",
+     "confiance",
+     "automatique",
+     "controle humain",
+     "moderation"
+    ],
+    "code": [
+     "propose",
+     "valide",
+     "statut",
+     "niveau_source"
+    ]
+   },
+   "alternative_ecartee": "ecrire la valeur finale des qu'une source la produit — l'erreur se propage en silence",
+   "confirmation": "DEUX projets (SURFAC2E et observatoire-eclext, sous le nom niveau_source)",
+   "source": "Claude-Desktop, memoire des projets, 17 aout 2026"
   }
  ],
  "_a_venir": [
-  "Couche 2 (patterns transversaux) : a construire — c'est la couche la plus utile et la plus absente. Premiers candidats fournis par Claude-Desktop : client dual-mode en ligne/hors-ligne, frontiere invariant/configurable, miroir JS<->Python des formules metier, registre de modules avec formFactor, pattern objet_id+niveau plutot qu'un Ref en dur, etats propose/valide.",
+  "Couche 2 : six patterns poses (SURFAC2E). Manquent la convention carto (geo-grist-convention) et l'arbitrage widget<->widget (BroadcastChannel) — le test « construire une carte avec des couches » ne rend toujours rien.",
   "SURFAC2E : codebase le plus mature (gitlab.cerema.fr/nicolas.laval/surfac2e), hors de tout inventaire disque. Notre depot porte deja une branche feat/surfac2e-assistant (26 juillet, 1752 insertions, shared/assistant_manifest.py + manifeste) non fusionnee.",
   "observatoire-eclext : federation multi-documents — registre Reg_Index resolvant une ressource logique vers (source, table, mode d'acces) sans doc_id en dur, moteur d'import a 4 controles, fusion incrementale a 3 strategies.",
   "Arbitrage acte (couche 5) : widget<->widget = BroadcastChannel nomme par domaine, preuve de prod sur CRM Territorial Med. EventBus et PostMessage sont d'autres briques, pas des concurrentes."
