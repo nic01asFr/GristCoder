@@ -22,10 +22,10 @@ application terrain distincte.
 exactement le risque déjà matérialisé ailleurs — un widget écrasé par une réécriture
 concurrente, faute d'un modèle unique.
 
-*Confirmé sur **deux projets non colocalisés**. Grist-AppStore / SCOUT terrain l'a en
-premier — primitives capteurs, client dual-mode, file d'attente hors-ligne, batch-sync ;
-SURFAC²E l'a repris consciemment plutôt que réinventé, et son `_core/grist-client.js` le
-cite. C'est le second des huit à satisfaire pleinement le critère de la couche 2.*
+*Confirmé sur **deux projets indépendants**, dont le second a repris le mécanisme du
+premier plutôt que de le réinventer — primitives capteurs, file d'attente hors-ligne,
+synchronisation par lots. L'un des deux seuls patterns de cette page à atteindre ce degré
+de preuve.*
 
 ## Frontière invariant / configurable
 
@@ -37,8 +37,8 @@ dans une table Config versionnée, pas dans le code.
 **Pourquoi** : chaque nouveau déploiement oblige alors à *forker* le code au lieu de
 l'*instancier* par configuration.
 
-*SURFAC²E `config.js`, juillet 2026 — principe nommé « pas assez fait jusqu'ici » avant
-d'être posé. Confirmé sur un projet.*
+*Principe explicitement nommé « pas assez fait jusqu'ici » avant d'être posé. Attesté sur
+une seule source.*
 
 ## Miroir JS ↔ Python des formules métier
 
@@ -51,8 +51,8 @@ lecture réseau.
 la double maintenance est *accepté* contre cette capacité — et le piège, connu, est la
 dérive silencieuse entre les deux calculs.
 
-*SURFAC²E `applicabilite.js`, recette du 23 juillet 2026 — miroir vérifié identique à
-la formule Python sur un cas réel. Confirmé sur un projet.*
+*Miroir vérifié identique à la formule Python sur un cas réel, en recette. Attesté sur une
+seule source.*
 
 ## Registre de modules avec `formFactor`
 
@@ -63,8 +63,8 @@ entrée.
 **Alternative écartée** : une application par plateforme, bureau et mobile séparées.
 **Pourquoi** : même raison que le client dual-mode — duplication, puis divergence.
 
-*SURFAC²E `_core/manifest.json`, convergence actée le 23 juillet 2026. Même famille que
-le manifeste App Store d'Artefactory, avec `formFactor` en plus. Confirmé sur un projet.*
+*Même famille que le manifeste d'application multi-écrans, avec `formFactor` en plus.
+Attesté sur une seule source.*
 
 ## Ancrage générique `objet_id + niveau`
 
@@ -77,8 +77,9 @@ fonctionnelle sous le bâtiment) **n'est pas additif** avec un ancrage spécifiq
 faut reprendre le cœur, formules et jointures comprises. Le poser générique pendant que
 le modèle est jeune coûte moins cher.
 
-*SURFAC²E, audit du schéma v2 le 23 juillet 2026 — le problème a été constaté, puis le
-document repris à vide sur le schéma générique. Confirmé sur un projet.*
+*Le problème a été constaté sur un modèle déjà en service, puis le document repris à vide
+sur le schéma générique — ce qui donne la mesure du coût évité. Attesté sur une seule
+source.*
 
 ## États `propose` / `valide`, dérivés de l'origine de la valeur
 
@@ -92,19 +93,18 @@ distinction de statut.
 **Pourquoi** : on ne distingue plus une donnée vérifiée d'une proposition automatique,
 et l'erreur se propage silencieusement dans les calculs et les exports.
 
-*SURFAC²E, règle non négociable, implémentée le 23 juillet 2026. **Confirmé
-indépendamment sur un second projet non colocalisé** : observatoire-eclext porte le même
-principe sous un autre nom — `niveau_source` et modération pour arbitrer doublons et
-conflits. Premier des deux à satisfaire pleinement le critère de la couche 2.*
+*Posé comme règle non négociable là où il a été implémenté. **Confirmé indépendamment sur
+un second projet**, qui porte le même principe sous un autre nom — un niveau de source et
+une modération pour arbitrer doublons et conflits. L'un des deux seuls patterns de cette
+page à atteindre ce degré de preuve.*
 
 ## Registre de résolution multi-documents — sans `doc_id` en dur
 
 Une table `Reg_Index` associe une ressource logique à un triplet — source, table Grist,
 mode d'accès — et le service l'interroge **avant** de router un appel.
 
-**Alternative écartée** : coder les identifiants des documents partenaires en dur dans
-le service. C'est ce que fait le nôtre aujourd'hui : un document par session, une clé par
-session.
+**Alternative écartée** : coder les identifiants des documents partenaires en dur — un
+document par session, une clé par session.
 **Pourquoi** : cela ne passe pas à l'échelle dès qu'il faut résoudre vers le document
 d'un tiers dont l'identité n'est connue qu'au moment de la requête. Chaque nouveau
 partenaire obligerait à modifier le code.
@@ -114,7 +114,8 @@ de servir. Changer la visibilité d'une ressource devient une modification de *d
 pas de code. Un bug réel a été trouvé en chemin — l'index portait ce niveau et rien ne
 l'appliquait encore.
 
-*observatoire-eclext, structuré et durci le 2 août 2026. Confirmé sur un projet.*
+*Structuré et durci en août 2026, audit de sécurité compris. Attesté sur une seule
+source.*
 
 ## Moteur d'import — quatre contrôles, trois stratégies de fusion
 
@@ -133,4 +134,4 @@ Le contrôle de dérive de schéma n'était demandé par personne : il s'est ré
 en protégeant le rejeu automatique contre lui-même. Éprouvé — rejeu identique accepté,
 rejeu après renommage d'une colonne source refusé.
 
-*observatoire-eclext, 2 août 2026. Confirmé sur un projet.*
+*Attesté sur une seule source.*

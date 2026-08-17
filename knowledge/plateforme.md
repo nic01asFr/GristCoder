@@ -19,16 +19,15 @@ cascade : `Expected property name … at position 1`.
 Réparation : `UpdateRecord` sur `_grist_Tables_column` avec une chaîne correctement
 encodée.
 
-*Provenance : leçon apprise une première fois en décembre 2025 lors du durcissement de
-mcp-server-grist — « sérialisation JSON avec json.dumps() », toujours une chaîne. Elle
-n'avait été consignée nulle part d'accessible, et a été repayée le 16 août 2026 au prix
-d'un document rendu inouvrable.*
+*Cette règle avait déjà été apprise une première fois, huit mois plus tôt. Faute d'avoir
+été consignée quelque part d'atteignable, elle a été repayée — au prix d'un document rendu
+inouvrable.*
 
 ## Écriture concurrente sans verrou = perte silencieuse
 
 Deux sessions agentiques qui écrivent le même widget sans versionnement s'écrasent l'une
-l'autre, sans conflit ni avertissement. Constaté sur budget_app : le widget Suivi a été
-perdu par réécriture concurrente.
+l'autre, sans conflit ni avertissement. Constaté en conditions réelles : un widget perdu
+par réécriture concurrente.
 
 Le risque vaut dès que plusieurs agents ou onglets peuvent toucher le même artefact.
 `canvas_write` n'a aujourd'hui aucun verrou ni détection de version.
@@ -42,7 +41,7 @@ récurrent ou programmable demande son propre moteur côté service.
 **Il n'y a pas d'envoi d'e-mail natif.** Toute notification passe par un webhook et un
 service tiers.
 
-*Provenance : audit des capacités natives, projet observatoire-eclext, 6 août 2026.*
+*Audit des capacités natives, août 2026.*
 
 ## Deux détails d'API qui font gagner du temps
 
@@ -57,8 +56,8 @@ sans erreur, simplement rien ne se passe.
 
 Recommandation Grist : rester sous **100 000 lignes et 20 Mo par document**.
 
-Ordre de grandeur vérifié sur SURFAC²E : 500 bâtiments produisent 57 000 lignes de
-cotations — confortable. Et une lecture de 834 entités avec agrégats récursifs prend
+Ordre de grandeur vérifié en charge : un patrimoine de 500 bâtiments produit 57 000
+lignes de cotations — confortable. Et une lecture de 834 entités avec agrégats récursifs prend
 **294 ms** : une formule d'agrégat en cascade n'est pas, en soi, un risque de
 performance.
 
