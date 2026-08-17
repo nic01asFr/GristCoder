@@ -384,7 +384,37 @@ Artefacts are stored in a Grist table called `Artefacts`:
 | `Code` | The source code |
 | `Description` | What this artefact does |
 
-The widget renders artefacts in a sandboxed iframe with an auto-injected **Grist bridge** — artefacts can call `grist.docApi.fetchTable()`, `grist.onRecord()`, etc. to read and write Grist data directly.
+### The bridge contract
+
+Every artefact is rendered in a sandboxed iframe with a **Grist bridge** injected into it. This is
+the contract an artefact can rely on — and the reference for it, since the older documents in this
+ecosystem still describe the pre-helper API.
+
+**Reading.** `grist.docApi.loadTable(t)` returns **an array of row objects**, `[{id, Col, …}]`,
+ready for `rows.map(…)`. It does *not* return a table-keyed envelope: `result.MaTable` is
+`undefined`, and an `|| []` after it turns that mistake into a silently empty screen. The array
+now answers to `.MaTable` by returning itself and logging the fault, so the screen survives and
+the diagnostic names what to fix — but write `rows` directly.
+`grist.docApi.fetchTable(t)` is still there and still columnar (`{id: [...], Col: [...]}`), for
+when that shape is what you want.
+
+**Writing.** `addRow(t, {Col: v})`, `updateRow(t, id, {Col: v})`, `deleteRow(t, id)`. Each builds
+the correct UserAction and returns the **refreshed rows**, so a write is followed by a render
+without a second round trip. `applyAndFetch(actions, table)` does the same for hand-written
+actions. In a browser session use `BulkAddRecord`, never `BulkAddOrReplaceRecord`.
+
+**Helpers** — `grist.util.*`, so nobody re-derives them: `toRows(d)` (columnar → objects),
+`toDate(ts)` / `fromDate(d)` (**Grist stores dates in seconds**; printing the raw value gives
+`1704067200` instead of a date), `refIds(l)` / `toRefList(a)` (a RefList is prefixed `'L'`),
+`esc(t)` (use it before putting a cell value in `innerHTML`).
+
+**Who is looking** — `grist.user` is `{id, email, nom}` for the connected Grist user. Use it
+instead of hardcoding a row id for "the current user". It is for **display**: real enforcement is
+Grist access rules, evaluated server-side where `user.Email` and `user.Access` are available, and
+the widget only ever receives rows the user may see.
+
+`grist.onRecord()` / `onRecords()` remain available for artefacts driven by the widget's selected
+table.
 
 ### Artefact types
 
@@ -681,7 +711,7 @@ uses only that.
 - **Browser-side agent (harness)**: loads, configures itself from the pod, calls tools and consumes their results, and stops cleanly. What is untested is stamina — a full multi-turn build from a blank document. See the harness section above.
 - **Plan persistence**: plans live in-memory (session), not in Grist. Server restart = plan lost. We intend to store plans in a Grist table.
 - **Webhook receiver** (`/webhook-receive/{docId}`): works in production with a public URL, but not usable on localhost without a tunnel (ngrok, etc.)
-- **DSFR**: the French government design system (Système de Design de l'État) is *not* auto-injected — artefacts that want it declare the two jsDelivr `<link>` tags themselves. Prompts steer generation towards it; adapt them to your own design system if you fork this.
+- **Styling is a floor, not a theme**: every artefact receives a small stylesheet written entirely in `:where()` — font, margins, a legible table, usable buttons and inputs. Zero specificity, so any rule the artefact writes wins. It exists because an agent given no instruction about appearance produces raw HTML, and a demo in raw HTML reads as broken. **DSFR is *not* injected** — artefacts that want it declare the two jsDelivr `<link>` tags themselves.
 
 ### Known limitations
 - **The documentation this server carries does not reach the agent it embeds.** Eleven `docs/*` resources and eight example domains are served as MCP *resources* — reachable by Claude Desktop or Claude Code, invisible to the browser-side harness, which speaks only `tools/list` and `tools/call`. It reads exactly one resource, `context/{token}`, to drive the plan banner. Measured consequence on a real build: the agent rewrote its own `toDate` although `grist.util.toDate` is injected into every artefact, used `grist.util` nowhere at all, produced no styling, and hardcoded the current user as row 1. It was not disobeying — it had the system prompt, the tool descriptions and the document schema, nothing else.
@@ -747,11 +777,22 @@ Any Grist instance exposing the standard REST API should work.
 
 ## Contributing
 
+### Where this project lives
+
+Development happens on **[GitLab CEREMA](https://gitlab.cerema.fr/mcp/gristcoder_mcp)** — that is
+where branches, merge requests and CI run. The
+**[GitHub repository](https://github.com/nic01asfr)** is a **mirror**, kept for visibility and for
+anyone outside the CEREMA network. It is not the working copy: an issue or pull request opened
+there may go unnoticed, and a commit pushed there would be overwritten by the next mirror sync.
+
+If you cannot reach GitLab CEREMA, open the discussion on the GitHub mirror anyway and say so —
+we will carry it across.
+
 This project is exploratory and we welcome contributions — whether it's bug reports, feature ideas, or pull requests. We're particularly interested in:
 
 - **Wizard UX improvements** — better card styling, animations, mobile support
 - **Session persistence** — storing plans/state in Grist tables instead of memory
-- **Alternative CSS frameworks** — making the injected CSS configurable (currently DSFR)
+- **Styling** — a minimal zero-specificity floor is injected into every artefact so that an unstyled one is still legible; making it themeable (and optionally DSFR) is open work
 - **Testing** — there are currently no automated tests
 - **Documentation** — usage guides, video demos, example workflows
 
