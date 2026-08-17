@@ -344,19 +344,26 @@ def savoir_faire(besoin: str = "", code: str = "", limite: int = 2) -> dict:
     q = _jetons(besoin)
     resultats = []
     for u in _savoir_index():
-        score, pourquoi = 0, []
+        score, pourquoi, marque = 0, [], 0
         marqueurs = u.get("marqueurs", {}) or {}
         for m in marqueurs.get("intention", []):
             if _sans_accents(m) in i_plat:
                 score += 3
+                marque += 1
                 pourquoi.append("intention:" + m)
         for m in marqueurs.get("code", []):
             if _sans_accents(m) in c_plat:
                 score += 2
+                marque += 1
                 pourquoi.append("code:" + m)
         recouvre = q & _jetons(u.get("besoin", "") + " " + u.get("titre", ""))
         score += len(recouvre)
-        if score:
+        # Un marqueur au moins, sinon on ne rend rien. Les mots seuls faisaient
+        # remonter n'importe quoi : « ouvrir une modale » rendait le client
+        # hors-ligne, « afficher une carte » rendait le style. Une reponse hors
+        # sujet est PIRE qu'une absence de reponse — elle a l'air d'en etre une.
+        # Les mots du besoin restent utiles : ils departagent, ils ne selectionnent pas.
+        if marque:
             pourquoi += ["mot:" + x for x in sorted(recouvre)[:2]]
             resultats.append((score, u, pourquoi))
     resultats.sort(key=lambda x: -x[0])

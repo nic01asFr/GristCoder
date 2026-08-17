@@ -9,21 +9,26 @@
    "Widgets Grist/skills/": "59 unites, source de verite ailleurs — on n'en garde ici que l'index et des extraits bornes",
    "projets Widgets Grist": "472 ko de doc projet — a trier document par document, les projets melangent Grist, QGIS et 3D",
    "knowledge/plateforme.md": "faits de plateforme etablis par incident ou verification — non deductibles du code",
-   "knowledge/patterns.md": "couche 2 — patterns transversaux avec leur alternative ecartee. Le champ confirmation dit sur combien de projets chacun est atteste : la definition de la couche en demande deux, cinq des six n'en ont qu'un."
+   "knowledge/patterns.md": "couche 2 — patterns transversaux avec leur alternative ecartee. Le champ confirmation dit sur combien de projets chacun est atteste : la definition de la couche en demande deux, cinq des six n'en ont qu'un.",
+   "knowledge/interface.md": "couche 1 — ce qui fait qu'un ecran se laisse utiliser",
+   "knowledge/assemblage.md": "ce qui relie les artefacts : pages, communication, publication, sorties",
+   "knowledge/carto.md": "convention cartographique de l'ecosysteme",
+   "knowledge/verification.md": "couche 4 — verifier, et comprendre ce qui ne va pas",
+   "knowledge/donnees.md": "couche 1 — concevoir le modele : tables, references, formules",
+   "knowledge/droits.md": "couche 1 — regles d'acces, verifie sur une application en service"
   },
   "recette": "6 besoins reels servent de test. Recherche par mots-cles seule : 2 reussites sur 6. Objectif apres qualification : au moins 5 sur 6.",
   "mis_a_jour": "2026-08-17",
-  "regle_inclusion": "Avant de traiter un dossier de Widgets Grist/projects/ comme source de verite, verifier qu'il n'existe pas un depot dedie du meme nom : girabase, zebra et observatoire-eclext ont leur canonique ailleurs, la copie locale n'est qu'un plan de travail. Regle donnee par Claude-Desktop, 17 aout 2026.",
   "couches": {
    "1_plateforme": "faits Grist purs, version-dependants, independants de tout projet. Verite unique, jamais dupliquee par projet.",
    "2_patterns": "solutions recurrentes prouvees sur au moins deux projets, chacune avec son contexte d'usage ET l'alternative ecartee. La couche la plus utile a un agent qui doit CHOISIR une approche.",
-   "3_catalogue": "un par projet reel : statut (prod/poc/draft/copie-de-travail), emplacement canonique REEL, et quels patterns de la couche 2 il utilise.",
+   "3_catalogue": "curation interne, jamais servie : quels patterns un projet reel utilise. Ne sort pas du service.",
    "4_pieges": "au niveau du symptome ET de la cause — pas une liste de rappels.",
    "5_arbitrages": "les cas ou deux approches ont coexiste et ou une decision a tranche, avec sa raison. Pour ne pas re-debattre ce qui est tranche.",
    "_origine": "structure proposee par Claude-Desktop le 17 aout 2026, depuis la memoire des projets. Adoptee : mes 144 unites couvrent surtout les couches 3 et 4 ; les couches 1 et 2 etaient structurellement absentes d'un inventaire disque."
   },
-  "vigilance": "widgets-documentation (GitHub nic01asFr, decembre 2025, 1 Mo) et Widgets Grist/skills/ (11 fevrier 2026) COEXISTENT : aucune preuve de remplacement, et aucune filiation detectable — zero occurrence du vocabulaire Artefactory (BRICK-, AppNest, Optimal_solution) ni des noms de fichiers de l'un dans l'autre. Avant de promouvoir en transversal un pattern venu de widgets-documentation, verifier qu'il apparait AILLEURS que dans l'ecosysteme Artefactory — meme exigence que pour SURFAC2E.",
-  "regle_service": "Le service ne reference AUCUN projet. Ce qui SORT de savoir_faire est une pratique du domaine Grist ; le nom du projet d'origine vit dans le champ provenance, qui n'est PAS servi. Ce qui survit dans le contenu, c'est le statut epistemique — mesure en charge, verifie, confirme sur deux projets independants — parce qu'il dit combien s'y fier sans nommer personne. Corollaire : la couche 3 (catalogue de projets) est un outil de curation interne et ne doit jamais etre servie."
+  "regle_service": "Le service ne reference AUCUN projet. Ce qui SORT de savoir_faire est une pratique du domaine Grist ; le nom du projet d'origine vit dans le champ provenance, qui n'est PAS servi. Ce qui survit dans le contenu, c'est le statut epistemique — mesure en charge, verifie, confirme sur deux projets independants — parce qu'il dit combien s'y fier sans nommer personne. Corollaire : la couche 3 (catalogue de projets) est un outil de curation interne et ne doit jamais etre servie. L'index lui-meme ne nomme aucun projet : la provenance dit ce qui atteste une unite (mesure, recette, audit) et quand, jamais d'ou elle vient. La tracabilite nominative reste hors du corpus publie, par construction.",
+  "tracabilite": "La provenance nominative — quel projet a produit quelle unite, ou vit son depot canonique, quelles sources restent a qualifier — est tenue HORS de ce depot, qui est public. Elle vit dans la memoire projet locale. Ici ne subsiste que le statut epistemique : ce qui atteste une unite, et quand."
  },
  "unites": [
   {
@@ -126,7 +131,7 @@
    },
    "piege": "un identifiant en dur pour designer l'utilisateur courant montre la meme ligne a tout le monde",
    "voir_aussi": [
-    "Atlas/docs/CADRAGE-IDENTITE-ACL.md — verifie le 5 aout : les regles ACL sont evaluees cote serveur, le widget n'a pas besoin de l'e-mail"
+    "verifie le 5 aout : les regles ACL sont evaluees cote serveur, le widget n'a pas besoin de l'e-mail"
    ],
    "couche": 1
   },
@@ -215,7 +220,7 @@
    },
    "piege": "l'import mappe n'est ni persiste ni expose en REST ; il n'y a pas d'email natif",
    "couche": 1,
-   "provenance": "observatoire-eclext, audit du 6 aout 2026"
+   "provenance": "audit du 6 aout 2026"
   },
   {
    "id": "plateforme#api-details",
@@ -266,15 +271,22 @@
    "besoin": "savoir si un document tiendra la charge",
    "marqueurs": {
     "intention": [
+     "charge",
      "combien de lignes",
-     "performance",
      "gros volume",
-     "charge"
+     "lent",
+     "lenteur",
+     "limite",
+     "passer a l echelle",
+     "performance",
+     "taille du document",
+     "tiendra",
+     "trop gros"
     ],
     "code": []
    },
    "piege": "recommande sous 100 000 lignes et 20 Mo ; un agregat recursif sur 834 entites coute 294 ms, ce n'est pas la ou est le risque",
-   "provenance": "SURFAC2E, mesure en charge reelle"
+   "provenance": "mesure en charge reelle"
   },
   {
    "id": "plateforme#pieces-jointes",
@@ -285,18 +297,21 @@
    "besoin": "stocker des photos ou des documents dans un doc Grist",
    "marqueurs": {
     "intention": [
+     "attachment",
+     "des documents",
+     "fichier",
+     "joindre",
      "photo",
      "piece jointe",
-     "attachment",
-     "terrain",
-     "document"
+     "stocker une photo",
+     "terrain"
     ],
     "code": [
      "Attachments"
     ]
    },
    "piege": "1 Go par document en interne — sature vers 50 batiments en usage photo. Et un document TELECHARGE a ses pieces jointes cassees DEFINITIVEMENT : remettre un doc passe par transfert de propriete, jamais par download",
-   "provenance": "SURFAC2E, verifie"
+   "provenance": "verifie en service"
   },
   {
    "id": "plateforme#schema-quirks",
@@ -318,7 +333,7 @@
     ]
    },
    "piege": "Grist retire le prefixe underscore des colId (_agg devient agg) ; une colonne formule jamais ecrite reste isFormula=true avec formule vide, c'est normal",
-   "provenance": "SURFAC2E, verifie"
+   "provenance": "verifie en service"
   },
   {
    "id": "patterns#dual-mode",
@@ -344,7 +359,7 @@
    },
    "alternative_ecartee": "deux clients separes, un widget Grist et une app terrain distincte — la logique metier diverge",
    "confirmation": "deux projets independants — le second a repris le mecanisme du premier plutot que de le reinventer",
-   "provenance": "Grist-AppStore/SCOUT terrain (premier), repris par SURFAC2E"
+   "provenance": "usage terrain, puis repris sur une seconde application"
   },
   {
    "id": "patterns#invariant-configurable",
@@ -368,7 +383,7 @@
    },
    "alternative_ecartee": "tout coder en dur par widget — chaque deploiement oblige a forker au lieu d'instancier",
    "confirmation": "une seule source",
-   "provenance": "SURFAC2E config.js, juillet 2026"
+   "provenance": "juillet 2026"
   },
   {
    "id": "patterns#miroir-js-python",
@@ -390,7 +405,7 @@
    },
    "alternative_ecartee": "ne calculer que cote serveur — casse le hors-ligne, qui est l'usage terrain principal",
    "confirmation": "une seule source",
-   "provenance": "SURFAC2E applicabilite.js, recette 23 juillet 2026"
+   "provenance": "recette 23 juillet 2026"
   },
   {
    "id": "patterns#registre-modules",
@@ -414,7 +429,7 @@
    },
    "alternative_ecartee": "une application par plateforme — duplication puis divergence",
    "confirmation": "une seule source",
-   "provenance": "SURFAC2E _core/manifest.json, 23 juillet 2026"
+   "provenance": "23 juillet 2026"
   },
   {
    "id": "patterns#ancrage-generique",
@@ -439,7 +454,7 @@
    },
    "alternative_ecartee": "un Ref vers la table metier en dur — ajouter un niveau plus fin n'est PAS additif, il faut reprendre le coeur",
    "confirmation": "une seule source",
-   "provenance": "SURFAC2E, audit du schema v2, 23 juillet 2026"
+   "provenance": "audit du schema v2, 23 juillet 2026"
   },
   {
    "id": "patterns#propose-valide",
@@ -465,7 +480,7 @@
    },
    "alternative_ecartee": "ecrire la valeur finale des qu'une source la produit — l'erreur se propage en silence",
    "confirmation": "deux projets independants, sous des noms differents",
-   "provenance": "SURFAC2E et observatoire-eclext (niveau_source)"
+   "provenance": "deux applications en service"
   },
   {
    "id": "patterns#reg-index",
@@ -476,11 +491,16 @@
    "besoin": "atteindre le document d'un tiers dont l'identite n'est connue qu'a la requete",
    "marqueurs": {
     "intention": [
-     "plusieurs documents",
-     "federation",
-     "partenaire",
+     "autre document",
+     "autre organisation",
      "autre organisme",
-     "multi-doc"
+     "document d un tiers",
+     "federation",
+     "multi-doc",
+     "organisation",
+     "partenaire",
+     "plusieurs docs",
+     "plusieurs documents"
     ],
     "code": [
      "doc_id",
@@ -489,7 +509,7 @@
    },
    "alternative_ecartee": "coder les doc_id en dur — chaque nouveau partenaire oblige a modifier le code",
    "confirmation": "une seule source",
-   "provenance": "observatoire-eclext, 2 aout 2026"
+   "provenance": "2 aout 2026"
   },
   {
    "id": "patterns#moteur-import",
@@ -513,13 +533,637 @@
    },
    "alternative_ecartee": "l'import natif de Grist — ni persiste comme config, ni expose en REST",
    "confirmation": "une seule source",
-   "provenance": "observatoire-eclext, 2 aout 2026"
+   "provenance": "2 aout 2026"
+  },
+  {
+   "id": "interface#commencer",
+   "couche": 1,
+   "fichier": "knowledge/interface.md",
+   "titre": "Par quoi commencer un artefact",
+   "nature": "recette",
+   "besoin": "ecrire mon premier artefact, savoir par ou commencer",
+   "marqueurs": {
+    "intention": [
+     "premier artefact",
+     "premier ecran",
+     "nouvel ecran",
+     "commencer",
+     "creer un widget",
+     "structure"
+    ],
+    "code": [
+     "<!DOCTYPE",
+     "grist.ready"
+    ]
+   },
+   "piege": "un innerHTML avant chargement ecrase ce que le rendu vient de poser"
+  },
+  {
+   "id": "interface#filtres",
+   "couche": 1,
+   "fichier": "knowledge/interface.md",
+   "titre": "Filtrer et rechercher dans une liste",
+   "nature": "recette",
+   "besoin": "filtrer une liste, chercher dedans, retenir le filtre",
+   "marqueurs": {
+    "intention": [
+     "filtrer",
+     "filtre",
+     "rechercher",
+     "recherche",
+     "liste filtrable",
+     "trier"
+    ],
+    "code": [
+     ".filter(",
+     "toLowerCase",
+     "localStorage"
+    ]
+   },
+   "piege": "un selecteur alimente par une liste ecrite en dur ment des que les donnees changent"
+  },
+  {
+   "id": "interface#modale",
+   "couche": 1,
+   "fichier": "knowledge/interface.md",
+   "titre": "Editer une ligne sans quitter la liste",
+   "nature": "recette",
+   "besoin": "editer une ligne depuis la liste, ouvrir une fenetre d'edition",
+   "marqueurs": {
+    "intention": [
+     "modale",
+     "modal",
+     "editer",
+     "edition",
+     "fenetre",
+     "popup",
+     "detail"
+    ],
+    "code": [
+     "dialog",
+     "overlay"
+    ]
+   },
+   "piege": "fermer la modale sur echec fait perdre la saisie"
+  },
+  {
+   "id": "interface#retour",
+   "couche": 1,
+   "fichier": "knowledge/interface.md",
+   "titre": "Dire ce qui vient de se passer",
+   "nature": "recette",
+   "besoin": "confirmer a l'utilisateur qu'une action a abouti",
+   "marqueurs": {
+    "intention": [
+     "confirmation",
+     "confirmer",
+     "notification",
+     "toast",
+     "message",
+     "retour utilisateur"
+    ],
+    "code": []
+   },
+   "piege": "une ecriture reussie sans retour visible laisse croire qu'il ne s'est rien passe"
+  },
+  {
+   "id": "interface#etats",
+   "couche": 1,
+   "fichier": "knowledge/interface.md",
+   "titre": "Le chargement et le vide",
+   "nature": "regle",
+   "besoin": "quoi afficher pendant le chargement, et quand il n'y a rien",
+   "marqueurs": {
+    "intention": [
+     "attente",
+     "aucune donnee",
+     "chargement",
+     "etat vide",
+     "pendant le chargement",
+     "premiere ouverture",
+     "si c est vide",
+     "vide"
+    ],
+    "code": [
+     "loading",
+     "Chargement"
+    ]
+   },
+   "piege": "confondre « pas encore charge », « aucune donnee » et « aucun resultat apres filtrage » : l'utilisateur croit ses donnees perdues"
+  },
+  {
+   "id": "interface#formulaire",
+   "couche": 1,
+   "fichier": "knowledge/interface.md",
+   "titre": "Un formulaire de saisie",
+   "nature": "recette",
+   "besoin": "faire saisir des donnees a l'utilisateur",
+   "marqueurs": {
+    "intention": [
+     "formulaire",
+     "saisie",
+     "saisir",
+     "champ",
+     "input"
+    ],
+    "code": [
+     "<form",
+     "type=\"date\"",
+     "<select"
+    ]
+   },
+   "piege": "un libelle uniquement en texte d'exemple disparait des qu'on tape"
+  },
+  {
+   "id": "assemblage#pages",
+   "couche": 3,
+   "fichier": "knowledge/assemblage.md",
+   "titre": "Pages Grist et sections",
+   "nature": "regle",
+   "besoin": "creer une page et y poser un widget",
+   "marqueurs": {
+    "intention": [
+     "page",
+     "pages",
+     "section",
+     "poser mon widget",
+     "onglet",
+     "navigation grist"
+    ],
+    "code": [
+     "_grist_Views",
+     "CreateViewSection",
+     "customView"
+    ]
+   },
+   "piege": "les tables meta s'ecrivent par UserAction, jamais par PATCH REST — sinon le document ne s'ouvre plus"
+  },
+  {
+   "id": "assemblage#inter-widget",
+   "couche": 2,
+   "fichier": "knowledge/assemblage.md",
+   "titre": "Faire communiquer deux ecrans",
+   "nature": "regle",
+   "besoin": "faire dialoguer deux widgets, ou un artefact et son iframe",
+   "marqueurs": {
+    "intention": [
+     "communiquer",
+     "communication",
+     "deux widgets",
+     "entre widgets",
+     "synchroniser",
+     "selection partagee",
+     "dialoguer"
+    ],
+    "code": [
+     "BroadcastChannel",
+     "postMessage",
+     "addEventListener"
+    ]
+   },
+   "piege": "sans tampon, les messages arrives avant la fin du chargement se perdent"
+  },
+  {
+   "id": "assemblage#publication",
+   "couche": 3,
+   "fichier": "knowledge/assemblage.md",
+   "titre": "Publier un widget autonome",
+   "nature": "regle",
+   "besoin": "publier un widget qui survit a l'arret du service",
+   "marqueurs": {
+    "intention": [
+     "publier",
+     "publication",
+     "autonome",
+     "standalone",
+     "sans le serveur",
+     "diffuser"
+    ],
+    "code": [
+     "artefact_publish"
+    ]
+   },
+   "piege": "un artefact publie qui reference son fabricant meurt avec lui"
+  },
+  {
+   "id": "assemblage#sortir",
+   "couche": 3,
+   "fichier": "knowledge/assemblage.md",
+   "titre": "Sortir du document",
+   "nature": "recette",
+   "besoin": "declencher une action externe, appeler une IA, enrichir depuis des donnees publiques",
+   "marqueurs": {
+    "intention": [
+     "webhook",
+     "action externe",
+     "notifier",
+     "email",
+     "courriel",
+     "intelligence artificielle",
+     "modele de langage",
+     "llm",
+     "geocoder",
+     "adresse",
+     "donnees publiques",
+     "api externe"
+    ],
+    "code": [
+     "fetch(",
+     "api-adresse"
+    ]
+   },
+   "piege": "une cle d'API dans un artefact est publique ; il n'y a pas d'envoi de courriel natif"
+  },
+  {
+   "id": "assemblage#formulaire-declare",
+   "couche": 3,
+   "fichier": "knowledge/assemblage.md",
+   "titre": "Un formulaire decrit plutot que code",
+   "nature": "explication",
+   "besoin": "decrire un formulaire par un manifeste plutot que l'ecrire",
+   "marqueurs": {
+    "intention": [
+     "manifeste",
+     "declaratif",
+     "formulaire declare",
+     "contrat",
+     "schema du formulaire"
+    ],
+    "code": []
+   },
+   "piege": "sans verification du contrat, la collecte et le document divergent en silence"
+  },
+  {
+   "id": "carto#couche",
+   "couche": 2,
+   "fichier": "knowledge/carto.md",
+   "titre": "Une couche est une vue sur une source",
+   "nature": "regle",
+   "besoin": "afficher une carte a partir de donnees Grist",
+   "marqueurs": {
+    "intention": [
+     "carte",
+     "carto",
+     "cartographie",
+     "couche",
+     "couches",
+     "geographique",
+     "geojson",
+     "spatial",
+     "geometrie"
+    ],
+    "code": [
+     "maplibre",
+     "leaflet",
+     "GeoJSON",
+     "EPSG"
+    ]
+   },
+   "piege": "la geometrie stockee est toujours en WGS84 — convertir a la lecture, jamais stocker autre chose"
+  },
+  {
+   "id": "carto#table",
+   "couche": 2,
+   "fichier": "knowledge/carto.md",
+   "titre": "La table de donnees",
+   "nature": "regle",
+   "besoin": "structurer les donnees d'une carte",
+   "marqueurs": {
+    "intention": [
+     "une ligne un objet",
+     "table geo",
+     "attributs",
+     "donnees cartographiques"
+    ],
+    "code": []
+   },
+   "piege": "la geometrie est une colonne comme une autre — c'est ce qui rend la carte filtrable"
+  },
+  {
+   "id": "carto#registre",
+   "couche": 2,
+   "fichier": "knowledge/carto.md",
+   "titre": "Le registre de couches",
+   "nature": "regle",
+   "besoin": "declarer quelles tables sont cartographiables et comment les afficher",
+   "marqueurs": {
+    "intention": [
+     "registre",
+     "declarer une couche",
+     "quelles tables",
+     "catalogue de couches"
+    ],
+    "code": [
+     "sourceTable",
+     "geometryColumn"
+    ]
+   },
+   "piege": "le lien couche vers table est du TEXTE, pas un Ref — une colonne Ref cible une table fixe"
+  },
+  {
+   "id": "carto#style",
+   "couche": 2,
+   "fichier": "knowledge/carto.md",
+   "titre": "Un style qui voyage",
+   "nature": "regle",
+   "besoin": "styler une carte pour que le style se reutilise ailleurs",
+   "marqueurs": {
+    "intention": [
+     "style de carte",
+     "symbologie",
+     "couleurs",
+     "categories",
+     "styleJSON"
+    ],
+    "code": [
+     "styleJSON",
+     "categorized",
+     "graduated"
+    ]
+   },
+   "piege": "un style ecrit en dur dans le JavaScript ne sort jamais de cet artefact"
+  },
+  {
+   "id": "carto#contraintes",
+   "couche": 2,
+   "fichier": "knowledge/carto.md",
+   "titre": "Trois contraintes Grist a respecter",
+   "nature": "regle",
+   "besoin": "faire reagir une carte aux changements de plusieurs tables",
+   "marqueurs": {
+    "intention": [
+     "rafraichir la carte",
+     "plusieurs tables",
+     "reactivite"
+    ],
+    "code": [
+     "onRecords",
+     "requiredAccess"
+    ]
+   },
+   "piege": "la reactivite automatique ne vaut que pour la table rattachee au widget"
+  },
+  {
+   "id": "verification#diagnostic",
+   "couche": 4,
+   "fichier": "knowledge/verification.md",
+   "titre": "Ce que le rendu rapporte tout seul",
+   "nature": "explication",
+   "besoin": "savoir si mon artefact fonctionne vraiment",
+   "marqueurs": {
+    "intention": [
+     "artefact fonctionne",
+     "controler",
+     "diagnostic",
+     "est-ce que ca marche",
+     "fonctionne",
+     "fonctionne vraiment",
+     "s assurer",
+     "savoir si",
+     "tester",
+     "verification",
+     "verifier"
+    ],
+    "code": []
+   },
+   "piege": "le diagnostic est rendu sans rien demander — ne pas le lire, c'est se priver de la reponse"
+  },
+  {
+   "id": "verification#ecran-blanc",
+   "couche": 4,
+   "fichier": "knowledge/verification.md",
+   "titre": "L'ecran est blanc",
+   "nature": "regle",
+   "besoin": "mon ecran est blanc et je ne sais pas pourquoi",
+   "marqueurs": {
+    "intention": [
+     "blanc",
+     "ecran blanc",
+     "ecran est blanc",
+     "ne marche pas",
+     "ne s'affiche pas",
+     "page blanche",
+     "pourquoi",
+     "rien ne s affiche",
+     "rien ne s'affiche",
+     "s affiche pas",
+     "vide"
+    ],
+    "code": [
+     "import React",
+     "ReactDOM"
+    ]
+   },
+   "piege": "un artefact React qui commence par un import produit un ecran blanc SILENCIEUX"
+  },
+  {
+   "id": "verification#donnees-absentes",
+   "couche": 4,
+   "fichier": "knowledge/verification.md",
+   "titre": "Les donnees n'arrivent pas",
+   "nature": "regle",
+   "besoin": "les donnees n'arrivent pas dans mon artefact",
+   "marqueurs": {
+    "intention": [
+     "donnees absentes",
+     "donnees n arrivent",
+     "liste vide",
+     "n arrivent pas",
+     "pas de donnees",
+     "pas de lignes",
+     "rien ne remonte",
+     "tableau vide",
+     "zero"
+    ],
+    "code": [
+     "|| []",
+     "loadTable",
+     "onRecord"
+    ]
+   },
+   "piege": "traiter le retour du chargement comme une enveloppe indexee par le nom de la table : undefined, avale par un || []"
+  },
+  {
+   "id": "verification#regarder",
+   "couche": 4,
+   "fichier": "knowledge/verification.md",
+   "titre": "Regarder avant de conclure",
+   "nature": "regle",
+   "besoin": "avant de declarer une application terminee",
+   "marqueurs": {
+    "intention": [
+     "terminer",
+     "conclure",
+     "fini",
+     "livrer",
+     "resume final"
+    ],
+    "code": [
+     "canvas_screenshot"
+    ]
+   },
+   "piege": "des compteurs a zero, un nombre a dix chiffres au lieu d'une date, [object Object] : invisibles dans le code, evidents a l'ecran"
+  },
+  {
+   "id": "donnees#tables",
+   "couche": 1,
+   "fichier": "knowledge/donnees.md",
+   "titre": "Creer les tables et les colonnes",
+   "nature": "regle",
+   "besoin": "concevoir les tables et les colonnes de mon application",
+   "marqueurs": {
+    "intention": [
+     "concevoir",
+     "modele de donnees",
+     "les tables",
+     "des tables",
+     "colonnes",
+     "schema",
+     "structurer les donnees",
+     "creer une table"
+    ],
+    "code": [
+     "AddTable",
+     "AddColumn",
+     "colId"
+    ]
+   },
+   "piege": "une reference vers une table creee PLUS TARD dans le meme lot casse ; et la casse des identifiants compte"
+  },
+  {
+   "id": "donnees#references",
+   "couche": 1,
+   "fichier": "knowledge/donnees.md",
+   "titre": "Les references",
+   "nature": "regle",
+   "besoin": "lier deux tables entre elles",
+   "marqueurs": {
+    "intention": [
+     "lier",
+     "reference",
+     "relation",
+     "rattacher",
+     "pointer vers"
+    ],
+    "code": [
+     "Ref:",
+     "RefList",
+     "visibleCol"
+    ]
+   },
+   "piege": "une reference cible une table FIXE ; une liste de references est prefixee et n'est pas un tableau ordinaire"
+  },
+  {
+   "id": "donnees#formules",
+   "couche": 1,
+   "fichier": "knowledge/donnees.md",
+   "titre": "Les formules",
+   "nature": "regle",
+   "besoin": "calculer une valeur derivee : total, solde, statut, decompte",
+   "marqueurs": {
+    "intention": [
+     "formule",
+     "calculer",
+     "calcul",
+     "total",
+     "somme",
+     "agregat",
+     "derive",
+     "automatique"
+    ],
+    "code": [
+     "isFormula",
+     "SUM(",
+     "lookupRecords"
+    ]
+   },
+   "piege": "tout ce qui se deduit doit etre une formule ; saisi a la main, ca divergera"
+  },
+  {
+   "id": "donnees#ancrage",
+   "couche": 2,
+   "fichier": "knowledge/donnees.md",
+   "titre": "Ce qui coute cher plus tard",
+   "nature": "regle",
+   "besoin": "modeliser une hierarchie qui gagnera des niveaux",
+   "marqueurs": {
+    "intention": [
+     "hierarchie",
+     "arborescence",
+     "niveaux",
+     "site batiment",
+     "parent",
+     "evoluer"
+    ],
+    "code": []
+   },
+   "piege": "ancrer sur une table metier n'est pas additif : ajouter un niveau oblige a reprendre le coeur"
+  },
+  {
+   "id": "droits#principe",
+   "couche": 1,
+   "fichier": "knowledge/droits.md",
+   "titre": "La regle est appliquee par Grist",
+   "nature": "regle",
+   "besoin": "restreindre ce que chaque utilisateur peut voir",
+   "marqueurs": {
+    "intention": [
+     "droits",
+     "acces",
+     "restreindre",
+     "permission",
+     "confidentiel",
+     "chacun ne voit",
+     "acl",
+     "securite",
+     "qui peut voir"
+    ],
+    "code": [
+     "user.Email",
+     "user.Access",
+     "aclFormula"
+    ]
+   },
+   "piege": "filtrer dans l'artefact est un confort d'affichage, JAMAIS une securite — un filtre JavaScript se contourne"
+  },
+  {
+   "id": "droits#regles",
+   "couche": 1,
+   "fichier": "knowledge/droits.md",
+   "titre": "Ce a quoi ressemble une regle",
+   "nature": "recette",
+   "besoin": "ecrire une regle d'acces par appartenance",
+   "marqueurs": {
+    "intention": [
+     "regle d acces",
+     "voir ses propres",
+     "mon equipe",
+     "responsable",
+     "appartenance"
+    ],
+    "code": [
+     "aclFormula",
+     "rec."
+    ]
+   },
+   "piege": "une adresse cherchee sans separateurs correspond a une autre qui la contient"
+  },
+  {
+   "id": "droits#ordre",
+   "couche": 1,
+   "fichier": "knowledge/droits.md",
+   "titre": "L'ordre dans lequel s'y prendre",
+   "nature": "regle",
+   "besoin": "mettre en place les droits sans se verrouiller dehors",
+   "marqueurs": {
+    "intention": [
+     "mettre en place les droits",
+     "commencer les droits",
+     "verrouiller"
+    ],
+    "code": []
+   },
+   "piege": "une regle qui exclut tout le monde verrouille le document pour son auteur aussi"
   }
- ],
- "_a_venir": [
-  "Couche 2 : six patterns poses (SURFAC2E). Manquent la convention carto (geo-grist-convention) et l'arbitrage widget<->widget (BroadcastChannel) — le test « construire une carte avec des couches » ne rend toujours rien.",
-  "SURFAC2E : codebase le plus mature (gitlab.cerema.fr/nicolas.laval/surfac2e), hors de tout inventaire disque. Notre depot porte deja une branche feat/surfac2e-assistant (26 juillet, 1752 insertions, shared/assistant_manifest.py + manifeste) non fusionnee.",
-  "Arbitrage acte (couche 5) : widget<->widget = BroadcastChannel nomme par domaine, preuve de prod sur CRM Territorial Med. EventBus et PostMessage sont d'autres briques, pas des concurrentes.",
-  "Zebra : emplacement canonique INCONNU. L'hypothese BigFatDot est refutee (404, l'org ne porte que BigMCP et BigStarter). Le depot nic01asFr/Zebra a existe jusqu'en janvier 2026 — prive, renomme, ou transfere ailleurs."
  ]
 }
