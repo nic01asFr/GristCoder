@@ -14,6 +14,7 @@ TOOLS : sessions(3) plan(1) canvas(7) wizard(2) context(1) chat(2) subagent(1)
 MCP   : sampling/createMessage (client capability) -> subagent_call + chat auto-reply
 """
 
+import unicodedata
 import asyncio, base64, difflib, hashlib, hmac, io, json, os, re, secrets, shutil, subprocess, sys, tarfile, tempfile, time, uuid, urllib.parse, urllib.request, urllib.error
 from collections import deque
 from contextlib import asynccontextmanager
@@ -271,6 +272,113 @@ if not WEBHOOK_SECRET and "localhost" not in HOST_URL and "127.0.0.1" not in HOS
         "can POST to it. Set WEBHOOK_SECRET in .env to prevent fake event injection.",
         file=sys.stderr,
     )
+
+_SAVOIR_SUITE = chr(10) + "[...]"
+
+# ── SAVOIR-FAIRE : router l'agent vers la bonne unite du corpus ───────────────
+# Le corpus mesure 113 ko pour 144 unites, quand l'agent traine deja 26 000
+# caracteres de plancher a chaque tour. L'injecter est donc exclu : il est
+# recupere a la demande, deux unites au plus.
+#
+# Double cle. Les marqueurs d'INTENTION routent AVANT que le code existe, quand
+# l'agent annonce ce qu'il va construire ; ceux de CODE routent PENDANT, quand ce
+# qu'il a ecrit trahit ce dont il a besoin. Un routage qui n'aurait que la seconde
+# cle n'aiderait qu'apres la faute — or c'est la faute qu'on veut eviter.
+_SAVOIR_DIR = Path(__file__).parent / "knowledge"
+_savoir_cache: dict = {"index": None, "corps": {}}
+_MOTS_VIDES_FR = {"le", "la", "les", "un", "une", "des", "de", "du", "et", "ou", "au",
+                  "aux", "en", "dans", "pour", "par", "sur", "avec", "sans", "que",
+                  "qui", "ce", "cette", "est", "sont", "je", "on", "il", "elle", "son",
+                  "sa", "ses", "mon", "ma", "mes", "the", "and", "with", "that", "this"}
+
+
+def _sans_accents(t: str) -> str:
+    t = unicodedata.normalize("NFD", (t or "").lower())
+    return "".join(c for c in t if unicodedata.category(c) != "Mn")
+
+
+def _jetons(t: str) -> set:
+    return {m for m in re.findall(r"[a-z0-9]{3,}", _sans_accents(t))
+            if m not in _MOTS_VIDES_FR}
+
+
+def _savoir_index() -> list:
+    if _savoir_cache["index"] is None:
+        try:
+            brut = json.loads((_SAVOIR_DIR / "index.json").read_text(encoding="utf-8"))
+            _savoir_cache["index"] = brut.get("unites", [])
+        except Exception as e:
+            print(f"[savoir] index illisible : {type(e).__name__}", file=sys.stderr)
+            _savoir_cache["index"] = []
+    return _savoir_cache["index"]
+
+
+def _savoir_corps(unite: dict) -> str:
+    """Section d'un fichier knowledge/, decoupee sur son titre de niveau 2."""
+    chemin = unite.get("fichier", "")
+    if chemin not in _savoir_cache["corps"]:
+        try:
+            nom = chemin.split("/")[-1]
+            _savoir_cache["corps"][chemin] = (_SAVOIR_DIR / nom).read_text(encoding="utf-8")
+        except Exception:
+            _savoir_cache["corps"][chemin] = ""
+    texte = _savoir_cache["corps"][chemin]
+    # Comparaison sur les seuls caracteres alphanumeriques : le titre du fichier
+    # porte du balisage — accents, backticks autour d'un nom de fonction — que
+    # l'index n'a pas. Sans ca l'unite remonte avec un contenu VIDE. Constate sur
+    # « Qui regarde l'ecran — grist.user » : bonne unite, zero caractere rendu.
+    def _cle(t):
+        return re.sub(r"[^a-z0-9]", "", _sans_accents(t))
+    cible = _cle(unite.get("titre", ""))[:20]
+    marques = list(re.finditer(r"^## (.+)$", texte, re.M))
+    for i, m in enumerate(marques):
+        if cible and _cle(m.group(1)).startswith(cible):
+            fin = marques[i + 1].start() if i + 1 < len(marques) else len(texte)
+            return texte[m.start():fin].strip()
+    return ""
+
+
+def savoir_faire(besoin: str = "", code: str = "", limite: int = 2) -> dict:
+    """Rend les unites pertinentes, bornees. Intention x3, code x2, mots du besoin x1."""
+    i_plat, c_plat = _sans_accents(besoin), _sans_accents(code)
+    q = _jetons(besoin)
+    resultats = []
+    for u in _savoir_index():
+        score, pourquoi = 0, []
+        marqueurs = u.get("marqueurs", {}) or {}
+        for m in marqueurs.get("intention", []):
+            if _sans_accents(m) in i_plat:
+                score += 3
+                pourquoi.append("intention:" + m)
+        for m in marqueurs.get("code", []):
+            if _sans_accents(m) in c_plat:
+                score += 2
+                pourquoi.append("code:" + m)
+        recouvre = q & _jetons(u.get("besoin", "") + " " + u.get("titre", ""))
+        score += len(recouvre)
+        if score:
+            pourquoi += ["mot:" + x for x in sorted(recouvre)[:2]]
+            resultats.append((score, u, pourquoi))
+    resultats.sort(key=lambda x: -x[0])
+
+    unites = []
+    for score, u, pourquoi in resultats[:max(1, min(limite, 3))]:
+        corps = _savoir_corps(u)
+        coupe = corps[:2500]
+        if len(corps) > 2500:
+            coupe += _SAVOIR_SUITE
+        unites.append({
+            "id": u["id"], "titre": u.get("titre"), "couche": u.get("couche"),
+            "nature": u.get("nature"), "piege": u.get("piege"),
+            "pourquoi_remontee": pourquoi[:3], "contenu": coupe,
+        })
+    if not unites:
+        return {"unites": [],
+                "_next": ("Rien de pertinent dans le corpus. Reformule ton besoin, ou "
+                          "avance : le corpus ne couvre pas tout.")}
+    return {"unites": unites,
+            "_next": ("Applique ce qui s applique, puis continue. Ne rappelle pas cet "
+                      "outil pour le meme ecran.")}
 
 # ── SERVER INSTRUCTIONS ───────────────────────────────────────────────────────
 
@@ -2384,6 +2492,22 @@ TOOLS = [
                          "table_id":    {"type": "string",  "description": "Table source de la nouvelle page (requis si pas de section_ref)"},
                          "page_name":   {"type": "string",  "description": "Nom de la nouvelle page (defaut : nom de l artefact)"}}}},
 
+    # Savoir-faire
+    {"name": "savoir_faire",
+     "description": (
+         "Recettes et pieges eprouves de l ecosysteme Grist. A appeler AVANT le premier "
+         "artefact d une construction, avant un type d ecran jamais produit, ou quand une "
+         "erreur nomme quelque chose d inconnu. Rend 2 unites bornees, pas un chapitre."
+     ),
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "besoin": {"type": "string",
+                                    "description": "Ce que tu vas construire, dans tes mots"},
+                         "code": {"type": "string",
+                                  "description": "Extrait deja ecrit (optionnel) — il trahit ce dont tu as besoin"}},
+                     "required": ["besoin"]},
+     "annotations": {"readOnlyHint": True}},
+
     # Grist lecture
     {"name": "grist_schema",
      "description": "Schema du document : tables et colonnes avec types, formules, refs. APRES : lire docs/artefacts avant canvas_write, ou examples/{domain} si domaine identifie.",
@@ -2537,7 +2661,7 @@ TOOLS = [
 # a l'autre, et deux onglets / deux agents partageant le meme compte ne peuvent de
 # toute facon pas se partager un etat global. Avec ce parametre, chaque appel est
 # autoportant et le travail en parallele redevient possible.
-_NO_SESSION_TOOLS = {"sessions_list", "session_select", "session_open", "grist_doc_create"}
+_NO_SESSION_TOOLS = {"sessions_list", "session_select", "session_open", "grist_doc_create", "savoir_faire"}
 _SESSION_TOKEN_PROP = {
     "type": "string",
     "description": ("Token de la session ciblee (voir sessions_list). Optionnel si un seul "
@@ -6967,6 +7091,11 @@ async def call_tool(uid_key, mcp_sid, name, args):
                     "_next": _next_init}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    # ── Savoir-faire (aucune session requise : c est de la doc)
+    if name == "savoir_faire":
+        return savoir_faire(args.get("besoin", ""), args.get("code", ""),
+                            int(args.get("limite", 2) or 2))
 
     # ── Grist lecture
     if name == "grist_schema":
