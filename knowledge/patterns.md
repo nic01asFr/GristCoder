@@ -6,9 +6,10 @@
 > projets qui ne sont pas au même endroit.
 >
 > Un mot sur la confiance : la définition de cette couche demande une preuve sur au
-> moins deux projets. Cinq des six ci-dessous viennent d'un seul — SURFAC²E, le
-> codebase Grist le plus mature, mais un seul. Le sixième est confirmé
-> indépendamment sur un second. La distinction est portée par chaque fiche.
+> moins deux projets. Sur les huit ci-dessous, **deux** l'ont — le client dual-mode et
+> les états propose/valide, chacun attesté sur un second projet non colocalisé. Les six
+> autres viennent d'une seule source. Ils restent précieux, mais chaque fiche dit ce
+> qu'elle vaut : un savoir qui tait son degré de preuve se fait croire.
 
 ## Client dual-mode — en ligne et hors-ligne
 
@@ -21,7 +22,10 @@ application terrain distincte.
 exactement le risque déjà matérialisé ailleurs — un widget écrasé par une réécriture
 concurrente, faute d'un modèle unique.
 
-*SURFAC²E `_core/grist-client.js`, juillet 2026. Confirmé sur un projet.*
+*Confirmé sur **deux projets non colocalisés**. Grist-AppStore / SCOUT terrain l'a en
+premier — primitives capteurs, client dual-mode, file d'attente hors-ligne, batch-sync ;
+SURFAC²E l'a repris consciemment plutôt que réinventé, et son `_core/grist-client.js` le
+cite. C'est le second des huit à satisfaire pleinement le critère de la couche 2.*
 
 ## Frontière invariant / configurable
 
@@ -91,4 +95,42 @@ et l'erreur se propage silencieusement dans les calculs et les exports.
 *SURFAC²E, règle non négociable, implémentée le 23 juillet 2026. **Confirmé
 indépendamment sur un second projet non colocalisé** : observatoire-eclext porte le même
 principe sous un autre nom — `niveau_source` et modération pour arbitrer doublons et
-conflits. C'est le seul des six à satisfaire pleinement le critère de la couche 2.*
+conflits. Premier des deux à satisfaire pleinement le critère de la couche 2.*
+
+## Registre de résolution multi-documents — sans `doc_id` en dur
+
+Une table `Reg_Index` associe une ressource logique à un triplet — source, table Grist,
+mode d'accès — et le service l'interroge **avant** de router un appel.
+
+**Alternative écartée** : coder les identifiants des documents partenaires en dur dans
+le service. C'est ce que fait le nôtre aujourd'hui : un document par session, une clé par
+session.
+**Pourquoi** : cela ne passe pas à l'échelle dès qu'il faut résoudre vers le document
+d'un tiers dont l'identité n'est connue qu'au moment de la requête. Chaque nouveau
+partenaire obligerait à modifier le code.
+
+Le détail qui compte : l'index porte aussi un **niveau d'accès**, lu par le service avant
+de servir. Changer la visibilité d'une ressource devient une modification de *donnée*,
+pas de code. Un bug réel a été trouvé en chemin — l'index portait ce niveau et rien ne
+l'appliquait encore.
+
+*observatoire-eclext, structuré et durci le 2 août 2026. Confirmé sur un projet.*
+
+## Moteur d'import — quatre contrôles, trois stratégies de fusion
+
+Une configuration persistante par organisme, et un moteur qui vérifie à chaque
+exécution : couverture des attributs obligatoires, **dérive de schéma** entre deux
+exécutions, traduction des valeurs vers la nomenclature cible, journalisation.
+L'écriture se fait sur une clé de fusion, avec trois stratégies au choix — tout
+remplacer, remplacer si renseigné, compléter les vides.
+
+**Alternative écartée** : s'appuyer sur l'import natif de Grist, dont le mapping et la
+transformation existent dans l'interface.
+**Pourquoi** : cette configuration n'est **ni persistée ni exposée en API REST**. Elle
+sert un import manuel ponctuel, jamais un import récurrent ou programmé.
+
+Le contrôle de dérive de schéma n'était demandé par personne : il s'est révélé nécessaire
+en protégeant le rejeu automatique contre lui-même. Éprouvé — rejeu identique accepté,
+rejeu après renommage d'une colonne source refusé.
+
+*observatoire-eclext, 2 août 2026. Confirmé sur un projet.*

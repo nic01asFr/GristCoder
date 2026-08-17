@@ -21,7 +21,8 @@
    "4_pieges": "au niveau du symptome ET de la cause — pas une liste de rappels.",
    "5_arbitrages": "les cas ou deux approches ont coexiste et ou une decision a tranche, avec sa raison. Pour ne pas re-debattre ce qui est tranche.",
    "_origine": "structure proposee par Claude-Desktop le 17 aout 2026, depuis la memoire des projets. Adoptee : mes 144 unites couvrent surtout les couches 3 et 4 ; les couches 1 et 2 etaient structurellement absentes d'un inventaire disque."
-  }
+  },
+  "vigilance": "widgets-documentation (GitHub nic01asFr, decembre 2025, 1 Mo) et Widgets Grist/skills/ (11 fevrier 2026) COEXISTENT : aucune preuve de remplacement, et aucune filiation detectable — zero occurrence du vocabulaire Artefactory (BRICK-, AppNest, Optimal_solution) ni des noms de fichiers de l'un dans l'autre. Avant de promouvoir en transversal un pattern venu de widgets-documentation, verifier qu'il apparait AILLEURS que dans l'ecosysteme Artefactory — meme exigence que pour SURFAC2E."
  },
  "unites": [
   {
@@ -338,7 +339,7 @@
     ]
    },
    "alternative_ecartee": "deux clients separes, un widget Grist et une app terrain distincte — la logique metier diverge",
-   "confirmation": "un projet (SURFAC2E)",
+   "confirmation": "DEUX projets non colocalises : Grist-AppStore/SCOUT terrain l'a en PREMIER, SURFAC2E l'a repris consciemment plutot que reinvente (son blueprint le cite)",
    "source": "Claude-Desktop, memoire des projets, 17 aout 2026"
   },
   {
@@ -461,12 +462,60 @@
    "alternative_ecartee": "ecrire la valeur finale des qu'une source la produit — l'erreur se propage en silence",
    "confirmation": "DEUX projets (SURFAC2E et observatoire-eclext, sous le nom niveau_source)",
    "source": "Claude-Desktop, memoire des projets, 17 aout 2026"
+  },
+  {
+   "id": "patterns#reg-index",
+   "couche": 2,
+   "fichier": "knowledge/patterns.md",
+   "titre": "Registre de resolution multi-documents",
+   "nature": "regle",
+   "besoin": "atteindre le document d'un tiers dont l'identite n'est connue qu'a la requete",
+   "marqueurs": {
+    "intention": [
+     "plusieurs documents",
+     "federation",
+     "partenaire",
+     "autre organisme",
+     "multi-doc"
+    ],
+    "code": [
+     "doc_id",
+     "docId"
+    ]
+   },
+   "alternative_ecartee": "coder les doc_id en dur — chaque nouveau partenaire oblige a modifier le code",
+   "confirmation": "un projet (observatoire-eclext)",
+   "source": "Claude-Desktop, 17 aout 2026"
+  },
+  {
+   "id": "patterns#moteur-import",
+   "couche": 2,
+   "fichier": "knowledge/patterns.md",
+   "titre": "Moteur d'import",
+   "nature": "regle",
+   "besoin": "importer regulierement des donnees d'une source exterieure",
+   "marqueurs": {
+    "intention": [
+     "import",
+     "recurrent",
+     "flux",
+     "synchroniser",
+     "rejeu"
+    ],
+    "code": [
+     "BulkAddOrUpdate",
+     "upsert"
+    ]
+   },
+   "alternative_ecartee": "l'import natif de Grist — ni persiste comme config, ni expose en REST",
+   "confirmation": "un projet (observatoire-eclext)",
+   "source": "Claude-Desktop, 17 aout 2026"
   }
  ],
  "_a_venir": [
   "Couche 2 : six patterns poses (SURFAC2E). Manquent la convention carto (geo-grist-convention) et l'arbitrage widget<->widget (BroadcastChannel) — le test « construire une carte avec des couches » ne rend toujours rien.",
   "SURFAC2E : codebase le plus mature (gitlab.cerema.fr/nicolas.laval/surfac2e), hors de tout inventaire disque. Notre depot porte deja une branche feat/surfac2e-assistant (26 juillet, 1752 insertions, shared/assistant_manifest.py + manifeste) non fusionnee.",
-  "observatoire-eclext : federation multi-documents — registre Reg_Index resolvant une ressource logique vers (source, table, mode d'acces) sans doc_id en dur, moteur d'import a 4 controles, fusion incrementale a 3 strategies.",
-  "Arbitrage acte (couche 5) : widget<->widget = BroadcastChannel nomme par domaine, preuve de prod sur CRM Territorial Med. EventBus et PostMessage sont d'autres briques, pas des concurrentes."
+  "Arbitrage acte (couche 5) : widget<->widget = BroadcastChannel nomme par domaine, preuve de prod sur CRM Territorial Med. EventBus et PostMessage sont d'autres briques, pas des concurrentes.",
+  "Zebra : emplacement canonique INCONNU. L'hypothese BigFatDot est refutee (404, l'org ne porte que BigMCP et BigStarter). Le depot nic01asFr/Zebra a existe jusqu'en janvier 2026 — prive, renomme, ou transfere ailleurs."
  ]
 }
