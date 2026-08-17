@@ -1,81 +1,237 @@
 {
-  "_a_propos": {
-    "role": "Index de routage du savoir Grist. Une unite = une section adressable.",
-    "pourquoi": "Le corpus (144 unites mesurees, 113 ko) ne peut pas etre injecte : l'agent traine deja 26 000 caracteres de plancher a chaque tour. Il est donc recupere a la demande, deux unites au plus.",
-    "double_cle": "marqueurs.intention route AVANT que le code existe — l'agent annonce ce qu'il va construire. marqueurs.code route PENDANT — ce qu'il a ecrit trahit ce dont il a besoin. Sans la premiere, on n'aide qu'apres la faute.",
-    "sources": {
-      "knowledge/": "unites dont ce service est la source — ecrites ici parce qu'elles n'existent nulle part ailleurs",
-      "grist_coder.py DOCS_*": "74 unites, deja embarquees, a indexer sur place",
-      "Widgets Grist/skills/": "59 unites, source de verite ailleurs — on n'en garde ici que l'index et des extraits bornes",
-      "projets Widgets Grist": "472 ko de doc projet — a trier document par document, les projets melangent Grist, QGIS et 3D"
-    },
-    "recette": "6 besoins reels servent de test. Recherche par mots-cles seule : 2 reussites sur 6. Objectif apres qualification : au moins 5 sur 6.",
-    "mis_a_jour": "2026-08-17"
+ "_a_propos": {
+  "role": "Index de routage du savoir Grist. Une unite = une section adressable.",
+  "pourquoi": "Le corpus (144 unites mesurees, 113 ko) ne peut pas etre injecte : l'agent traine deja 26 000 caracteres de plancher a chaque tour. Il est donc recupere a la demande, deux unites au plus.",
+  "double_cle": "marqueurs.intention route AVANT que le code existe — l'agent annonce ce qu'il va construire. marqueurs.code route PENDANT — ce qu'il a ecrit trahit ce dont il a besoin. Sans la premiere, on n'aide qu'apres la faute.",
+  "sources": {
+   "knowledge/": "unites dont ce service est la source — ecrites ici parce qu'elles n'existent nulle part ailleurs",
+   "grist_coder.py DOCS_*": "74 unites, deja embarquees, a indexer sur place",
+   "Widgets Grist/skills/": "59 unites, source de verite ailleurs — on n'en garde ici que l'index et des extraits bornes",
+   "projets Widgets Grist": "472 ko de doc projet — a trier document par document, les projets melangent Grist, QGIS et 3D",
+   "knowledge/plateforme.md": "faits de plateforme etablis par incident ou verification — non deductibles du code"
   },
-
-  "unites": [
-    {
-      "id": "pont#lire",
-      "fichier": "knowledge/pont.md",
-      "titre": "Lire une table",
-      "nature": "regle",
-      "besoin": "recuperer les lignes d'une table pour les afficher",
-      "marqueurs": {
-        "intention": ["liste", "tableau", "afficher des donnees", "charger"],
-        "code": ["loadTable", "fetchTable", "|| []"]
-      },
-      "piege": "resultat.MaTable sur un retour de loadTable vaut undefined ; un || [] l'avale et l'ecran affiche des zeros sans erreur",
-      "remplace": ["skills/data-conversion#format-colonaire (11 fevrier, decrit la voie manuelle)"]
-    },
-    {
-      "id": "pont#ecrire",
-      "fichier": "knowledge/pont.md",
-      "titre": "Ecrire",
-      "nature": "regle",
-      "besoin": "ajouter, modifier ou supprimer une ligne depuis un artefact",
-      "marqueurs": {
-        "intention": ["creer", "modifier", "supprimer", "valider", "formulaire"],
-        "code": ["addRow", "updateRow", "deleteRow", "applyUserActions", "BulkAdd"]
-      },
-      "piege": "BulkAddOrReplaceRecord est refuse depuis un navigateur (not controlled)"
-    },
-    {
-      "id": "pont#convertir",
-      "fichier": "knowledge/pont.md",
-      "titre": "Convertir — grist.util",
-      "nature": "regle",
-      "besoin": "afficher une date, une reference, ou du texte saisi par un utilisateur",
-      "marqueurs": {
-        "intention": ["date", "periode", "echeance", "reference", "commentaire"],
-        "code": ["Date(", "* 1000", "/ 1000", "toLocaleDate", "innerHTML", "['L'"]
-      },
-      "piege": "Grist stocke les dates en SECONDES : la valeur brute affiche 1704067200. Et une cellule placee dans innerHTML sans esc() fait du contenu du document du code",
-      "remplace": ["skills/data-conversion#dates (11 fevrier)"]
-    },
-    {
-      "id": "pont#utilisateur",
-      "fichier": "knowledge/pont.md",
-      "titre": "Qui regarde l'ecran — grist.user",
-      "nature": "regle",
-      "besoin": "savoir quel utilisateur consulte l'ecran",
-      "marqueurs": {
-        "intention": ["mes demandes", "utilisateur courant", "mon espace", "qui est connecte"],
-        "code": ["employeId =", "userId =", "grist.user"]
-      },
-      "piege": "un identifiant en dur pour designer l'utilisateur courant montre la meme ligne a tout le monde",
-      "voir_aussi": ["Atlas/docs/CADRAGE-IDENTITE-ACL.md — verifie le 5 aout : les regles ACL sont evaluees cote serveur, le widget n'a pas besoin de l'e-mail"]
-    },
-    {
-      "id": "pont#style",
-      "fichier": "knowledge/pont.md",
-      "titre": "Le style",
-      "nature": "explication",
-      "besoin": "savoir ce qui est deja habille et ce qui reste a faire",
-      "marqueurs": {
-        "intention": ["style", "apparence", "mise en page"],
-        "code": ["<style", ":root", "className"]
-      },
-      "voir_aussi": ["skills/patterns#variables-css"]
-    }
-  ]
+  "recette": "6 besoins reels servent de test. Recherche par mots-cles seule : 2 reussites sur 6. Objectif apres qualification : au moins 5 sur 6.",
+  "mis_a_jour": "2026-08-17",
+  "regle_inclusion": "Avant de traiter un dossier de Widgets Grist/projects/ comme source de verite, verifier qu'il n'existe pas un depot dedie du meme nom : girabase, zebra et observatoire-eclext ont leur canonique ailleurs, la copie locale n'est qu'un plan de travail. Regle donnee par Claude-Desktop, 17 aout 2026."
+ },
+ "unites": [
+  {
+   "id": "pont#lire",
+   "fichier": "knowledge/pont.md",
+   "titre": "Lire une table",
+   "nature": "regle",
+   "besoin": "recuperer les lignes d'une table pour les afficher",
+   "marqueurs": {
+    "intention": [
+     "liste",
+     "tableau",
+     "afficher des donnees",
+     "charger"
+    ],
+    "code": [
+     "loadTable",
+     "fetchTable",
+     "|| []"
+    ]
+   },
+   "piege": "resultat.MaTable sur un retour de loadTable vaut undefined ; un || [] l'avale et l'ecran affiche des zeros sans erreur",
+   "remplace": [
+    "skills/data-conversion#format-colonaire (11 fevrier, decrit la voie manuelle)"
+   ]
+  },
+  {
+   "id": "pont#ecrire",
+   "fichier": "knowledge/pont.md",
+   "titre": "Ecrire",
+   "nature": "regle",
+   "besoin": "ajouter, modifier ou supprimer une ligne depuis un artefact",
+   "marqueurs": {
+    "intention": [
+     "creer",
+     "modifier",
+     "supprimer",
+     "valider",
+     "formulaire"
+    ],
+    "code": [
+     "addRow",
+     "updateRow",
+     "deleteRow",
+     "applyUserActions",
+     "BulkAdd"
+    ]
+   },
+   "piege": "BulkAddOrReplaceRecord est refuse depuis un navigateur (not controlled)"
+  },
+  {
+   "id": "pont#convertir",
+   "fichier": "knowledge/pont.md",
+   "titre": "Convertir — grist.util",
+   "nature": "regle",
+   "besoin": "afficher une date, une reference, ou du texte saisi par un utilisateur",
+   "marqueurs": {
+    "intention": [
+     "date",
+     "periode",
+     "echeance",
+     "reference",
+     "commentaire"
+    ],
+    "code": [
+     "Date(",
+     "* 1000",
+     "/ 1000",
+     "toLocaleDate",
+     "innerHTML",
+     "['L'"
+    ]
+   },
+   "piege": "Grist stocke les dates en SECONDES : la valeur brute affiche 1704067200. Et une cellule placee dans innerHTML sans esc() fait du contenu du document du code",
+   "remplace": [
+    "skills/data-conversion#dates (11 fevrier)"
+   ]
+  },
+  {
+   "id": "pont#utilisateur",
+   "fichier": "knowledge/pont.md",
+   "titre": "Qui regarde l'ecran — grist.user",
+   "nature": "regle",
+   "besoin": "savoir quel utilisateur consulte l'ecran",
+   "marqueurs": {
+    "intention": [
+     "mes demandes",
+     "utilisateur courant",
+     "mon espace",
+     "qui est connecte"
+    ],
+    "code": [
+     "employeId =",
+     "userId =",
+     "grist.user"
+    ]
+   },
+   "piege": "un identifiant en dur pour designer l'utilisateur courant montre la meme ligne a tout le monde",
+   "voir_aussi": [
+    "Atlas/docs/CADRAGE-IDENTITE-ACL.md — verifie le 5 aout : les regles ACL sont evaluees cote serveur, le widget n'a pas besoin de l'e-mail"
+   ]
+  },
+  {
+   "id": "pont#style",
+   "fichier": "knowledge/pont.md",
+   "titre": "Le style",
+   "nature": "explication",
+   "besoin": "savoir ce qui est deja habille et ce qui reste a faire",
+   "marqueurs": {
+    "intention": [
+     "style",
+     "apparence",
+     "mise en page"
+    ],
+    "code": [
+     "<style",
+     ":root",
+     "className"
+    ]
+   },
+   "voir_aussi": [
+    "skills/patterns#variables-css"
+   ]
+  },
+  {
+   "id": "plateforme#meta-json",
+   "fichier": "knowledge/plateforme.md",
+   "titre": "Les champs meta sont des chaines JSON",
+   "nature": "regle",
+   "besoin": "creer ou modifier une colonne Choice, une section, une mise en page",
+   "marqueurs": {
+    "intention": [
+     "colonne choice",
+     "widgetOptions",
+     "mise en page",
+     "section"
+    ],
+    "code": [
+     "widgetOptions",
+     "layoutSpec",
+     "customView",
+     "AddColumn",
+     "ModifyColumn"
+    ]
+   },
+   "piege": "un objet passe la ou Grist attend une chaine JSON rend le document INOUVRABLE"
+  },
+  {
+   "id": "plateforme#concurrence",
+   "fichier": "knowledge/plateforme.md",
+   "titre": "Ecriture concurrente sans verrou",
+   "nature": "regle",
+   "besoin": "plusieurs agents ou onglets ecrivent le meme artefact",
+   "marqueurs": {
+    "intention": [
+     "plusieurs sessions",
+     "en parallele",
+     "deux agents"
+    ],
+    "code": [
+     "canvas_write"
+    ]
+   },
+   "piege": "deux sessions qui ecrivent le meme widget s'ecrasent en silence — perte constatee sur budget_app"
+  },
+  {
+   "id": "plateforme#pas-natif",
+   "fichier": "knowledge/plateforme.md",
+   "titre": "Ce que Grist ne fait pas nativement",
+   "nature": "explication",
+   "besoin": "importer regulierement des donnees, ou notifier par courriel",
+   "marqueurs": {
+    "intention": [
+     "import",
+     "notification",
+     "email",
+     "recurrent"
+    ],
+    "code": []
+   },
+   "piege": "l'import mappe n'est ni persiste ni expose en REST ; il n'y a pas d'email natif"
+  },
+  {
+   "id": "plateforme#api-details",
+   "fichier": "knowledge/plateforme.md",
+   "titre": "Deux details d'API",
+   "nature": "recette",
+   "besoin": "faire un upsert, ou reagir a la selection d'une autre vue",
+   "marqueurs": {
+    "intention": [
+     "upsert",
+     "selection",
+     "vue liee"
+    ],
+    "code": [
+     "BulkAddOrUpdateRecord",
+     "InteractionOptions",
+     "onRecord"
+    ]
+   },
+   "piege": "sans le champ linking dans InteractionOptions, le widget est aveugle aux selections"
+  },
+  {
+   "id": "plateforme#waf",
+   "fichier": "knowledge/plateforme.md",
+   "titre": "Le WAF",
+   "nature": "explication",
+   "besoin": "une ecriture est refusee en 403, ou par intermittence",
+   "marqueurs": {
+    "intention": [
+     "403",
+     "refuse",
+     "jsx"
+    ],
+    "code": [
+     "Incapsula"
+    ]
+   },
+   "piege": "le challenge est INTERMITTENT : un meme appel passe, echoue, puis repasse"
+  }
+ ]
 }
