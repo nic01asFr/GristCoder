@@ -302,6 +302,21 @@ def _jetons(t: str) -> set:
             if m not in _MOTS_VIDES_FR}
 
 
+def _porte(marqueur: str, texte: str) -> bool:
+    """Le marqueur apparait-il comme mot (ou suite de mots) dans le texte ?
+
+    La recherche par sous-chaine nue attrapait des mots a l'INTERIEUR d'autres :
+    « publier un widget » declenchait le marqueur « lier », et rendait la doc des
+    references sur une question de publication. On borne donc les deux extremites
+    du marqueur. Un marqueur de plusieurs mots reste exige tel quel : c'est pour
+    ca que l'index en porte les variantes reellement employees — « ecran blanc »
+    ET « ecran est blanc ». Seul le pluriel final est tolere, sans quoi le marqueur
+    « formule » cesserait de reconnaitre « mes formules ».
+    """
+    return re.search(r"(?<![a-z0-9])" + re.escape(marqueur) + r"s?(?![a-z0-9])",
+                     texte) is not None
+
+
 def _savoir_index() -> list:
     if _savoir_cache["index"] is None:
         try:
@@ -347,12 +362,12 @@ def savoir_faire(besoin: str = "", code: str = "", limite: int = 2) -> dict:
         score, pourquoi, marque = 0, [], 0
         marqueurs = u.get("marqueurs", {}) or {}
         for m in marqueurs.get("intention", []):
-            if _sans_accents(m) in i_plat:
+            if _porte(_sans_accents(m), i_plat):
                 score += 3
                 marque += 1
                 pourquoi.append("intention:" + m)
         for m in marqueurs.get("code", []):
-            if _sans_accents(m) in c_plat:
+            if _sans_accents(m) in c_plat:  # le code n'a pas de frontieres de mots
                 score += 2
                 marque += 1
                 pourquoi.append("code:" + m)
@@ -552,7 +567,17 @@ BOUCLE POST-WIZARD (apres chaque reponse interactive bloquante)
   3. Le wizard ne se ferme que sur plan_update(status='done') ou choix explicite utilisateur
   Objectif : le LLM ne laisse jamais l overlay vide apres une reponse — il enchaine toujours.
 
-OUTILS (34)
+OUTILS (35)
+  Savoir   : savoir_faire(besoin=..., code=...)
+             <- Recettes et pieges eprouves de l ecosysteme Grist. Aucune session requise :
+                appelable AVANT d ouvrir un document. Rend deux unites au plus, ~1,5 Ko.
+                A appeler a TROIS moments, sans attendre de blocage :
+                  1. avant le PREMIER artefact d une construction (besoin = ce que tu vas batir) ;
+                  2. avant un TYPE d ecran jamais aborde dans cette session — carte, formulaire,
+                     modale, page, publication, droits d acces ;
+                  3. quand un ecran ne se comporte pas comme prevu (besoin = le symptome, ou
+                     code = l extrait fautif).
+                Appliquer ce qui s applique, puis continuer : ne pas le rappeler pour le meme ecran.
   Plan     : plan_update              <- META-CONTROLE : persiste + _next_resources par phase
   Sessions : sessions_list            <- _next hint integre (plan? ou docs/qualification)
              session_select, session_info
@@ -6153,6 +6178,15 @@ def _survey_schema_diff(manifest: dict, actual_cols: dict) -> dict:
             "schema_diff": {"missing": missing, "type_mismatch": mismatch, "extra": extra}}
 
 async def call_tool(uid_key, mcp_sid, name, args):
+    # Le savoir-faire est de la documentation : il ne touche a aucun document et
+    # doit repondre AVANT toute session. Place plus bas, il tombait dans le routage
+    # de session et repondait « Aucune session active » — or on l'appelle justement
+    # au moment ou l'on decide quoi construire, souvent avant d'avoir ouvert quoi
+    # que ce soit. Il reste donc en tete de call_tool, comme sessions_list.
+    if name == "savoir_faire":
+        return savoir_faire(args.get("besoin", ""), args.get("code", ""),
+                            int(args.get("limite", 2) or 2))
+
     if name == "sessions_list":
         s = registry.list_sessions(uid_key)
         if s:
@@ -7098,11 +7132,6 @@ async def call_tool(uid_key, mcp_sid, name, args):
                     "_next": _next_init}
         except Exception as e:
             return {"ok": False, "error": str(e)}
-
-    # ── Savoir-faire (aucune session requise : c est de la doc)
-    if name == "savoir_faire":
-        return savoir_faire(args.get("besoin", ""), args.get("code", ""),
-                            int(args.get("limite", 2) or 2))
 
     # ── Grist lecture
     if name == "grist_schema":
