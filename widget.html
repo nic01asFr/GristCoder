@@ -852,6 +852,14 @@ window.addEventListener('DOMContentLoaded', function() {
   if (_DISPLAY_MODE) {
     // Display mode: navbar masquée, render plein écran
     document.getElementById('navbar').style.display = 'none';
+    // #editorPane est en width:0, PAS en display:none : son <select> d'artefacts
+    // et son etat vide restaient donc dans l'ordre de tabulation et dans l'arbre
+    // d'accessibilite de l'application livree. Un utilisateur au clavier ou au
+    // lecteur d'ecran tombait sur la plomberie de construction. On le retire.
+    var _ed = document.getElementById('editorPane');
+    if (_ed) { _ed.style.display = 'none'; _ed.setAttribute('aria-hidden', 'true'); }
+    var _sp = document.getElementById('splitter');
+    if (_sp) { _sp.style.display = 'none'; }
     return;
   }
   _editor = ace.edit('aceEditor');
@@ -957,7 +965,15 @@ async function doRegister(msg) {
     var parts = (tk.baseUrl||'').split('/api/docs/');
     if (parts.length !== 2) { showToast('baseUrl invalide','error'); return; }
     var siteUrl = parts[0], docId = parts[1].split('/')[0];
-    var docTitle = (msg && msg.docTitle) || document.title || docId;
+    // document.title vaut « Grist Coder » DANS l'iframe, et le message ready de
+    // Grist ne porte pas docTitle : le repli gagnait donc toujours, et toutes les
+    // sessions s'appelaient pareil dans sessions_list — impossible de distinguer
+    // deux documents ouverts. getDocName() donne le nom reel du document.
+    var docTitle = (msg && msg.docTitle) || '';
+    if (!docTitle) {
+      try { docTitle = await grist.docApi.getDocName(); } catch(_) {}
+    }
+    docTitle = docTitle || docId;
     var userId = (msg && msg.userId) || null;
     if (!userId) {
       try {

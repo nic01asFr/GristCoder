@@ -5336,17 +5336,7 @@ async def _read_resource(uid_key, mcp_sid, uri):
             table_ref_map = {r["id"]: r["fields"].get("tableId","") for r in tables_meta.get("records",[])}
             type_map      = {"record": "grid", "single": "card", "custom": "custom", "chart": "chart"}
 
-            def _extract_artefact(options_str):
-                if not options_str: return None
-                try:
-                    cv = json.loads(json.loads(options_str).get("customView") or "null")
-                    if not cv: return None
-                    m = re.search(r'[?&]a=([^&]+)', cv.get("url",""))
-                    if m: return m.group(1)
-                    wo = cv.get("widgetOptions")
-                    if wo: return (json.loads(wo) if isinstance(wo,str) else wo).get("artefact")
-                except Exception: pass
-                return None
+            _extract_artefact = _artefact_de_section
 
             sections_by_view: dict = {}
             for r in sections_resp.get("records", []):
@@ -5441,6 +5431,11 @@ async def _read_resource(uid_key, mcp_sid, uri):
         pages_data = snapshot.get("pages", [])
         tables_set = set(snapshot.get("tables", []))
         tables_with_page = set()
+        # Deux sections branchees sur le MEME artefact = deux pages qui montrent
+        # le meme ecran. Arrive quand on publie sans passer section_ref : la page
+        # existe deja, la publication en cree une seconde. L'utilisateur se retrouve
+        # avec « Tableau de bord » ET « DashboardSubventions ».
+        pages_par_artefact: dict = {}
         for page in pages_data:
             for sec in page.get("sections", []):
                 tbl = sec.get("table")
@@ -5452,6 +5447,17 @@ async def _read_resource(uid_key, mcp_sid, uri):
                         "page": page.get("name"),
                         "section_id": sec.get("id")
                     })
+                if sec.get("artefact"):
+                    pages_par_artefact.setdefault(sec["artefact"], []).append(
+                        {"page": page.get("name"), "section_id": sec.get("id")})
+        for art, emplacements in pages_par_artefact.items():
+            if len(emplacements) > 1:
+                quality_issues.append({
+                    "issue": "artefact_sur_plusieurs_pages",
+                    "artefact": art,
+                    "emplacements": emplacements,
+                    "reparer": ("garder une seule page et supprimer les autres "
+                                "(RemoveView), ou republier avec section_ref=<id a garder>")})
         for tbl in tables_set:
             if tbl.lower() == "artefacts":
                 continue
@@ -5468,6 +5474,15 @@ async def _read_resource(uid_key, mcp_sid, uri):
                             "issue": "ref_no_visiblecol",
                             "table": tbl, "col": col["id"], "type": col_type
                         })
+                # Second filet sur le typage : le pre-vol avertit a la CREATION,
+                # ceci rattrape a la RELECTURE — y compris ce qui a ete cree hors
+                # grist_apply, ou avant que l'avertissement existe.
+                av = _avertir_type(tbl, col.get("id"), col_type)
+                if av:
+                    quality_issues.append({
+                        "issue": "colonne_non_typee",
+                        "table": tbl, "col": col.get("id"), "type": col_type or "(absent)",
+                        "detail": av})
         if quality_issues:
             snapshot["_quality"] = quality_issues
 
@@ -5527,17 +5542,7 @@ async def _read_resource(uid_key, mcp_sid, uri):
         if not target_page:
             raise ValueError(f"Page {page_id} introuvable")
         # Sections for this page
-        def _extract_artefact_url(options_str):
-            if not options_str: return None
-            try:
-                cv = json.loads(json.loads(options_str).get("customView") or "null")
-                if not cv: return None
-                m = re.search(r'[?&]a=([^&]+)', cv.get("url",""))
-                if m: return m.group(1)
-                wo = cv.get("widgetOptions")
-                if wo: return (json.loads(wo) if isinstance(wo,str) else wo).get("artefact")
-            except Exception: pass
-            return None
+        _extract_artefact_url = _artefact_de_section
         sections = []
         all_section_ids = set()
         for r in sections_resp.get("records", []):
@@ -5911,6 +5916,31 @@ def _schema_to_mermaid(schema: dict) -> str:
 
 # ── GUIDAGE — rappels de savoir-faire injectes dans les reponses d ecriture ────
 
+def _artefact_de_section(options_str):
+    """Nom de l'artefact affiche par une section custom, ou None.
+
+    Une section declare l'artefact de deux facons selon la voie de creation :
+    dans l'URL du widget (?a=Nom) ou dans widgetOptions.artefact. On lit les deux.
+    Cette information est ce qui permet de RECONNAITRE une page deja construite
+    au lieu d'en creer une seconde qui montre la meme chose.
+    """
+    if not options_str:
+        return None
+    try:
+        cv = json.loads(json.loads(options_str).get("customView") or "null")
+        if not cv:
+            return None
+        m = re.search(r"[?&]a=([^&]+)", cv.get("url", ""))
+        if m:
+            return m.group(1)
+        wo = cv.get("widgetOptions")
+        if wo:
+            return (json.loads(wo) if isinstance(wo, str) else wo).get("artefact")
+    except Exception:
+        pass
+    return None
+
+
 def _apply_next(actions):
     """Analyse des UserActions et retourne un rappel _next contextuel (ou None).
 
@@ -6046,6 +6076,39 @@ def _erreurs_json_meta(valeur, chemin="") -> list:
     return erreurs
 
 
+# Typage des colonnes. Une colonne laissee en Text ne casse rien a la creation :
+# elle casse plus tard, ailleurs, et en silence. Constate en recette — un tableau
+# de bord affichant « 050002000800030 € » parce que les montants etaient du Text
+# et que 0 + "5000" concatene. Pire : `.toLocaleString()` sur une chaine la rend
+# telle quelle, sans erreur, donc l'agent croit avoir formate.
+# Heuristique sur le NOM de la colonne, volontairement modeste : elle se trompera
+# parfois, donc elle n'emet que des AVERTISSEMENTS. Bloquer sur une devinette
+# serait pire que le mal qu'on soigne.
+_TYPES_ATTENDUS = [
+    (re.compile(r"montant|prix|tarif|cout|total|somme|budget|solde|"
+                r"quantite|nombre|nb[_a-z]|taux|pourcent|surface|effectif", re.I),
+     "Numeric ou Int", "les additions concatenent au lieu de sommer"),
+    (re.compile(r"(^|[_a-z])date|echeance|deadline|debut|fin$|jour$|horodat", re.I),
+     "Date ou DateTime", "ni tri chronologique, ni filtre par periode, ni selecteur de date"),
+    (re.compile(r"statut|etat$|categorie|priorite|niveau$", re.I),
+     "Choice", "pas de liste fermee ni de pastille coloree, et les fautes de frappe passent"),
+    (re.compile(r"^(est|is)[_A-Z]|actif$|valide$|paye$|termine$|archive$", re.I),
+     "Bool", "une case a cocher devient du texte libre"),
+]
+
+
+def _avertir_type(table, colid, type_col):
+    """Avertissement si le nom d'une colonne dement son type. None sinon."""
+    base = str(type_col or "").split(":", 1)[0]
+    if base not in ("", "Text", "Any"):
+        return None
+    for motif, attendu, degat in _TYPES_ATTENDUS:
+        if motif.search(colid or ""):
+            return (f"'{table}.{colid}' est en {base or 'type absent'} — attendu {attendu}. "
+                    f"Sinon : {degat}.")
+    return None
+
+
 def _validate_actions(actions, existing_tables, existing_cols=None):
     """Pre-vol : detecte les erreurs frequentes AVANT grist_apply.
 
@@ -6088,6 +6151,9 @@ def _validate_actions(actions, existing_tables, existing_cols=None):
                         f"\"NoneType object has no attribute 'table_id'\" au premier insert.")
                 if tgt:
                     warnings.append(f"colonne Ref '{c.get('id')}' de '{tname}' -> penser a definir visibleCol apres creation")
+                av = _avertir_type(tname, c.get("id"), c.get("type"))
+                if av:
+                    warnings.append(av)
                 if c.get("isFormula") or c.get("formula"):
                     formulas.append((i, tname, c.get("id"), c.get("formula")))
             if tname:
@@ -6105,6 +6171,9 @@ def _validate_actions(actions, existing_tables, existing_cols=None):
                 errors.append(f"action {i} (AddColumn sur '{tname}'): reference la table '{tgt}' inexistante a ce point.")
             if tgt:
                 warnings.append(f"colonne Ref ajoutee sur '{tname}' -> definir visibleCol")
+            av = _avertir_type(tname, colid, spec.get("type"))
+            if av:
+                warnings.append(av)
             if spec.get("isFormula") or spec.get("formula"):
                 formulas.append((i, tname, colid, spec.get("formula")))
         elif verb == "RemoveTable":
@@ -7228,6 +7297,13 @@ async def call_tool(uid_key, mcp_sid, name, args):
             result = await grist_apply(ctx, actions)
             _notify_resource(uid_key, f"grist-coder://context/{ctx.token}")
             resp = {"ok": True, "result": result}
+            # Le pre-vol produisait des avertissements que PERSONNE ne lisait : seul
+            # check["errors"] etait consulte, pour bloquer. Le rappel « definir
+            # visibleCol » etait donc ecrit depuis toujours et n'est jamais arrive a
+            # un agent. On les rend ici — c'est le seul moment ou ils portent, juste
+            # apres l'ecriture et avant la suite de la construction.
+            if has_structural and check.get("warnings"):
+                resp["_avertissements"] = check["warnings"]
             nxt = _apply_next(actions)
             if nxt:
                 resp["_next"] = nxt
@@ -7300,10 +7376,17 @@ async def call_tool(uid_key, mcp_sid, name, args):
             sects_by_view: dict[int, list] = {}
             for r in sections_resp.get("records",[]):
                 vid = r["fields"].get("parentId", 0)
-                sects_by_view.setdefault(vid, []).append({
+                sec = {
                     "id":   r["id"],
                     "type": r["fields"].get("parentKey",""),
-                })
+                }
+                # Sans ce champ, un agent ne peut pas savoir quelle section
+                # reutiliser : il republie, et une seconde page apparait montrant
+                # le meme ecran. L'information existait, elle n'etait pas rendue.
+                art = _artefact_de_section(r["fields"].get("options", ""))
+                if art:
+                    sec["artefact"] = art
+                sects_by_view.setdefault(vid, []).append(sec)
             pages = []
             for r in pages_resp.get("records",[]):
                 vref = r["fields"].get("viewRef", 0)
@@ -7313,7 +7396,11 @@ async def call_tool(uid_key, mcp_sid, name, args):
                     "name":     views_map.get(vref,""),
                     "sections": sects_by_view.get(vref,[]),
                 })
-            return {"pages": pages, "total": len(pages)}
+            return {"pages": pages, "total": len(pages),
+                    "_next": ("Pour rebrancher un artefact sur une page EXISTANTE : "
+                              "artefact_publish(artefact=..., section_ref=<id de la section "
+                              "qui porte deja cet artefact>). Publier sans section_ref cree "
+                              "une nouvelle page.")}
         except Exception as e:
             return {"error": str(e)}
 
@@ -7633,6 +7720,22 @@ async def call_tool(uid_key, mcp_sid, name, args):
             })
 
             view_ref = None
+            # Republier un artefact qui a DEJA une page ne doit pas en creer une
+            # seconde. Omettre section_ref est le cas courant — l'agent vient de
+            # creer la page avec grist_view_create et ne pense pas a la repasser.
+            # On la retrouve donc nous-memes : c'est deterministe, et ca supprime
+            # toute une classe de doublons (« Tableau de bord » ET
+            # « DashboardSubventions » montrant le meme ecran).
+            reutilisee = False
+            if not section_ref and artefact:
+                try:
+                    secs = await grist_get(ctx, "tables/_grist_Views_section/records")
+                    for r in secs.get("records", []):
+                        if _artefact_de_section(r["fields"].get("options", "")) == artefact:
+                            section_ref, reutilisee = r["id"], True
+                            break
+                except Exception:
+                    pass  # best effort : en cas d'echec on retombe sur l'ancien comportement
             if section_ref:
                 # Reconfigurer une section existante en preservant ses autres options
                 sect = await grist_post(ctx, "sql", {
@@ -7703,6 +7806,7 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 "ok": True, "artefact": artefact,
                 "section_ref": section_ref, "view_ref": view_ref,
                 "page_name": page_name if view_ref else None,
+                "section_reutilisee": reutilisee or None,
                 "autonomous": True,
                 "hint": ("Widget fige dans le doc (options de section, builder galerie). "
                          "Aucune dependance au serveur MCP au runtime — le widget survit a "
@@ -8445,7 +8549,24 @@ async def register(request: Request):
     grist_key    = data.get("gristKey", "").strip()
     site_url     = data.get("siteUrl", "").rstrip("/")
     doc_id       = data.get("docId", "")
-    doc_title    = data.get("docTitle", "") or doc_id
+    doc_title    = data.get("docTitle", "").strip()
+    # Garde-fou serveur. Les widgets deja deployes envoient « Grist Coder » —
+    # le titre de leur propre iframe — et toutes les sessions d'un compte
+    # portaient alors le meme nom, ce qui rend sessions_list inutilisable des
+    # que deux documents sont ouverts. On resout ici, sans attendre qu'un
+    # widget soit recharge.
+    if not doc_title or doc_title.lower() in ("grist coder", "coder"):
+        doc_title = ""
+    if not doc_title and site_url and doc_id and (access_token or grist_key):
+        try:
+            async with _grist_client() as c:
+                rr = await c.get(f"{site_url}/api/docs/{doc_id}",
+                                 headers={"Authorization": f"Bearer {access_token or grist_key}"})
+                if rr.status_code == 200:
+                    doc_title = ((rr.json() or {}).get("name") or "").strip()
+        except Exception:
+            pass
+    doc_title = doc_title or doc_id
     bearer = access_token or grist_key
     if not bearer:
         return JSONResponse({"error": "accessToken manquant"}, status_code=400)

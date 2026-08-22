@@ -1164,6 +1164,49 @@
     "code": []
    },
    "piege": "une regle qui exclut tout le monde verrouille le document pour son auteur aussi"
+  },
+  {
+   "id": "donnees#typage",
+   "couche": 1,
+   "fichier": "knowledge/donnees.md",
+   "titre": "Typer les colonnes, ou le payer ailleurs",
+   "nature": "regle",
+   "besoin": "choisir le type des colonnes, et calculer juste dessus",
+   "marqueurs": {
+    "intention": [
+     "additionner",
+     "calculer un total",
+     "chiffre bizarre",
+     "choisir le type",
+     "colonne texte",
+     "colonnes en texte",
+     "mauvais total",
+     "montant",
+     "montants",
+     "nombre",
+     "quel type",
+     "somme",
+     "statut",
+     "tableau de bord",
+     "total",
+     "totaux",
+     "typage",
+     "type de colonne",
+     "type de mes colonnes",
+     "typer",
+     "types de colonnes"
+    ],
+    "code": [
+     "reduce(",
+     "toLocaleString",
+     "parseFloat",
+     "Number(",
+     "\"Text\"",
+     "'Text'"
+    ]
+   },
+   "piege": "tout laisser en Text ne casse rien a la creation : les sommes se mettent a CONCATENER (0 + \"5000\" = \"05000\") et .toLocaleString() sur une chaine la rend telle quelle SANS erreur — on croit avoir formate",
+   "provenance": "recette navigateur de bout en bout, aout 2026"
   }
  ]
 }

@@ -48,6 +48,36 @@ Et une formule d'agrégat en cascade n'est pas un risque de performance : mesur�
 lecture de plus de huit cents entités avec agrégats récursifs se compte en centaines de
 millisecondes.
 
+## Typer les colonnes, ou le payer ailleurs
+
+C'est le défaut le plus coûteux du modèle, et le plus discret : tout laisser en texte.
+Rien ne casse à la création. Rien ne casse à la saisie. Ça casse plus tard, ailleurs,
+dans un écran qu'on croyait fini.
+
+Un montant en texte se lit `"5000"`. Une addition qui part de zéro donne alors `"05000"`,
+puis `"050002000"` : la somme **concatène**. Et le piège se referme parce que la mise en
+forme ne proteste pas — appliquée à une chaîne, elle la rend telle quelle, sans erreur.
+On croit avoir formaté. Le tableau de bord affiche un total de quinze chiffres, et le code
+a l'air juste.
+
+Une date en texte ne se trie pas dans l'ordre du temps, ne se filtre pas par période, et
+n'ouvre pas de sélecteur de date. Un statut en texte n'a ni liste fermée, ni pastille
+colorée, et accueille toutes les fautes de frappe. Dans les trois cas, les vues de synthèse
+natives deviennent inutilisables sur la colonne.
+
+Deux gestes, et le premier dispense du second.
+
+**À la création, donner le bon type.** Montant, total, quantité, taux : numérique ou
+entier. Date, échéance : date. Statut, catégorie, priorité : liste de choix. Case à
+cocher : booléen. Le coût est nul à ce moment-là ; il devient une reprise ensuite.
+
+**À la lecture, convertir avant de calculer.** Même sur une colonne bien typée, une valeur
+passée par une saisie peut revenir en chaîne. Toute arithmétique commence donc par une
+conversion explicite, avec un repli sur zéro pour les valeurs absentes.
+
+Le signe qui doit alerter, à l'écran : un total anormalement long, ou qui commence par un
+zéro. Ce n'est jamais un grand nombre, c'est une concaténation.
+
 ## Ce qui coûte cher plus tard
 
 Ancrer les données directement sur une table métier — une référence vers « Bâtiments » —
