@@ -5348,6 +5348,7 @@ async def _read_resource(uid_key, mcp_sid, uri):
                     "type":       type_map.get(f.get("parentKey",""), f.get("parentKey","")),
                     "table":      table_ref_map.get(f.get("tableRef",0), ""),
                     "artefact":   _extract_artefact(f.get("options","")),
+                    "est_coder":  _est_section_coder(f.get("options","")),
                     "linked_to":  f.get("linkSrcSectionRef") or None,
                     "linked_col": f.get("linkTargetColRef") or None,
                 })
@@ -5441,7 +5442,8 @@ async def _read_resource(uid_key, mcp_sid, uri):
                 tbl = sec.get("table")
                 if tbl:
                     tables_with_page.add(tbl)
-                if sec.get("type") == "custom" and not sec.get("artefact"):
+                if (sec.get("type") == "custom" and not sec.get("artefact")
+                        and not sec.get("est_coder")):
                     quality_issues.append({
                         "issue": "custom_section_no_artefact",
                         "page": page.get("name"),
@@ -5930,7 +5932,10 @@ def _artefact_de_section(options_str):
         cv = json.loads(json.loads(options_str).get("customView") or "null")
         if not cv:
             return None
-        m = re.search(r"[?&]a=([^&]+)", cv.get("url", ""))
+        # `or ""` et non un defaut de get() : une section PUBLIEE porte url=None,
+        # et re.search(motif, None) levait — l'exception etait avalee plus bas, donc
+        # le repli sur widgetOptions n'etait jamais atteint.
+        m = re.search(r"[?&]a=([^&]+)", cv.get("url") or "")
         if m:
             return m.group(1)
         wo = cv.get("widgetOptions")
@@ -5939,6 +5944,26 @@ def _artefact_de_section(options_str):
     except Exception:
         pass
     return None
+
+
+def _est_section_coder(options_str):
+    """La section est-elle la console Coder elle-meme, et non un ecran d'application ?
+
+    Elle pointe l'URL du widget servi par ce pod, sans parametre ?a= — c'est ce qui
+    la distingue d'une page de rendu. La signaler comme « section custom sans
+    artefact » envoyait l'agent reparer sa propre console.
+    """
+    if not options_str:
+        return False
+    try:
+        cv = json.loads(json.loads(options_str).get("customView") or "null") or {}
+        url = cv.get("url") or ""
+        if not url or re.search(r"[?&]a=", url):
+            return False
+        base = (_coder_widget_url() or "").split("?")[0].rstrip("/")
+        return bool(base) and url.split("?")[0].rstrip("/") == base
+    except Exception:
+        return False
 
 
 def _apply_next(actions):
@@ -7715,7 +7740,8 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 "mode": "url", "url": None, "access": "full",
                 "widgetDef": builder_def, "pluginId": "", "sectionId": "",
                 "renderAfterReady": True, "widgetId": builder_def.get("widgetId", _BUILDER_WIDGET_ID),
-                "widgetOptions": {"_html": html_part, "_js": js_part},
+                "widgetOptions": {"_html": html_part, "_js": js_part,
+                                   "artefact": artefact},
                 "columnsMapping": None,
             })
 
