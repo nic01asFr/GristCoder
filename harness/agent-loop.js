@@ -525,6 +525,14 @@
 
     var iter = 0;        // tours d'outils "productifs" (>=1 outil non ask_user)
     var completions = 0; // total d'appels LLM (borne dure)
+    // Garde anti-piétinement. Observé en usage : sur un artefact de 340 000 caractères,
+    // l'agent a répété huit fois « le code est très volumineux, je vais faire des
+    // modifications ciblées » sans jamais avancer, jusqu'à saturer la fenêtre de
+    // contexte. Ni MAX_ITERATIONS ni HARD_CAP ne l'arrêtaient : chaque tour appelait
+    // bien un outil, il ne produisait simplement aucun progrès. On surveille donc la
+    // répétition du DISCOURS, qui est le symptôme visible du blocage.
+    var dernierDit = '', repetitions = 0;
+    var MAX_REPET = 3;
 
     function step() {
       if (_stopped) return Promise.resolve();
@@ -545,6 +553,17 @@
 
         // Texte accompagnant les tool calls : le montrer AVANT d'agir (pas de silence).
         if (resp.text) _say(resp.text);
+
+        var dit = (resp.text || '').trim().slice(0, 120);
+        repetitions = (dit && dit === dernierDit) ? repetitions + 1 : 0;
+        dernierDit = dit;
+        if (repetitions >= MAX_REPET) {
+          _say("Je tourne en rond : j'annonce la meme chose sans avancer. Je m'arrete "
+             + "plutot que d'epuiser le contexte. Si l'artefact est volumineux, la voie "
+             + "est canvas_read(motif='...') pour n'ouvrir que la zone a modifier. "
+             + "Dis-moi par quoi commencer.");
+          return Promise.resolve();
+        }
 
         // LOOP-CLOSURE : appende l'assistant porteur des tool_calls AVANT les resultats.
         _memAdd({ role: 'assistant', content: resp.text || '', toolCalls: resp.toolCalls });

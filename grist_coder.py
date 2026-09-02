@@ -2263,8 +2263,23 @@ TOOLS = [
      "annotations": {"readOnlyHint": True}},
 
     {"name": "canvas_read",
-     "description": "Lit le code complet du canvas (artefact actuellement selectionne). Appeler AVANT tout canvas_patch.",
-     "inputSchema": {"type": "object", "properties": {}},
+     "description": (
+         "Lit le code du canvas (artefact selectionne). Appeler AVANT tout canvas_patch. "
+         "SUR UN GROS ARTEFACT, NE PAS TOUT LIRE : un artefact de 300 000 caracteres pese "
+         "environ 85 000 tokens et sature la fenetre de contexte a lui seul. Passer motif= "
+         "pour ne recevoir que les zones utiles, avec leurs numeros de ligne — c'est ce qui "
+         "donne le old_str exact de canvas_patch. Sans argument, la lecture est BORNEE et "
+         "la reponse dit comment cibler."),
+     "inputSchema": {"type": "object",
+                     "properties": {
+                         "motif": {"type": "string",
+                                   "description": ("Texte ou expression reguliere a chercher dans le code. "
+                                                   "Rend chaque zone trouvee avec ses lignes voisines.")},
+                         "contexte": {"type": "integer",
+                                      "description": "Lignes de contexte autour de chaque trouvaille (defaut 6)."},
+                         "depuis": {"type": "integer", "description": "Premiere ligne a lire (1-based)."},
+                         "lignes": {"type": "integer", "description": "Nombre de lignes a lire depuis 'depuis'."}},
+                     },
      "annotations": {"readOnlyHint": True}},
 
     {"name": "canvas_write",
@@ -5966,6 +5981,100 @@ def _est_section_coder(options_str):
         return False
 
 
+# Lecture d'un canvas. Un artefact d'application reelle atteint plusieurs centaines
+# de milliers de caracteres — 338 827 mesures sur un CRM en service, soit ~94 000
+# tokens. Rendu d'un bloc a un modele dont la fenetre en fait 131 072, il ne reste
+# plus de place pour raisonner : la session meurt en ContextWindowExceededError.
+# Constate en usage : l'agent avait BIEN diagnostique (« le code est tres volumineux,
+# je vais faire des modifications ciblees ») mais n'avait aucun outil pour le faire,
+# et a repete la meme phrase huit fois avant de saturer.
+# On rend donc trois lectures : par MOTIF — la seule utile pour preparer un
+# canvas_patch —, par FENETRE de lignes, et integrale, bornee et accompagnee du
+# mode d'emploi pour cibler.
+_CANVAS_PLAFOND = 24000      # caracteres rendus sans ciblage (~6 700 tokens)
+_CANVAS_CTX = 6              # lignes de contexte de part et d'autre d'une trouvaille
+_CANVAS_REPERES = re.compile(
+    r"^[^\n]*?\b(?:function\s+\w+|const\s+\w+\s*=\s*(?:\(|function|async)|class\s+\w+"
+    r"|def\s+\w+|<h[12][ >])", re.M)
+
+
+def _canvas_apercu(code):
+    """Ce qu'il faut savoir avant de lire : poids, cout, points d'entree."""
+    reperes = []
+    for m in _CANVAS_REPERES.finditer(code):
+        reperes.append("L%d %s" % (code.count("\n", 0, m.start()) + 1,
+                                   m.group(0).strip()[:70]))
+    return {"taille": len(code), "lignes": code.count("\n") + 1,
+            "cout_estime_tokens": int(len(code) / 3.6),
+            "reperes": reperes[:40]}
+
+
+def _canvas_zones(lignes, touches, marge):
+    """Fusionne les voisinages qui se chevauchent : jamais deux fois les memes lignes."""
+    zones, deb, fin = [], touches[0] - marge, touches[0] + marge
+    for i in touches[1:]:
+        if i - marge <= fin + 1:
+            fin = i + marge
+        else:
+            zones.append((deb, fin))
+            deb, fin = i - marge, i + marge
+    zones.append((deb, fin))
+    return [(max(0, a), min(len(lignes) - 1, b)) for a, b in zones]
+
+
+def _canvas_lecture(code, args):
+    """Rend le canvas selon le ciblage demande. Jamais plus que necessaire."""
+    if not code:
+        return ""
+    motif = (args.get("motif") or "").strip()
+    depuis = args.get("depuis")
+    lignes = code.split("\n")
+
+    def numerote(a, b):
+        return "\n".join("%5d| %s" % (i + 1, lignes[i]) for i in range(a, b + 1))
+
+    if motif:
+        try:
+            rx = re.compile(motif, re.I)
+        except re.error:
+            rx = re.compile(re.escape(motif), re.I)   # motif litteral, pas une regex
+        touches = [i for i, l in enumerate(lignes) if rx.search(l)]
+        if not touches:
+            return {"motif": motif, "trouvailles": 0, "apercu": _canvas_apercu(code),
+                    "_next": ("Aucune ligne ne correspond. Raccourcir le motif, ou partir "
+                              "d'un repere ci-dessus avec canvas_read(depuis=<ligne>).")}
+        marge = int(args.get("contexte") or _CANVAS_CTX)
+        extraits, total = [], 0
+        for a, b in _canvas_zones(lignes, touches, marge):
+            bloc = numerote(a, b)
+            total += len(bloc)
+            if total > _CANVAS_PLAFOND:
+                extraits.append("[...] zones suivantes omises — affiner le motif")
+                break
+            extraits.append(bloc)
+        return {"motif": motif, "trouvailles": len(touches),
+                "zones": len(extraits), "extraits": extraits,
+                "_next": ("Le old_str de canvas_patch se copie depuis un extrait ci-dessus, "
+                          "SANS le prefixe « NNNN| », et doit etre unique dans le code.")}
+
+    if depuis:
+        a = max(0, int(depuis) - 1)
+        b = min(len(lignes), a + int(args.get("lignes") or 80))
+        return {"depuis": a + 1, "jusqu_a": b, "total_lignes": len(lignes),
+                "extrait": numerote(a, b - 1)}
+
+    if len(code) <= _CANVAS_PLAFOND:
+        return code
+    ap = _canvas_apercu(code)
+    return {"tronque": True, "apercu": ap, "debut": code[:_CANVAS_PLAFOND],
+            "_next": ("Artefact trop gros pour une lecture integrale : %d caracteres, "
+                      "~%d tokens. Le rendre d'un bloc saturerait la fenetre de contexte. "
+                      "Appeler canvas_read(motif='...') pour n'obtenir que les zones a "
+                      "modifier, ou canvas_read(depuis=N, lignes=80) pour avancer par "
+                      "fenetres. Les reperes ci-dessus donnent les points d'entree."
+                      % (ap["taille"], ap["cout_estime_tokens"]))}
+
+
 def _apply_next(actions):
     """Analyse des UserActions et retourne un rappel _next contextuel (ou None).
 
@@ -6488,12 +6597,26 @@ async def call_tool(uid_key, mcp_sid, name, args):
                 recs = [r for r in data.get("records", [])
                         if r["fields"].get("Nom") != PROJECT_META_NAME]
                 info["artefacts_count"] = len(recs)
-                info["artefacts"] = [
-                    {"nom": r["fields"].get("Nom",""), "type": r["fields"].get("Type",""),
-                     "isDoc": bool(r["fields"].get("IsDoc",False))}
-                    for r in recs
-                ]
+                # La TAILLE est portee ici parce que c'est le seul endroit ou un agent
+                # regarde avant de decider d'ouvrir un artefact. Sans elle il ne peut pas
+                # savoir qu'un canvas_read va lui couter 94 000 tokens et tuer sa session.
+                info["artefacts"] = []
+                gros = []
+                for r in recs:
+                    f = r["fields"]
+                    taille = len(f.get("Code") or "")
+                    a = {"nom": f.get("Nom", ""), "type": f.get("Type", ""),
+                         "isDoc": bool(f.get("IsDoc", False)), "taille": taille}
+                    if taille > _CANVAS_PLAFOND:
+                        a["cout_lecture_tokens"] = int(taille / 3.6)
+                        gros.append(f.get("Nom", ""))
+                    info["artefacts"].append(a)
                 info["hint"] = f"Lire grist-coder://context/{ctx.token} pour snapshot complet"
+                if gros:
+                    info["_avertissements"] = [
+                        ("Artefact volumineux : " + ", ".join(gros) + ". Ne PAS les lire "
+                         "entierement — canvas_read(motif='...') rend les seules zones utiles, "
+                         "avec leurs numeros de ligne, et donne le old_str de canvas_patch.")]
             except Exception:
                 info["artefacts_count"] = 0
         # Dernier diagnostic de rendu : recuperable meme s'il est arrive apres la
@@ -6563,7 +6686,8 @@ async def call_tool(uid_key, mcp_sid, name, args):
                         ctx.canvas = code
             except Exception:
                 pass
-        return ctx.canvas or ""
+        code = ctx.canvas or ""
+        return _canvas_lecture(code, args)
 
     if name == "canvas_write":
         code     = args["code"]
