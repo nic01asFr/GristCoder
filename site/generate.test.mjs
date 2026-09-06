@@ -197,6 +197,30 @@ test("le plan de site liste les deux langues", () => {
   assert.match(xml, /<lastmod>2026-01-01<\/lastmod>/);
 });
 
+/**
+ * GitHub Pages publie `master:/docs` sur ce depot — c'est le seul mecanisme qui
+ * ait jamais fonctionne ici (les workflows sur `push` n'y ont jamais demarre).
+ * La sortie doit donc atterrir dans docs/, pas ailleurs.
+ */
+test("la sortie par défaut est docs/, ce que GitHub Pages publie", () => {
+  const src = fs.readFileSync(path.join(ROOT, "generate.mjs"), "utf8");
+  assert.match(src, /const DIST = path\.join\(RACINE, "docs"\)/);
+});
+
+/**
+ * Les captures vivent a cote de la page : rien ne doit dependre d'un hote
+ * externe pour que la vitrine s'affiche.
+ */
+test("la page ne dépend d'aucun hôte externe pour ses images", () => {
+  const dist = tmp("gc-dist-");
+  generate({ vitrinePath: VITRINE, distDir: dist, racine: RACINE });
+  const html = fs.readFileSync(path.join(dist, "index.html"), "utf8");
+  assert.doesNotMatch(html, /raw\.githubusercontent\.com/);
+  assert.match(html, /<img src="screenshot-widget-home\.png"/);
+  const en = fs.readFileSync(path.join(dist, "en", "index.html"), "utf8");
+  assert.match(en, /<img src="\.\.\/screenshot-widget-home\.png"/);
+});
+
 test("le marqueur .nojekyll est posé", () => {
   const dist = tmp("gc-dist-");
   const r = generate({ vitrinePath: VITRINE, distDir: dist, racine: RACINE });

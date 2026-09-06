@@ -4,8 +4,13 @@
 *.yaml text eol=lf
 *.yml text eol=lf
 *.tpl text eol=lf
-# Vitrine : la CI regenere site/dist et le compare a ce qui est versionne. Sans
-# LF force, un poste Windows (core.autocrlf=true) reintroduirait des CRLF et la
+# Vitrine : la CI regenere docs/ et le compare a ce qui est versionne. Sans LF
+# force, un poste Windows (core.autocrlf=true) reintroduirait des CRLF et la
 # comparaison echouerait sans qu'aucun contenu ait change.
+# On vise les fichiers TEXTE un par un : docs/ contient aussi des PNG, qu'un
+# "text" applique au dossier entier corromprait.
 site/** text eol=lf
 server.json text eol=lf
+docs/index.html text eol=lf
+docs/en/index.html text eol=lf
+docs/sitemap.xml text eol=lf

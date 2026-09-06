@@ -23,12 +23,12 @@
   "auteur": "Cerema Méditerranée",
   "captures": [
     {
-      "fichier": "docs/screenshot-widget-home.png",
+      "fichier": "screenshot-widget-home.png",
       "fr": "Le widget à l'ouverture : les artefacts du document, en tuiles cliquables.",
       "en": "The widget on open: the document's artefacts as clickable tiles."
     },
     {
-      "fichier": "docs/screenshot-map-editor.png",
+      "fichier": "screenshot-map-editor.png",
       "fr": "Un artefact carte et son code côte à côte : l'aperçu se rafraîchit à l'écriture.",
       "en": "A map artefact and its code side by side: the preview refreshes as you type."
     }

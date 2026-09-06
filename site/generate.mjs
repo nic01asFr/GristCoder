@@ -32,10 +32,9 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RACINE = path.join(__dirname, "..");
 const VITRINE = path.join(__dirname, "vitrine.json");
-const DIST = path.join(__dirname, "dist");
+const DIST = path.join(RACINE, "docs");
 const SERVEUR = path.join(RACINE, "grist_coder.py");
 const ORIGINE = "https://nic01asfr.github.io";
-const RAW = "https://raw.githubusercontent.com/nic01asFr/GristCoder/master/";
 
 /* ------------------------------------------------------------------ */
 /* Lecture et validation                                               */
@@ -140,7 +139,7 @@ export function dateMaj(racine = RACINE) {
 
 function blocTete(v, code, l, inv) {
   const url = `${ORIGINE}${v.base}${code === "fr" ? "" : `${code}/`}`;
-  const image = v.captures?.[0] ? `${RAW}${v.captures[0].fichier}` : "";
+  const image = v.captures?.[0] ? `${ORIGINE}${v.base}${v.captures[0].fichier}` : "";
   const alternes = Object.keys(v.langues)
     .map((c) => {
       const u = `${ORIGINE}${v.base}${c === "fr" ? "" : `${c}/`}`;
@@ -266,6 +265,8 @@ ${l.points.map((p) => `      <li><b>${echapper(p.titre)}</b><span>${echapper(p.t
 
 function blocCaptures(v, code, l) {
   if (!v.captures?.length) return "";
+  // La page francaise est a la racine du site, les autres langues un cran plus bas.
+  const vers = code === "fr" ? "" : "../";
   return `<section class="bande alt" id="captures">
   <div class="wrap">
     ${surtitre(l.libelles.surtitreCaptures)}
@@ -274,7 +275,7 @@ function blocCaptures(v, code, l) {
 ${v.captures
   .map(
     (c) => `      <figure>
-        <img src="${echapper(RAW + c.fichier)}" alt="${echapper(c[code] || "")}" loading="lazy">
+        <img src="${echapper(vers + c.fichier)}" alt="${echapper(c[code] || "")}" loading="lazy">
         <figcaption>${echapper(c[code] || "")}</figcaption>
       </figure>`
   )
