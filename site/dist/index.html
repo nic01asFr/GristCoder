@@ -83,8 +83,15 @@
       padding: 0.9rem 0;
       border-bottom: 1px solid var(--bordure);
     }
-    .marque { display: flex; align-items: center; gap: 0.6rem; font-weight: 700; letter-spacing: -0.01em; }
-    .marque .puce { width: 0.85rem; height: 0.85rem; background: var(--bleu); border-radius: 2px; box-shadow: 0.35rem 0.35rem 0 -0.02rem var(--rouge); }
+    .marque { display: flex; align-items: center; gap: 4px; font-size: 0.95rem; }
+    .marque b { color: #3E5DE7; font-weight: 700; letter-spacing: 0.01em; margin-left: 3px; }
+    .marque .point {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #10B981;
+      box-shadow: 0 0 0 2px #10B9812e;
+    }
     .barre a { color: var(--attenue); text-decoration: none; font-size: 0.9rem; }
     .barre a:hover { color: var(--bleu); }
 
@@ -164,7 +171,6 @@
 
     .points { list-style: none; padding: 0; margin: 0; display: grid; gap: 1.4rem; }
     .points li { display: grid; gap: 0.3rem; padding-left: 1.1rem; border-left: 3px solid var(--bleu); }
-    .points li:nth-child(even) { border-left-color: var(--rouge); }
     .points b { font-size: 1.05rem; }
     .points span { color: #3a3a3a; }
 
@@ -201,19 +207,23 @@
     .sequence b { font-size: 1.05rem; }
     .sequence p { margin: 0.15rem 0 0; color: #3a3a3a; }
 
+    .garde-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.2rem; }
+    .garde-grid article { padding: 1.3rem 1.4rem; background: var(--fond); border-radius: 4px; }
+    .garde-grid h3 { color: var(--bleu); font-size: 1.02rem; }
+    .garde-grid p { margin: 0; color: #3a3a3a; }
     .ctx-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.2rem; }
     .ctx-grid article { padding: 1.4rem 1.5rem; border: 1px solid var(--bordure); border-radius: 4px; }
     .ctx-grid p { color: #3a3a3a; margin: 0; }
     .pourquoi { color: var(--attenue) !important; font-size: 0.92rem; margin-top: 0.8rem !important; padding-top: 0.8rem; border-top: 1px solid var(--bordure); }
 
-    .encart { padding: 1.8rem 2rem; background: var(--surface); border-left: 4px solid var(--rouge); border-radius: 4px; }
+    .encart { padding: 1.8rem 2rem; background: var(--surface); border-left: 4px solid var(--bleu); border-radius: 4px; }
     .encart h2 { margin-bottom: 0.8rem; }
     .encart p { color: #3a3a3a; max-width: 52rem; }
     .cta-line { margin-bottom: 0; }
 
     .journal { display: grid; gap: 1.1rem; }
     .journal div { display: grid; grid-template-columns: 4rem 1fr; gap: 1rem; align-items: baseline; }
-    .journal b { font-family: ui-monospace, Menlo, monospace; font-size: 0.85rem; color: var(--rouge); }
+    .journal b { font-family: ui-monospace, Menlo, monospace; font-size: 0.85rem; color: var(--bleu); }
     .journal p { margin: 0; color: #3a3a3a; }
 
     footer { padding: 2.5rem 0 3rem; border-top: 1px solid var(--bordure); color: var(--attenue); font-size: 0.9rem; }
@@ -239,7 +249,7 @@
 <body>
   <div class="tricolore"><i></i><i></i><i></i></div>
   <div class="wrap barre">
-    <span class="marque"><span class="puce"></span>Grist Coder</span>
+    <span class="marque"><svg width="7" height="14" viewBox="0 0 24 24" fill="none" stroke="#3E5DE7" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="14 6 8 12 14 18"/></svg><span class="point"></span><svg width="7" height="14" viewBox="0 0 24 24" fill="none" stroke="#3E5DE7" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="10 18 16 12 10 6"/></svg><b>Coder</b></span>
     <a href="/GristCoder/en/">English</a>
   </div>
   <header class="hero">
@@ -297,7 +307,7 @@
 </section>
     <section class="bande alt" id="promesse">
       <div class="wrap">
-        <p class="surtitre rouge">La promesse</p>
+        <p class="surtitre">La promesse</p>
         <h2>Ce que ça change</h2>
         <p class="accroche">Un document Grist contient déjà les données, les droits et le partage. Ce qui lui manque pour être une application — des écrans, de la logique, des déclencheurs — se construit ici par la conversation, et reste rangé à l'intérieur du document.</p>
         <ul class="points">
@@ -311,7 +321,7 @@
     </section>
     <section class="bande alt" id="captures">
   <div class="wrap">
-    <p class="surtitre rouge">En images</p>
+    <p class="surtitre">En images</p>
     <h2>À quoi ça ressemble</h2>
     <div class="shots">
       <figure>
@@ -365,7 +375,7 @@
 </section>
     <section class="bande alt" id="parcours">
   <div class="wrap">
-    <p class="surtitre rouge">Prise en main</p>
+    <p class="surtitre">Prise en main</p>
     <h2>Le parcours</h2>
     <ol class="sequence">
       <li><span class="n">1</span><div><b>Tu ajoutes le widget</b><p>Coder s'installe comme widget personnalisé sur une page du document. Il s'enregistre auprès du serveur et ouvre une session.</p></div></li>
@@ -395,6 +405,39 @@
         <h3>Des données qui ne doivent pas sortir</h3>
         <p>Serveur auto-hébergé, un déploiement par utilisateur, clés gardées côté serveur. Le document ne part pas chez un tiers pour être outillé.</p>
         <p class="pourquoi">Un service mutualisé demanderait de confier le document à quelqu'un d'autre.</p>
+      </article>
+    </div>
+  </div>
+</section>
+    <section class="bande alt" id="securite">
+  <div class="wrap">
+    <p class="surtitre rouge">Mise en ligne</p>
+    <h2>En ligne, et tenu</h2>
+    <p class="accroche">Le serveur ne sert pas qu'en local. Déployé en ligne, il expose la même surface MCP, avec des gardes qui ne dépendent pas de la bonne volonté du client.</p>
+    <div class="garde-grid">
+      <article>
+        <h3>Une porte avant tout le reste</h3>
+        <p>Un jeton d'application ferme /mcp, /register et le proxy sortant. La comparaison se fait en temps constant. Laissé vide en local, il n'y a pas de garde et rien ne change.</p>
+      </article>
+      <article>
+        <h3>Le premier arrivé ferme la porte</h3>
+        <p>Le premier compte Grist qui s'enregistre devient propriétaire du serveur ; tout autre compte est refusé. Une identité de repli, non résolue, n'épingle jamais rien — sinon elle verrouillerait le serveur sur personne.</p>
+      </article>
+      <article>
+        <h3>Le serveur est son propre fournisseur d'identité</h3>
+        <p>Un connecteur OAuth 2.1 complet : découverte, enregistrement dynamique du client, autorisation, jeton, PKCE S256. La clé Grist est donnée une fois au consentement et reste sur le serveur ; le client ne reçoit qu'un jeton opaque, expirable et révocable.</p>
+      </article>
+      <article>
+        <h3>Les secrets ne sortent pas par les erreurs</h3>
+        <p>La clé fuyait par l'URL d'appel dans les messages d'erreur. Tout ce qui remonte au client passe désormais par un masquage des jetons.</p>
+      </article>
+      <article>
+        <h3>Le proxy sortant est fermé par défaut</h3>
+        <p>L'appel au modèle n'accepte qu'une liste d'hôtes explicitement autorisés. Liste vide, l'endpoint est désactivé : pas de rebond possible vers un service interne.</p>
+      </article>
+      <article>
+        <h3>La clé du modèle ne descend jamais au navigateur</h3>
+        <p>Le widget demande au serveur ce qu'il sait du modèle et reçoit une base, un nom et un booléen — jamais la clé. Les sessions inactives sont purgées, et la diffusion temps réel est routée par utilisateur.</p>
       </article>
     </div>
   </div>

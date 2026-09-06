@@ -10,7 +10,12 @@
     "bordure": "#DDDDDD",
     "police": "Marianne",
     "policeBase": "https://cdn.jsdelivr.net/npm/@gouvfr/dsfr@1.14/dist/fonts/",
-    "origine": "Tricolore du logo Grist de La Suite numerique (#2845C1 / #C83F49 / #EEF1F4), typographie et rythme DSFR."
+    "origine": "Marque du produit reprise du widget (chevrons #3E5DE7, point d'état vert #10B981). Tricolore du logo Grist de La Suite numérique (#2845C1 / #C83F49), employé avec parcimonie ; typographie et rythme DSFR.",
+    "marque": {
+      "chevrons": "#3E5DE7",
+      "point": "#10B981",
+      "libelle": "Coder"
+    }
   },
   "depot": "https://github.com/nic01asFr/GristCoder",
   "source": "https://gitlab.cerema.fr/mcp/gristcoder_mcp",
@@ -146,6 +151,37 @@
           "libelle": "Lire le README",
           "url": "https://github.com/nic01asFr/GristCoder#readme"
         }
+      },
+      "securite": {
+        "surtitre": "Mise en ligne",
+        "titre": "En ligne, et tenu",
+        "chapo": "Le serveur ne sert pas qu'en local. Déployé en ligne, il expose la même surface MCP, avec des gardes qui ne dépendent pas de la bonne volonté du client.",
+        "items": [
+          {
+            "titre": "Une porte avant tout le reste",
+            "texte": "Un jeton d'application ferme /mcp, /register et le proxy sortant. La comparaison se fait en temps constant. Laissé vide en local, il n'y a pas de garde et rien ne change."
+          },
+          {
+            "titre": "Le premier arrivé ferme la porte",
+            "texte": "Le premier compte Grist qui s'enregistre devient propriétaire du serveur ; tout autre compte est refusé. Une identité de repli, non résolue, n'épingle jamais rien — sinon elle verrouillerait le serveur sur personne."
+          },
+          {
+            "titre": "Le serveur est son propre fournisseur d'identité",
+            "texte": "Un connecteur OAuth 2.1 complet : découverte, enregistrement dynamique du client, autorisation, jeton, PKCE S256. La clé Grist est donnée une fois au consentement et reste sur le serveur ; le client ne reçoit qu'un jeton opaque, expirable et révocable."
+          },
+          {
+            "titre": "Les secrets ne sortent pas par les erreurs",
+            "texte": "La clé fuyait par l'URL d'appel dans les messages d'erreur. Tout ce qui remonte au client passe désormais par un masquage des jetons."
+          },
+          {
+            "titre": "Le proxy sortant est fermé par défaut",
+            "texte": "L'appel au modèle n'accepte qu'une liste d'hôtes explicitement autorisés. Liste vide, l'endpoint est désactivé : pas de rebond possible vers un service interne."
+          },
+          {
+            "titre": "La clé du modèle ne descend jamais au navigateur",
+            "texte": "Le widget demande au serveur ce qu'il sait du modèle et reçoit une base, un nom et un booléen — jamais la clé. Les sessions inactives sont purgées, et la diffusion temps réel est routée par utilisateur."
+          }
+        ]
       },
       "produit": {
         "accroche": "Un document Grist contient déjà les données, les droits et le partage. Ce qui lui manque pour être une application — des écrans, de la logique, des déclencheurs — se construit ici par la conversation, et reste rangé à l'intérieur du document.",
@@ -308,6 +344,37 @@
           "libelle": "Read the README",
           "url": "https://github.com/nic01asFr/GristCoder#readme"
         }
+      },
+      "securite": {
+        "surtitre": "Going online",
+        "titre": "Hosted, and guarded",
+        "chapo": "The server is not local-only. Deployed online it exposes the same MCP surface, with guards that do not rely on the client behaving.",
+        "items": [
+          {
+            "titre": "A door before anything else",
+            "texte": "An application token closes /mcp, /register and the outbound proxy, compared in constant time. Left empty locally, there is no guard and nothing changes."
+          },
+          {
+            "titre": "First in locks the door",
+            "texte": "The first Grist account to register becomes the server's owner; any other account is refused. An unresolved fallback identity never pins anything — it would lock the server to nobody."
+          },
+          {
+            "titre": "The server is its own identity provider",
+            "texte": "A full OAuth 2.1 connector: discovery, dynamic client registration, authorization, token, PKCE S256. The Grist key is given once at consent and stays on the server; the client only ever receives an opaque token that expires and can be revoked."
+          },
+          {
+            "titre": "Secrets do not leak through errors",
+            "texte": "The key used to leak through the request URL in error messages. Everything returned to a client now goes through token scrubbing."
+          },
+          {
+            "titre": "The outbound proxy is closed by default",
+            "texte": "Model calls only reach explicitly allowlisted hosts. With an empty list the endpoint is disabled, so there is no pivot toward an internal service."
+          },
+          {
+            "titre": "The model key never reaches the browser",
+            "texte": "The widget asks the server what it knows about the model and gets a base URL, a name and a boolean — never the key. Idle sessions are purged, and real-time fan-out is routed per user."
+          }
+        ]
       },
       "produit": {
         "accroche": "A Grist document already holds the data, the permissions and the sharing. What it lacks to be an application — screens, logic, triggers — is built here through conversation, and stays stored inside the document.",

@@ -77,6 +77,7 @@ const THEME_MINIMAL = {
   bordure: "#DDD",
   police: "Marianne",
   policeBase: "https://exemple.invalid/",
+  marque: { chevrons: "#3E5DE7", point: "#10B981", libelle: "Coder" },
 };
 
 test("chargerVitrine exige le français, page par défaut", () => {
@@ -166,6 +167,28 @@ test("la page anglaise existe et ne laisse pas fuir le français", () => {
   assert.match(html, /href="\/GristCoder\/"/);
 });
 
+/**
+ * Le contenu français a déjà été écrit une fois sans accents, en passant par un
+ * script intermédiaire. Sur une page publique, ça se voit. On vérifie donc le
+ * texte rendu — pas le balisage, où `id="securite"` est légitime.
+ */
+test("le français rendu porte ses accents", () => {
+  const dist = tmp("gc-dist-");
+  generate({ vitrinePath: VITRINE, distDir: dist, racine: RACINE });
+  const html = fs.readFileSync(path.join(dist, "index.html"), "utf8");
+  const texte = html
+    .replace(/<style[\s\S]*?<\/style>/g, " ")
+    .replace(/<script[\s\S]*?<\/script>/g, " ")
+    .replace(/<[^>]+>/g, " ");
+  const attendus = [
+    "securite", "deploye", "cle", "cles", "donnees", "reponse", "modele",
+    "identite", "proprietaire", "numerique", "experimental", "publie",
+    "mediterranee", "apercu", "systeme", "integrations", "refusee",
+  ];
+  const fautes = attendus.filter((m) => new RegExp(`\\b${m}\\b`, "i").test(texte));
+  assert.deepEqual(fautes, [], `mots sans accent dans la page française : ${fautes.join(", ")}`);
+});
+
 test("le plan de site liste les deux langues", () => {
   const v = chargerVitrine(VITRINE);
   const xml = rendreSitemap(v, "2026-01-01");
@@ -224,6 +247,19 @@ test("le README ne dérive pas du serveur qu'il documente", () => {
   assert.equal(Number(sante[1]), inv.outils);
 
   assert.match(readme, /https:\/\/nic01asfr\.github\.io\/GristCoder\//);
+});
+
+/**
+ * Trois outils avaient ete livres sans jamais entrer dans le README
+ * (grist_doc_create, grist_validate, savoir_faire). Un outil qu'on ne documente
+ * pas est un outil que personne n'appelle : on refuse desormais l'oubli.
+ */
+test("le README documente tous les outils exposés", () => {
+  const readme = fs.readFileSync(path.join(RACINE, "README.md"), "utf8");
+  const src = fs.readFileSync(path.join(RACINE, "grist_coder.py"), "utf8");
+  const outils = [...new Set(src.match(/^ {4}\{"name": "[a-z_]+"/gm).map((m) => m.slice(14, -1)))];
+  const absents = outils.filter((o) => !readme.includes(o));
+  assert.deepEqual(absents, [], `outils non documentés : ${absents.join(", ")}`);
 });
 
 test("le manifeste et la vitrine décrivent le même serveur", () => {

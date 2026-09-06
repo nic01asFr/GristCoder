@@ -258,6 +258,26 @@ cp .mcp.json.example .mcp.json
 # edit .mcp.json with your key
 ```
 
+### 4. Run it hosted (and what guards it)
+
+The server is not localhost-only. `charts/grist-coder/` deploys **one pod per user**
+on SSPCloud Onyxia. Online, it exposes the same MCP surface, with guards that do not
+depend on the client behaving:
+
+| Guard | Env | What it does |
+|-------|-----|--------------|
+| Pod gate | `APP_AUTH_TOKEN` | Bearer token required on `/mcp`, `/register` and `/llm-proxy`, compared with `hmac.compare_digest`. Empty (local default) = no gate |
+| Owner lock (TOFU) | `OWNER_LOCK` | The first real Grist account to register pins the pod; any other `uid` gets a 403. Unresolved fallback identities are never pinned — they would lock the pod to nobody |
+| OAuth 2.1 connector | `PUBLIC_URL` | The pod becomes its own authorization server. The Grist key is given once at consent and stays server-side; the client only ever holds an opaque `gco-` token that expires and can be revoked |
+| Error scrubbing | — | `_scrub_secrets()` masks `auth=` and `Bearer` in every message returned to a client. The key used to leak through the httpx request URL |
+| SSRF closed by default | `LLM_PROXY_ALLOWED_HOSTS` | `/llm-proxy` only reaches allowlisted hosts. Empty list disables the endpoint entirely |
+| Key containment | — | `/llm-config` returns base, model and `cle_serveur: bool` — **never** the key. The in-widget agent never sees it |
+| Session hygiene | `SESSION_TTL` | Idle sessions purged (24 h default); SSE fan-out routed per `uid`, so no cross-user delivery |
+
+> The **owner lock matters most on a public document**: without it, any visitor
+> authenticating anonymously would land in the same `uid` bucket and see each other's
+> sessions.
+
 ---
 
 ## MCP Tools (35)
@@ -278,6 +298,7 @@ cp .mcp.json.example .mcp.json
 | Tool | Description |
 |------|-------------|
 | `plan_update` | Update the work plan, transition phase, trigger tool list change |
+| `savoir_faire` | Proven recipes and traps from the Grist ecosystem — returns 2 bounded units, not a chapter. Call before the first artefact of a build, or when an error names something unfamiliar |
 
 ### Canvas (artefact editor)
 | Tool | Description |
@@ -320,6 +341,7 @@ cp .mcp.json.example .mcp.json
 | `grist_records_patch` | Update existing records by ID |
 | `grist_upsert` | Upsert on a business key (`require` + `fields`) |
 | `grist_apply` | Low-level Grist UserActions (AddTable, AddColumn, etc.) |
+| `grist_validate` | **Pre-flight** — validates a list of UserActions *without writing*. Catches the classic `Ref:` to a table created later in the same batch, invalid action shapes, missing `visibleCol`. Call before any multi-`AddTable` `grist_apply` |
 
 ### Document / Pages
 | Tool | Description |
@@ -328,6 +350,7 @@ cp .mcp.json.example .mcp.json
 | `grist_view_create` | Create a page with a grid + optional artefact widget |
 | `grist_view_add_widget` | Add a widget section to an existing page |
 | `grist_section_configure` | Configure a custom widget section (artefact, linking...) |
+| `grist_doc_create` | Create a **new empty document** in a workspace, add the Coder widget page, return the clickable link. Uses the caller's Grist key — no server configuration required |
 
 ### Webhooks
 | Tool | Description |
@@ -345,12 +368,26 @@ cp .mcp.json.example .mcp.json
 | `DELETE` | `/mcp` | Close an SSE session |
 | `POST` | `/register` | Widget auto-registration |
 | `POST` | `/wizard/{token}` | Wizard form response from widget |
+| `POST` | `/chat/{token}` | Chat reply from widget, unblocks `wait_for_chat` |
+| `POST` | `/apply-result/{token}` | Result of a browser-side `applyUserActions` round-trip (WAF bypass) |
+| `POST` | `/art-diag/{token}` | Render diagnostics from the artefact iframe (exceptions, failed resources) |
 | `GET` | `/llm-config` | What the pod knows about the LLM (base, model, *whether* it holds a key — never the key itself) |
 | `POST` | `/llm-proxy/{path}` | CORS-free relay to an allowlisted LLM host; injects the pod key when the browser sends none |
 | `GET` | `/harness/{file}` | Browser-side agent modules |
 | `POST` | `/webhook-receive/{docId}` | Grist webhook receiver → SSE fan-out (production, public URL required) |
 | `GET` | `/` | Serves the custom widget |
-| `GET` | `/health` | Health check |
+| `GET` | `/survey/{docId}/schema-check` | Survey Manifest conformity check for a document |
+| `GET` | `/health` | Health check — source of truth for version and counts |
+
+### OAuth 2.1 connector (hosted deployments only, active when `PUBLIC_URL` is set)
+
+| Method | Route | Purpose |
+|--------|-------|---------|
+| `GET` | `/.well-known/oauth-authorization-server` | Authorization server metadata |
+| `GET` | `/.well-known/oauth-protected-resource` | Protected resource metadata |
+| `POST` | `/oauth/register` | Dynamic client registration (permissive — a strict one breaks "cannot register" in clients) |
+| `GET`/`POST` | `/oauth/authorize` | Consent screen: the user pastes their Grist key **once** |
+| `POST` | `/oauth/token` | Exchanges the code for an opaque `gco-` token (PKCE S256) |
 
 ---
 

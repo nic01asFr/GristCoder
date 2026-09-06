@@ -50,7 +50,7 @@ export function echapper(s) {
 }
 
 const CHAMPS_LANGUE = ["nom", "titreHero", "titrePage", "pitch", "tags", "libelles", "points", "produit"];
-const CHAMPS_THEME = ["primaire", "secondaire", "surface", "fond", "encre", "attenue", "bordure", "police", "policeBase"];
+const CHAMPS_THEME = ["primaire", "secondaire", "surface", "fond", "encre", "attenue", "bordure", "police", "policeBase", "marque"];
 
 export function chargerVitrine(fichier = VITRINE) {
   const v = JSON.parse(fs.readFileSync(fichier, "utf8"));
@@ -181,6 +181,41 @@ function blocTete(v, code, l, inv) {
   ${script}`;
 }
 
+/**
+ * La marque du produit, telle qu'elle apparaît déjà dans le widget : deux
+ * chevrons encadrant le point d'état, puis « Coder ». Le point est vert parce
+ * que, dans le widget, vert veut dire connecté — la vitrine montre donc le
+ * produit dans l'état où l'utilisateur le voit quand tout va bien.
+ */
+function blocMarque(t) {
+  const m = t.marque;
+  const chevron = (points) =>
+    `<svg width="7" height="14" viewBox="0 0 24 24" fill="none" stroke="${echapper(m.chevrons)}" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="${points}"/></svg>`;
+  return `<span class="marque">${chevron("14 6 8 12 14 18")}<span class="point"></span>${chevron("10 18 16 12 10 6")}<b>${echapper(m.libelle)}</b></span>`;
+}
+
+function blocSecurite(l) {
+  const s = l.securite;
+  if (!s?.items?.length) return "";
+  return `<section class="bande alt" id="securite">
+  <div class="wrap">
+    ${surtitre(s.surtitre, "rouge")}
+    <h2>${echapper(s.titre)}</h2>
+    <p class="accroche">${echapper(s.chapo)}</p>
+    <div class="garde-grid">
+${s.items
+  .map(
+    (x) => `      <article>
+        <h3>${echapper(x.titre)}</h3>
+        <p>${echapper(x.texte)}</p>
+      </article>`
+  )
+  .join("\n")}
+    </div>
+  </div>
+</section>`;
+}
+
 /** Le surtitre coloré des sections — repris de la présentation Grist de La Suite. */
 function surtitre(texte, variante = "") {
   if (!texte) return "";
@@ -233,7 +268,7 @@ function blocCaptures(v, code, l) {
   if (!v.captures?.length) return "";
   return `<section class="bande alt" id="captures">
   <div class="wrap">
-    ${surtitre(l.libelles.surtitreCaptures, "rouge")}
+    ${surtitre(l.libelles.surtitreCaptures)}
     <h2>${echapper(l.libelles.captures)}</h2>
     <div class="shots">
 ${v.captures
@@ -275,7 +310,7 @@ function blocSequence(l) {
   const produit = l.produit;
   return `<section class="bande alt" id="parcours">
   <div class="wrap">
-    ${surtitre(l.libelles.surtitreParcours, "rouge")}
+    ${surtitre(l.libelles.surtitreParcours)}
     <h2>${echapper(produit.titreSequence)}</h2>
     <ol class="sequence">
 ${produit.sequence
@@ -418,8 +453,15 @@ ${policeMarianne(t)}
       padding: 0.9rem 0;
       border-bottom: 1px solid var(--bordure);
     }
-    .marque { display: flex; align-items: center; gap: 0.6rem; font-weight: 700; letter-spacing: -0.01em; }
-    .marque .puce { width: 0.85rem; height: 0.85rem; background: var(--bleu); border-radius: 2px; box-shadow: 0.35rem 0.35rem 0 -0.02rem var(--rouge); }
+    .marque { display: flex; align-items: center; gap: 4px; font-size: 0.95rem; }
+    .marque b { color: ${echapper(t.marque.chevrons)}; font-weight: 700; letter-spacing: 0.01em; margin-left: 3px; }
+    .marque .point {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: ${echapper(t.marque.point)};
+      box-shadow: 0 0 0 2px ${echapper(t.marque.point)}2e;
+    }
     .barre a { color: var(--attenue); text-decoration: none; font-size: 0.9rem; }
     .barre a:hover { color: var(--bleu); }
 
@@ -499,7 +541,6 @@ ${policeMarianne(t)}
 
     .points { list-style: none; padding: 0; margin: 0; display: grid; gap: 1.4rem; }
     .points li { display: grid; gap: 0.3rem; padding-left: 1.1rem; border-left: 3px solid var(--bleu); }
-    .points li:nth-child(even) { border-left-color: var(--rouge); }
     .points b { font-size: 1.05rem; }
     .points span { color: #3a3a3a; }
 
@@ -536,19 +577,23 @@ ${policeMarianne(t)}
     .sequence b { font-size: 1.05rem; }
     .sequence p { margin: 0.15rem 0 0; color: #3a3a3a; }
 
+    .garde-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.2rem; }
+    .garde-grid article { padding: 1.3rem 1.4rem; background: var(--fond); border-radius: 4px; }
+    .garde-grid h3 { color: var(--bleu); font-size: 1.02rem; }
+    .garde-grid p { margin: 0; color: #3a3a3a; }
     .ctx-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.2rem; }
     .ctx-grid article { padding: 1.4rem 1.5rem; border: 1px solid var(--bordure); border-radius: 4px; }
     .ctx-grid p { color: #3a3a3a; margin: 0; }
     .pourquoi { color: var(--attenue) !important; font-size: 0.92rem; margin-top: 0.8rem !important; padding-top: 0.8rem; border-top: 1px solid var(--bordure); }
 
-    .encart { padding: 1.8rem 2rem; background: var(--surface); border-left: 4px solid var(--rouge); border-radius: 4px; }
+    .encart { padding: 1.8rem 2rem; background: var(--surface); border-left: 4px solid var(--bleu); border-radius: 4px; }
     .encart h2 { margin-bottom: 0.8rem; }
     .encart p { color: #3a3a3a; max-width: 52rem; }
     .cta-line { margin-bottom: 0; }
 
     .journal { display: grid; gap: 1.1rem; }
     .journal div { display: grid; grid-template-columns: 4rem 1fr; gap: 1rem; align-items: baseline; }
-    .journal b { font-family: ui-monospace, Menlo, monospace; font-size: 0.85rem; color: var(--rouge); }
+    .journal b { font-family: ui-monospace, Menlo, monospace; font-size: 0.85rem; color: var(--bleu); }
     .journal p { margin: 0; color: #3a3a3a; }
 
     footer { padding: 2.5rem 0 3rem; border-top: 1px solid var(--bordure); color: var(--attenue); font-size: 0.9rem; }
@@ -574,7 +619,7 @@ ${policeMarianne(t)}
 <body>
   <div class="tricolore"><i></i><i></i><i></i></div>
   <div class="wrap barre">
-    <span class="marque"><span class="puce"></span>${echapper(l.nom)}</span>
+    ${blocMarque(t)}
     <a href="${echapper(urlAutre)}">${echapper(l.libelles.autreLangue)}</a>
   </div>
   <header class="hero">
@@ -592,7 +637,7 @@ ${policeMarianne(t)}
     ${blocInventaire(v, l, inv)}
     <section class="bande alt" id="promesse">
       <div class="wrap">
-        ${surtitre(l.libelles.surtitrePromesse, "rouge")}
+        ${surtitre(l.libelles.surtitrePromesse)}
         <h2>${echapper(l.libelles.promesse)}</h2>
         <p class="accroche">${echapper(l.produit.accroche)}</p>
         ${blocPoints(l)}
@@ -602,6 +647,7 @@ ${policeMarianne(t)}
     ${blocFonctionnalites(l)}
     ${blocSequence(l)}
     ${blocContextes(l)}
+    ${blocSecurite(l)}
     ${blocEncart(l)}
     ${blocJournal(l)}
   </main>
