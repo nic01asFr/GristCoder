@@ -1,0 +1,61 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.nic01asFr/gristcoder",
+  "title": "Grist Coder",
+  "description": "Turns a Grist document into a complete business application: tables and formulas, HTML/React artefacts served as custom widgets, SQL and UserActions, and outbound webhooks. Self-hosted; published artefacts keep working once the server is gone.",
+  "version": "5.14",
+  "websiteUrl": "https://nic01asfr.github.io/GristCoder/",
+  "repository": {
+    "url": "https://github.com/nic01asFr/GristCoder",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "oci",
+      "registryBaseUrl": "https://ghcr.io",
+      "identifier": "ghcr.io/nic01asfr/grist-coder",
+      "version": "5.14",
+      "transport": {
+        "type": "streamable-http",
+        "url": "http://localhost:8742/mcp",
+        "headers": [
+          {
+            "name": "Authorization",
+            "description": "Bearer <Grist API key>. Not needed from the Grist widget, which authenticates with a document access token.",
+            "isRequired": false,
+            "isSecret": true
+          },
+          {
+            "name": "X-Grist-Site",
+            "description": "Base URL of the Grist instance, e.g. https://docs.getgrist.com",
+            "isRequired": false
+          }
+        ]
+      },
+      "environmentVariables": [
+        {
+          "name": "HOST_URL",
+          "description": "Public URL of this server. Written into the document's widget sections and webhook URLs, so localhost only works for a local setup.",
+          "default": "http://localhost:8742",
+          "isRequired": false
+        },
+        {
+          "name": "GRIST_SITE_URL",
+          "description": "Grist instance used to resolve an API key to a user when no widget session is open.",
+          "isRequired": false
+        },
+        {
+          "name": "LLM_PROXY_ALLOWED_HOSTS",
+          "description": "Comma-separated allowlist for the outbound LLM proxy used by the in-widget agent. Empty disables the endpoint, which is the safe default.",
+          "isRequired": false
+        },
+        {
+          "name": "WEBHOOK_SECRET",
+          "description": "Shared secret checked on /webhook-receive. Recommended whenever the server is reachable from outside.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

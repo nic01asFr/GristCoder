@@ -1,0 +1,376 @@
+{
+  "base": "/GristCoder/",
+  "theme": {
+    "primaire": "#2845C1",
+    "secondaire": "#C83F49",
+    "surface": "#EEF1F4",
+    "fond": "#FFFFFF",
+    "encre": "#242424",
+    "attenue": "#666666",
+    "bordure": "#DDDDDD",
+    "police": "Marianne",
+    "policeBase": "https://cdn.jsdelivr.net/npm/@gouvfr/dsfr@1.14/dist/fonts/",
+    "origine": "Tricolore du logo Grist de La Suite numerique (#2845C1 / #C83F49 / #EEF1F4), typographie et rythme DSFR."
+  },
+  "depot": "https://github.com/nic01asFr/GristCoder",
+  "source": "https://gitlab.cerema.fr/mcp/gristcoder_mcp",
+  "licence": "MIT",
+  "auteur": "Cerema Méditerranée",
+  "captures": [
+    {
+      "fichier": "docs/screenshot-widget-home.png",
+      "fr": "Le widget à l'ouverture : les artefacts du document, en tuiles cliquables.",
+      "en": "The widget on open: the document's artefacts as clickable tiles."
+    },
+    {
+      "fichier": "docs/screenshot-map-editor.png",
+      "fr": "Un artefact carte et son code côte à côte : l'aperçu se rafraîchit à l'écriture.",
+      "en": "A map artefact and its code side by side: the preview refreshes as you type."
+    }
+  ],
+  "mcp": {
+    "identifiant": "io.github.nic01asFr/gristcoder",
+    "transport": "streamable-http",
+    "spec": "2025-03-26",
+    "endpoint": "/mcp",
+    "image": "ghcr.io/nic01asfr/grist-coder",
+    "clients": [
+      {
+        "nom": "Claude Code",
+        "langage": "bash",
+        "code": "claude mcp add grist-coder --transport http http://localhost:8742/mcp \\\n  --header \"Authorization: Bearer <clé Grist>\" \\\n  --header \"X-Grist-Site: https://<instance>\""
+      },
+      {
+        "nom": "Claude Desktop",
+        "langage": "json",
+        "code": "{\n  \"mcpServers\": {\n    \"grist-coder\": {\n      \"type\": \"http\",\n      \"url\": \"http://localhost:8742/mcp\",\n      \"headers\": {\n        \"Authorization\": \"Bearer <clé Grist>\",\n        \"X-Grist-Site\": \"https://<instance>\"\n      }\n    }\n  }\n}"
+      }
+    ]
+  },
+  "langues": {
+    "fr": {
+      "nom": "Grist Coder",
+      "titreHero": "Un document Grist devient une application métier",
+      "titrePage": "Grist Coder — un document Grist devient une application métier",
+      "pitch": "Un document Grist devient une application métier complète — tables, interfaces, logique, intégrations — construite par l'IA, et qui continue de tourner quand le serveur s'arrête.",
+      "tags": [
+        "Serveur MCP",
+        "Grist",
+        "Claude",
+        "Auto-hébergé",
+        "Python",
+        "MIT"
+      ],
+      "libelles": {
+        "codeSource": "Code source",
+        "demarrer": "Démarrer",
+        "promesse": "Ce que ça change",
+        "journal": "Journal",
+        "autreLangue": "English",
+        "captures": "À quoi ça ressemble",
+        "piedNote": "Serveur MCP auto-hébergé pour Grist. Cette page présente le produit ; la documentation technique vit dans le dépôt.",
+        "majLe": "Dernière mise à jour",
+        "inventaireTitre": "Ce que le serveur expose",
+        "inventaireNote": "Chiffres relus dans le code source à chaque génération de cette page — ils ne peuvent pas dériver de ce que le serveur expose réellement.",
+        "inventaireOutils": "outils MCP",
+        "inventairePrompts": "prompts",
+        "inventaireRessources": "ressources",
+        "identifiant": "Identifiant",
+        "sur": "sur",
+        "surtitreMcp": "Serveur MCP",
+        "surtitrePromesse": "La promesse",
+        "surtitreCaptures": "En images",
+        "surtitreFonctionnalites": "Fonctionnalités",
+        "surtitreParcours": "Prise en main",
+        "surtitreUsages": "Cas d'usage"
+      },
+      "points": [
+        {
+          "titre": "L'application vit dans le document",
+          "texte": "Les interfaces HTML/React sont rangées dans une table du document et rendues par le widget. Il n'y a pas de second hébergement à tenir : l'application voyage avec le fichier, se partage comme lui, se sauvegarde comme lui."
+        },
+        {
+          "titre": "Publier, c'est couper le cordon",
+          "texte": "Un artefact publié est figé dans le document, imports npm compilés. Il survit à l'arrêt du serveur qui l'a écrit — la publication refuse d'ailleurs tout artefact qui garderait un lien vers lui."
+        },
+        {
+          "titre": "L'outillage suit l'avancement",
+          "texte": "Les outils ne sont pas tous exposés d'emblée. Six phases dévoilent ce qui est pertinent au moment où ça l'est, ce qui empêche d'écrire du code avant d'avoir lu le schéma."
+        },
+        {
+          "titre": "L'utilisateur final ne voit jamais l'IA",
+          "texte": "Il ouvre une application et s'en sert. Le modèle, le code et les allers-retours restent du côté de celui qui construit."
+        },
+        {
+          "titre": "Ton serveur, tes secrets",
+          "texte": "Un chart Helm déploie un serveur par utilisateur sur SSPCloud Onyxia. Chacun garde sa clé, et personne n'est dépositaire des documents des autres."
+        }
+      ],
+      "titreFonctionnalites": "Ce que tu peux faire",
+      "fonctionnalites": [
+        {
+          "titre": "Les quatre couches d'une application",
+          "texte": "Données (tables et formules), interface (artefacts et pages Grist), logique (SQL, UserActions, upsert), intégrations (webhooks vers l'extérieur). Les quatre se construisent depuis la même conversation, sans changer d'outil en cours de route.",
+          "pourQui": "Quand un tableur ne suffit plus, mais qu'un développement complet est hors de portée."
+        },
+        {
+          "titre": "Un IDE dans le document",
+          "texte": "Le widget est un écran coupé en deux : l'éditeur à gauche, l'aperçu à droite. L'écriture est incrémentale — on lit le code, on remplace un fragment, on regarde. Les erreurs de rendu remontent avec leur numéro de ligne au lieu d'un échec muet.",
+          "pourQui": "Pour corriger une interface sans jamais quitter Grist."
+        },
+        {
+          "titre": "Publication autonome",
+          "texte": "La publication fige l'artefact dans une section du document et compile ses imports npm. Le résultat est un widget ordinaire : il ne connaît plus le serveur, et continue de fonctionner si celui-ci disparaît.",
+          "pourQui": "Pour livrer quelque chose qui ne dépend plus de toi."
+        },
+        {
+          "titre": "Un agent embarqué dans le widget",
+          "texte": "Près de 2 800 lignes de JavaScript font tourner une boucle d'agent à l'intérieur même du widget : le document peut se construire sans client MCP externe. La configuration du modèle est servie par le serveur, et la clé ne quitte jamais celui-ci.",
+          "pourQui": "Quand il n'y a pas de client MCP en face, juste un navigateur."
+        },
+        {
+          "titre": "Dialogue guidé",
+          "texte": "Plutôt que deviner, l'assistant pose la question dans le widget : choix, formulaire, confirmation, import de données externes. La réponse revient dans la conversation et la construction reprend où elle en était.",
+          "pourQui": "Pour les décisions qu'un modèle n'a pas à prendre seul. En bêta."
+        },
+        {
+          "titre": "Mise en ligne par utilisateur",
+          "texte": "Le chart Helm installe un serveur personnel, protégé par jeton et verrouillé sur son propriétaire au premier contact. Un connecteur OAuth 2.1 embarqué fait du serveur son propre fournisseur d'identité, ce qui évite de coller une clé d'API dans un client.",
+          "pourQui": "Pour mettre en ligne sans passer par un service multi-locataires."
+        }
+      ],
+      "encart": {
+        "titre": "Expérimental, et publié quand même",
+        "texte": "Développé au Cerema Méditerranée. Fiable pour un utilisateur sur sa machine ; le dialogue guidé, les sous-agents et le chat sont en bêta. Nous le publions pour partager l'approche, récolter les retours de la communauté Grist et inviter les contributions.",
+        "lien": {
+          "libelle": "Lire le README",
+          "url": "https://github.com/nic01asFr/GristCoder#readme"
+        }
+      },
+      "produit": {
+        "accroche": "Un document Grist contient déjà les données, les droits et le partage. Ce qui lui manque pour être une application — des écrans, de la logique, des déclencheurs — se construit ici par la conversation, et reste rangé à l'intérieur du document.",
+        "titreSequence": "Le parcours",
+        "sequence": [
+          {
+            "titre": "Tu ajoutes le widget",
+            "texte": "Coder s'installe comme widget personnalisé sur une page du document. Il s'enregistre auprès du serveur et ouvre une session."
+          },
+          {
+            "titre": "Tu décris ce que tu veux",
+            "texte": "L'assistant qualifie le besoin avant de toucher à quoi que ce soit. À ce stade, il n'a même pas accès aux outils d'écriture."
+          },
+          {
+            "titre": "Le schéma d'abord",
+            "texte": "Tables, colonnes, relations. Les outils d'interface n'apparaissent qu'une fois les données posées."
+          },
+          {
+            "titre": "L'interface se construit sous tes yeux",
+            "texte": "Le code s'écrit dans l'éditeur et l'aperçu se rafraîchit. Ce qui ne va pas se corrige par retouches, pas par réécriture."
+          },
+          {
+            "titre": "Tu publies",
+            "texte": "L'artefact est figé dans le document. Il n'a plus besoin du serveur, et l'utilisateur final ne voit qu'une application."
+          }
+        ],
+        "titreContextes": "Quand ça compte",
+        "contextes": [
+          {
+            "titre": "Un tableur qui a dépassé sa condition",
+            "texte": "Le fichier fait vivre un processus réel, mais chaque nouvelle demande se traduit par une colonne de plus et un onglet de plus.",
+            "pourquoi": "Sans interface propre, on empile jusqu'à ce que plus personne n'ose y toucher."
+          },
+          {
+            "titre": "Une équipe sans développeur disponible",
+            "texte": "Le besoin est clair et la file d'attente est longue. Ici, la personne qui connaît le métier construit et corrige elle-même.",
+            "pourquoi": "Un outil livré six mois trop tard décrit un métier qui a changé entre-temps."
+          },
+          {
+            "titre": "Des données qui ne doivent pas sortir",
+            "texte": "Serveur auto-hébergé, un déploiement par utilisateur, clés gardées côté serveur. Le document ne part pas chez un tiers pour être outillé.",
+            "pourquoi": "Un service mutualisé demanderait de confier le document à quelqu'un d'autre."
+          }
+        ]
+      },
+      "journal": [
+        {
+          "version": "5.14",
+          "texte": "Corpus de savoir-faire interrogeable par l'assistant, sans exiger de session ouverte."
+        },
+        {
+          "version": "5.13",
+          "texte": "Connecteur OAuth 2.1 embarqué : le serveur devient son propre fournisseur d'identité, et le jeton émis est révocable."
+        },
+        {
+          "version": "5.12",
+          "texte": "Audit de sécurité : jetons masqués dans les erreurs, proxy sortant restreint à une liste d'hôtes, fuites mémoire fermées."
+        },
+        {
+          "version": "5.9",
+          "texte": "Publication autonome des artefacts, et aller-retour par le navigateur pour passer le pare-feu applicatif."
+        }
+      ]
+    },
+    "en": {
+      "nom": "Grist Coder",
+      "titreHero": "A Grist document becomes a business application",
+      "titrePage": "Grist Coder — turn a Grist document into a business application",
+      "pitch": "A Grist document becomes a complete business application — tables, interfaces, logic, integrations — built by AI, and still running once the server is gone.",
+      "tags": [
+        "MCP server",
+        "Grist",
+        "Claude",
+        "Self-hosted",
+        "Python",
+        "MIT"
+      ],
+      "libelles": {
+        "codeSource": "Source code",
+        "demarrer": "Get started",
+        "promesse": "What it changes",
+        "journal": "Changelog",
+        "autreLangue": "Français",
+        "captures": "What it looks like",
+        "piedNote": "Self-hosted MCP server for Grist. This page introduces the product; the technical documentation lives in the repository.",
+        "majLe": "Last updated",
+        "inventaireTitre": "What the server exposes",
+        "inventaireNote": "These numbers are read back from the source on every build of this page, so they cannot drift from what the server actually exposes.",
+        "inventaireOutils": "MCP tools",
+        "inventairePrompts": "prompts",
+        "inventaireRessources": "resources",
+        "identifiant": "Name",
+        "sur": "on",
+        "surtitreMcp": "MCP server",
+        "surtitrePromesse": "The promise",
+        "surtitreCaptures": "In pictures",
+        "surtitreFonctionnalites": "Features",
+        "surtitreParcours": "Getting started",
+        "surtitreUsages": "Use cases"
+      },
+      "points": [
+        {
+          "titre": "The application lives in the document",
+          "texte": "HTML/React interfaces are stored in a table of the document and rendered by the widget. There is no second hosting to maintain: the application travels with the file, is shared like it, is backed up like it."
+        },
+        {
+          "titre": "Publishing cuts the cord",
+          "texte": "A published artefact is frozen into the document with its npm imports bundled. It outlives the server that wrote it — publishing in fact refuses any artefact that would still point back at it."
+        },
+        {
+          "titre": "Tooling follows the work",
+          "texte": "Not every tool is exposed at once. Six phases reveal what is relevant when it becomes relevant, which keeps code from being written before the schema has been read."
+        },
+        {
+          "titre": "End users never see the AI",
+          "texte": "They open an application and use it. The model, the code and the back-and-forth stay on the builder's side."
+        },
+        {
+          "titre": "Your server, your secrets",
+          "texte": "A Helm chart deploys one server per user on SSPCloud Onyxia. Everyone keeps their own key, and nobody holds anyone else's documents."
+        }
+      ],
+      "titreFonctionnalites": "What you can do",
+      "fonctionnalites": [
+        {
+          "titre": "The four layers of an application",
+          "texte": "Data (tables and formulas), interface (artefacts and Grist pages), logic (SQL, UserActions, upsert), integrations (webhooks to the outside). All four are built from the same conversation, without switching tools halfway through.",
+          "pourQui": "When a spreadsheet is no longer enough, but full development is out of reach."
+        },
+        {
+          "titre": "An IDE inside the document",
+          "texte": "The widget is a split screen: editor on the left, live preview on the right. Writing is incremental — read the code, replace a fragment, look. Render errors come back with line numbers instead of a silent failure.",
+          "pourQui": "To fix an interface without ever leaving Grist."
+        },
+        {
+          "titre": "Standalone publishing",
+          "texte": "Publishing freezes the artefact into a section of the document and bundles its npm imports. The result is an ordinary widget: it no longer knows the server, and keeps working if the server disappears.",
+          "pourQui": "To ship something that no longer depends on you."
+        },
+        {
+          "titre": "An agent embedded in the widget",
+          "texte": "Close to 2,800 lines of JavaScript run an agent loop inside the widget itself, so the document can build itself without an external MCP client. Model configuration is served by the server, and the key never leaves it.",
+          "pourQui": "When there is no MCP client in front of you, just a browser."
+        },
+        {
+          "titre": "Guided dialogue",
+          "texte": "Rather than guessing, the assistant asks in the widget: a choice, a form, a confirmation, an external data import. The answer returns to the conversation and construction resumes where it stopped.",
+          "pourQui": "For decisions a model should not make alone. In beta."
+        },
+        {
+          "titre": "One deployment per user",
+          "texte": "The Helm chart installs a personal server, guarded by a token and locked to its owner on first contact. An embedded OAuth 2.1 connector makes the server its own identity provider, which avoids pasting an API key into a client.",
+          "pourQui": "To go online without going through a multi-tenant service."
+        }
+      ],
+      "encart": {
+        "titre": "Experimental, and published anyway",
+        "texte": "Developed at Cerema Méditerranée. Reliable for a single user on their own machine; guided dialogue, sub-agents and chat are in beta. We publish it to share the approach, gather feedback from the Grist community and invite contributions.",
+        "lien": {
+          "libelle": "Read the README",
+          "url": "https://github.com/nic01asFr/GristCoder#readme"
+        }
+      },
+      "produit": {
+        "accroche": "A Grist document already holds the data, the permissions and the sharing. What it lacks to be an application — screens, logic, triggers — is built here through conversation, and stays stored inside the document.",
+        "titreSequence": "How it goes",
+        "sequence": [
+          {
+            "titre": "You add the widget",
+            "texte": "Coder installs as a custom widget on a page of the document. It registers with the server and opens a session."
+          },
+          {
+            "titre": "You describe what you want",
+            "texte": "The assistant qualifies the need before touching anything. At that stage it does not even have access to the writing tools."
+          },
+          {
+            "titre": "Schema first",
+            "texte": "Tables, columns, relationships. Interface tools only appear once the data is in place."
+          },
+          {
+            "titre": "The interface builds in front of you",
+            "texte": "Code is written in the editor and the preview refreshes. What is wrong gets patched, not rewritten."
+          },
+          {
+            "titre": "You publish",
+            "texte": "The artefact is frozen into the document. It no longer needs the server, and the end user only sees an application."
+          }
+        ],
+        "titreContextes": "When it matters",
+        "contextes": [
+          {
+            "titre": "A spreadsheet that outgrew itself",
+            "texte": "The file runs a real process, but every new request turns into one more column and one more tab.",
+            "pourquoi": "Without a proper interface, it piles up until nobody dares touch it."
+          },
+          {
+            "titre": "A team with no developer available",
+            "texte": "The need is clear and the queue is long. Here, the person who knows the domain builds and fixes it themselves.",
+            "pourquoi": "A tool delivered six months late describes a job that has changed since."
+          },
+          {
+            "titre": "Data that must not leave",
+            "texte": "Self-hosted server, one deployment per user, keys held server-side. The document does not travel to a third party to get tooling.",
+            "pourquoi": "A shared service would mean handing the document to someone else."
+          }
+        ]
+      },
+      "journal": [
+        {
+          "version": "5.14",
+          "texte": "Know-how corpus queryable by the assistant, with no open session required."
+        },
+        {
+          "version": "5.13",
+          "texte": "Embedded OAuth 2.1 connector: the server becomes its own identity provider, and the token it issues can be revoked."
+        },
+        {
+          "version": "5.12",
+          "texte": "Security audit: tokens scrubbed from errors, outbound proxy restricted to an allowlist, memory leaks closed."
+        },
+        {
+          "version": "5.9",
+          "texte": "Standalone artefact publishing, and a browser round-trip that gets past the application firewall."
+        }
+      ]
+    }
+  }
+}

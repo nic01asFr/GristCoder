@@ -9,6 +9,18 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow)
 ![Status: Exploratory](https://img.shields.io/badge/Status-Exploratory-orange)
 
+**[Product page](https://nic01asfr.github.io/GristCoder/en/)** · [en français](https://nic01asfr.github.io/GristCoder/) — what it does and who it is for, without the implementation details.
+
+<!-- Identite MCP : ces valeurs sont celles de server.json, verifiees par site/generate.test.mjs. -->
+
+| MCP server | |
+|---|---|
+| Name | `io.github.nic01asFr/gristcoder` |
+| Transport | `streamable-http` on `/mcp` (spec 2025-03-26) |
+| Manifest | [`server.json`](server.json) |
+| Image | `ghcr.io/nic01asfr/grist-coder` |
+| Exposes | 35 tools · 8 prompts · 18 resources |
+
 > **Project status**: This is an experimental, work-in-progress project developed at [Cerema Méditerranée](https://www.cerema.fr/). It works reliably for a single user on localhost, but several features (wizard, sub-agents, chat) are in beta. We publish it to share the approach, gather feedback from the Grist community, and invite contributions toward a complete Grist Coder.
 
 | Widget home — artefact selector | Map artefact + code editor |
@@ -48,7 +60,7 @@ Layer          Built with                       What it is
 
 ### Contextual navigation — progressive tool disclosure
 
-The server does **not** expose all 34 tools at once. Instead, it tracks a **session context** that evolves through 6 phases:
+The server does **not** expose all 35 tools at once. Instead, it tracks a **session context** that evolves through 6 phases:
 
 ```
 qualifying → assessing → designing → building → verifying → done
@@ -61,8 +73,8 @@ At each phase, only the relevant tools are visible to the LLM client:
 | **qualifying** (15 tools) | sessions, wizard, plan, grist read, subagent, chat | Understand what the user needs |
 | **assessing** (19 tools) | + canvas_read, screenshot, views_list | Audit the existing document |
 | **designing** (22 tools) | + canvas_write, canvas_patch, canvas_type | Prototype the UI |
-| **building** (34 tools) | All tools | Full construction |
-| **verifying** (34 tools) | All tools | Quality check |
+| **building** (35 tools) | All tools | Full construction |
+| **verifying** (35 tools) | All tools | Quality check |
 | **done** (17 tools) | = qualifying | Delivered, ready for next project |
 
 Phase transitions are triggered by `plan_update(status=...)` which:
@@ -199,7 +211,7 @@ docker compose up -d
 
 ```bash
 curl http://localhost:8742/health
-# → {"ok": true, "version": "5.14", "tools": 34, ...}
+# → {"ok": true, "version": "5.14", "tools": 35, ...}
 ```
 
 ---
@@ -248,7 +260,7 @@ cp .mcp.json.example .mcp.json
 
 ---
 
-## MCP Tools (34)
+## MCP Tools (35)
 
 ### Sessions
 | Tool | Description |

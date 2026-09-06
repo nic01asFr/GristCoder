@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Grist Coder — un document Grist devient une application métier</title>
+  <meta name="description" content="Un document Grist devient une application métier complète — tables, interfaces, logique, intégrations — construite par l'IA, et qui continue de tourner quand le serveur s'arrête.">
+  <link rel="canonical" href="https://nic01asfr.github.io/GristCoder/">
+  <link rel="alternate" hreflang="fr" href="https://nic01asfr.github.io/GristCoder/">
+  <link rel="alternate" hreflang="en" href="https://nic01asfr.github.io/GristCoder/en/">
+  <link rel="alternate" hreflang="x-default" href="https://nic01asfr.github.io/GristCoder/">
+  <meta name="theme-color" content="#2845C1">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Grist Coder">
+  <meta property="og:locale" content="fr_FR">
+  <meta property="og:url" content="https://nic01asfr.github.io/GristCoder/">
+  <meta property="og:title" content="Grist Coder — un document Grist devient une application métier">
+  <meta property="og:description" content="Un document Grist devient une application métier complète — tables, interfaces, logique, intégrations — construite par l'IA, et qui continue de tourner quand le serveur s'arrête.">
+  <meta property="og:image" content="https://raw.githubusercontent.com/nic01asFr/GristCoder/master/docs/screenshot-widget-home.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Grist Coder — un document Grist devient une application métier">
+  <meta name="twitter:description" content="Un document Grist devient une application métier complète — tables, interfaces, logique, intégrations — construite par l'IA, et qui continue de tourner quand le serveur s'arrête.">
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Grist Coder","description":"Un document Grist devient une application métier complète — tables, interfaces, logique, intégrations — construite par l'IA, et qui continue de tourner quand le serveur s'arrête.","applicationCategory":"DeveloperApplication","operatingSystem":"Linux, macOS, Windows","softwareVersion":"5.14","url":"https://nic01asfr.github.io/GristCoder/","codeRepository":"https://github.com/nic01asFr/GristCoder","license":"https://opensource.org/licenses/MIT","author":{"@type":"Organization","name":"Cerema Méditerranée"},"offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"}}</script>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <style>
+    @font-face {
+      font-family: "Marianne";
+      src: url("https://cdn.jsdelivr.net/npm/@gouvfr/dsfr@1.14/dist/fonts/Marianne-Regular.woff2") format("woff2");
+      font-weight: 400;
+      font-style: normal;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: "Marianne";
+      src: url("https://cdn.jsdelivr.net/npm/@gouvfr/dsfr@1.14/dist/fonts/Marianne-Medium.woff2") format("woff2");
+      font-weight: 500;
+      font-style: normal;
+      font-display: swap;
+    }
+    @font-face {
+      font-family: "Marianne";
+      src: url("https://cdn.jsdelivr.net/npm/@gouvfr/dsfr@1.14/dist/fonts/Marianne-Bold.woff2") format("woff2");
+      font-weight: 700;
+      font-style: normal;
+      font-display: swap;
+    }
+    :root {
+      --bleu: #2845C1;
+      --rouge: #C83F49;
+      --surface: #EEF1F4;
+      --fond: #FFFFFF;
+      --encre: #242424;
+      --attenue: #666666;
+      --bordure: #DDDDDD;
+      --police: "Marianne", "Segoe UI", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: var(--police);
+      font-size: 1.0625rem;
+      line-height: 1.6;
+      color: var(--encre);
+      background: var(--fond);
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--bleu); }
+    .wrap { width: min(1080px, calc(100% - 3rem)); margin: 0 auto; }
+
+    /* Le filet tricolore reprend le logo Grist de La Suite : bleu, blanc, rouge. */
+    .tricolore { display: flex; height: 4px; }
+    .tricolore i { flex: 1; }
+    .tricolore i:nth-child(1) { background: var(--bleu); }
+    .tricolore i:nth-child(2) { background: var(--fond); }
+    .tricolore i:nth-child(3) { background: var(--rouge); }
+
+    .barre {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0.9rem 0;
+      border-bottom: 1px solid var(--bordure);
+    }
+    .marque { display: flex; align-items: center; gap: 0.6rem; font-weight: 700; letter-spacing: -0.01em; }
+    .marque .puce { width: 0.85rem; height: 0.85rem; background: var(--bleu); border-radius: 2px; box-shadow: 0.35rem 0.35rem 0 -0.02rem var(--rouge); }
+    .barre a { color: var(--attenue); text-decoration: none; font-size: 0.9rem; }
+    .barre a:hover { color: var(--bleu); }
+
+    header.hero { padding: clamp(3rem, 8vw, 5.5rem) 0 clamp(2.5rem, 6vw, 4rem); }
+    .brand {
+      font-size: clamp(2.4rem, 6vw, 3.75rem);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      line-height: 1.05;
+      margin: 0 0 1.1rem;
+      max-width: 20ch;
+    }
+    .pitch { font-size: clamp(1.05rem, 2vw, 1.3rem); max-width: 46rem; color: #3a3a3a; margin: 0 0 1.75rem; }
+    .tags { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 2rem; }
+    .tag {
+      font-size: 0.75rem;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+      padding: 0.3rem 0.7rem;
+      border-radius: 999px;
+      background: var(--surface);
+      color: var(--bleu);
+    }
+    .cta { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+    .btn {
+      font-family: var(--police);
+      font-weight: 500;
+      text-decoration: none;
+      padding: 0.75rem 1.35rem;
+      border-radius: 4px;
+      display: inline-block;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+    .btn.primary { background: var(--bleu); color: #fff; }
+    .btn.primary:hover { background: #1b2f96; }
+    .btn.ghost { border: 1px solid var(--bleu); color: var(--bleu); }
+    .btn.ghost:hover { background: var(--surface); }
+
+    .bande { padding: clamp(2.75rem, 6vw, 4.5rem) 0; }
+    .bande.alt { background: var(--surface); }
+    .surtitre {
+      font-size: 0.8rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--bleu);
+      margin: 0 0 0.6rem;
+    }
+    .surtitre.rouge { color: var(--rouge); }
+    h2 { font-size: clamp(1.6rem, 3vw, 2.1rem); font-weight: 700; letter-spacing: -0.02em; margin: 0 0 1.6rem; }
+    h3 { font-size: 1.1rem; font-weight: 700; margin: 0 0 0.5rem; }
+    .accroche { font-size: 1.15rem; max-width: 46rem; color: #3a3a3a; margin: -0.6rem 0 2rem; }
+
+    .chiffres { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; }
+    .chiffres div { padding: 1.2rem 1.3rem; background: var(--fond); border: 1px solid var(--bordure); border-top: 3px solid var(--bleu); border-radius: 4px; }
+    .bande:not(.alt) .chiffres div { background: var(--surface); border-color: transparent; }
+    .chiffres strong { font-size: 2.1rem; font-weight: 700; display: block; line-height: 1.1; color: var(--bleu); letter-spacing: -0.03em; }
+    .chiffres span { color: var(--attenue); font-size: 0.9rem; }
+    .note { color: var(--attenue); font-size: 0.9rem; margin: 1rem 0 0; max-width: 46rem; }
+
+    .ident { display: grid; grid-template-columns: max-content 1fr; gap: 0.4rem 1.5rem; margin: 2rem 0 0; font-size: 0.95rem; }
+    .ident dt { font-weight: 700; color: var(--attenue); }
+    .ident dd { margin: 0; }
+    code { font-family: ui-monospace, "Cascadia Mono", Menlo, monospace; font-size: 0.9em; }
+    .clients { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.2rem; margin-top: 2rem; }
+    .clients article { min-width: 0; }
+    .clients pre {
+      margin: 0;
+      padding: 1rem 1.1rem;
+      background: #1b1b35;
+      color: #f4f4fb;
+      border-radius: 4px;
+      overflow-x: auto;
+      font-size: 0.82rem;
+      line-height: 1.55;
+    }
+
+    .points { list-style: none; padding: 0; margin: 0; display: grid; gap: 1.4rem; }
+    .points li { display: grid; gap: 0.3rem; padding-left: 1.1rem; border-left: 3px solid var(--bleu); }
+    .points li:nth-child(even) { border-left-color: var(--rouge); }
+    .points b { font-size: 1.05rem; }
+    .points span { color: #3a3a3a; }
+
+    .shots { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; }
+    .shots figure { margin: 0; }
+    .shots img { width: 100%; display: block; border: 1px solid var(--bordure); border-radius: 4px; background: var(--fond); }
+    .shots figcaption { color: var(--attenue); font-size: 0.88rem; margin-top: 0.6rem; }
+
+    .feat-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.2rem; }
+    .feat-list article {
+      padding: 1.4rem 1.5rem;
+      background: var(--surface);
+      border-radius: 4px;
+      border-top: 3px solid var(--bleu);
+    }
+    .bande.alt .feat-list article { background: var(--fond); }
+    .feat-list h3 { color: var(--bleu); }
+    .feat-list p { margin: 0; color: #3a3a3a; }
+    .pour-qui { margin-top: 0.8rem !important; font-size: 0.9rem; color: var(--attenue) !important; }
+
+    .sequence { list-style: none; padding: 0; margin: 0; display: grid; gap: 1.2rem; counter-reset: etape; }
+    .sequence li { display: grid; grid-template-columns: 2.6rem 1fr; gap: 1rem; align-items: start; }
+    .sequence .n {
+      width: 2.1rem;
+      height: 2.1rem;
+      display: grid;
+      place-items: center;
+      border-radius: 999px;
+      background: var(--bleu);
+      color: #fff;
+      font-weight: 700;
+      font-size: 0.95rem;
+    }
+    .sequence b { font-size: 1.05rem; }
+    .sequence p { margin: 0.15rem 0 0; color: #3a3a3a; }
+
+    .ctx-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.2rem; }
+    .ctx-grid article { padding: 1.4rem 1.5rem; border: 1px solid var(--bordure); border-radius: 4px; }
+    .ctx-grid p { color: #3a3a3a; margin: 0; }
+    .pourquoi { color: var(--attenue) !important; font-size: 0.92rem; margin-top: 0.8rem !important; padding-top: 0.8rem; border-top: 1px solid var(--bordure); }
+
+    .encart { padding: 1.8rem 2rem; background: var(--surface); border-left: 4px solid var(--rouge); border-radius: 4px; }
+    .encart h2 { margin-bottom: 0.8rem; }
+    .encart p { color: #3a3a3a; max-width: 52rem; }
+    .cta-line { margin-bottom: 0; }
+
+    .journal { display: grid; gap: 1.1rem; }
+    .journal div { display: grid; grid-template-columns: 4rem 1fr; gap: 1rem; align-items: baseline; }
+    .journal b { font-family: ui-monospace, Menlo, monospace; font-size: 0.85rem; color: var(--rouge); }
+    .journal p { margin: 0; color: #3a3a3a; }
+
+    footer { padding: 2.5rem 0 3rem; border-top: 1px solid var(--bordure); color: var(--attenue); font-size: 0.9rem; }
+    footer p { margin: 0 0 0.4rem; }
+
+    @media (max-width: 560px) {
+      .ident { grid-template-columns: 1fr; gap: 0.1rem 0; }
+      .ident dd { margin-bottom: 0.7rem; }
+      .journal div { grid-template-columns: 1fr; gap: 0.1rem; }
+    }
+    @media (prefers-reduced-motion: no-preference) {
+      .hero .brand, .hero .pitch, .hero .tags, .hero .cta { animation: rise 0.6s ease both; }
+      .hero .pitch { animation-delay: 0.06s; }
+      .hero .tags { animation-delay: 0.1s; }
+      .hero .cta { animation-delay: 0.14s; }
+      @keyframes rise {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: none; }
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="tricolore"><i></i><i></i><i></i></div>
+  <div class="wrap barre">
+    <span class="marque"><span class="puce"></span>Grist Coder</span>
+    <a href="/GristCoder/en/">English</a>
+  </div>
+  <header class="hero">
+    <div class="wrap">
+      <h1 class="brand">Un document Grist devient une application métier</h1>
+      <p class="pitch">Un document Grist devient une application métier complète — tables, interfaces, logique, intégrations — construite par l'IA, et qui continue de tourner quand le serveur s'arrête.</p>
+      <div class="tags"><span class="tag">Serveur MCP</span><span class="tag">Grist</span><span class="tag">Claude</span><span class="tag">Auto-hébergé</span><span class="tag">Python</span><span class="tag">MIT</span></div>
+      <div class="cta">
+        <a class="btn primary" href="https://github.com/nic01asFr/GristCoder">Code source</a>
+        <a class="btn ghost" href="#mcp">Démarrer</a>
+      </div>
+    </div>
+  </header>
+  <main>
+    <section class="bande" id="mcp">
+  <div class="wrap">
+    <p class="surtitre">Serveur MCP</p>
+    <h2>Ce que le serveur expose</h2>
+    <div class="chiffres">
+      <div><strong>35</strong><span>outils MCP</span></div>
+      <div><strong>8</strong><span>prompts</span></div>
+      <div><strong>18</strong><span>ressources</span></div>
+      <div><strong>v5.14</strong><span>streamable-http</span></div>
+    </div>
+    <p class="note">Chiffres relus dans le code source à chaque génération de cette page — ils ne peuvent pas dériver de ce que le serveur expose réellement.</p>
+    <dl class="ident">
+      <dt>Identifiant</dt><dd><code>io.github.nic01asFr/gristcoder</code></dd>
+      <dt>Transport</dt><dd><code>streamable-http</code> — 2025-03-26, sur <code>/mcp</code></dd>
+      <dt>Image</dt><dd><code>ghcr.io/nic01asfr/grist-coder</code></dd>
+    </dl>
+    <div class="clients">
+      <article>
+        <h3>Claude Code</h3>
+        <pre><code>claude mcp add grist-coder --transport http http://localhost:8742/mcp \
+  --header &quot;Authorization: Bearer &lt;clé Grist&gt;&quot; \
+  --header &quot;X-Grist-Site: https://&lt;instance&gt;&quot;</code></pre>
+      </article>
+      <article>
+        <h3>Claude Desktop</h3>
+        <pre><code>{
+  &quot;mcpServers&quot;: {
+    &quot;grist-coder&quot;: {
+      &quot;type&quot;: &quot;http&quot;,
+      &quot;url&quot;: &quot;http://localhost:8742/mcp&quot;,
+      &quot;headers&quot;: {
+        &quot;Authorization&quot;: &quot;Bearer &lt;clé Grist&gt;&quot;,
+        &quot;X-Grist-Site&quot;: &quot;https://&lt;instance&gt;&quot;
+      }
+    }
+  }
+}</code></pre>
+      </article>
+    </div>
+  </div>
+</section>
+    <section class="bande alt" id="promesse">
+      <div class="wrap">
+        <p class="surtitre rouge">La promesse</p>
+        <h2>Ce que ça change</h2>
+        <p class="accroche">Un document Grist contient déjà les données, les droits et le partage. Ce qui lui manque pour être une application — des écrans, de la logique, des déclencheurs — se construit ici par la conversation, et reste rangé à l'intérieur du document.</p>
+        <ul class="points">
+      <li><b>L'application vit dans le document</b><span>Les interfaces HTML/React sont rangées dans une table du document et rendues par le widget. Il n'y a pas de second hébergement à tenir : l'application voyage avec le fichier, se partage comme lui, se sauvegarde comme lui.</span></li>
+      <li><b>Publier, c'est couper le cordon</b><span>Un artefact publié est figé dans le document, imports npm compilés. Il survit à l'arrêt du serveur qui l'a écrit — la publication refuse d'ailleurs tout artefact qui garderait un lien vers lui.</span></li>
+      <li><b>L'outillage suit l'avancement</b><span>Les outils ne sont pas tous exposés d'emblée. Six phases dévoilent ce qui est pertinent au moment où ça l'est, ce qui empêche d'écrire du code avant d'avoir lu le schéma.</span></li>
+      <li><b>L'utilisateur final ne voit jamais l'IA</b><span>Il ouvre une application et s'en sert. Le modèle, le code et les allers-retours restent du côté de celui qui construit.</span></li>
+      <li><b>Ton serveur, tes secrets</b><span>Un chart Helm déploie un serveur par utilisateur sur SSPCloud Onyxia. Chacun garde sa clé, et personne n'est dépositaire des documents des autres.</span></li>
+    </ul>
+      </div>
+    </section>
+    <section class="bande alt" id="captures">
+  <div class="wrap">
+    <p class="surtitre rouge">En images</p>
+    <h2>À quoi ça ressemble</h2>
+    <div class="shots">
+      <figure>
+        <img src="https://raw.githubusercontent.com/nic01asFr/GristCoder/master/docs/screenshot-widget-home.png" alt="Le widget à l'ouverture : les artefacts du document, en tuiles cliquables." loading="lazy">
+        <figcaption>Le widget à l'ouverture : les artefacts du document, en tuiles cliquables.</figcaption>
+      </figure>
+      <figure>
+        <img src="https://raw.githubusercontent.com/nic01asFr/GristCoder/master/docs/screenshot-map-editor.png" alt="Un artefact carte et son code côte à côte : l'aperçu se rafraîchit à l'écriture." loading="lazy">
+        <figcaption>Un artefact carte et son code côte à côte : l'aperçu se rafraîchit à l'écriture.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+    <section class="bande" id="fonctionnalites">
+  <div class="wrap">
+    <p class="surtitre">Fonctionnalités</p>
+    <h2>Ce que tu peux faire</h2>
+    <div class="feat-list">
+      <article>
+        <h3>Les quatre couches d'une application</h3>
+        <p>Données (tables et formules), interface (artefacts et pages Grist), logique (SQL, UserActions, upsert), intégrations (webhooks vers l'extérieur). Les quatre se construisent depuis la même conversation, sans changer d'outil en cours de route.</p>
+        <p class="pour-qui">Quand un tableur ne suffit plus, mais qu'un développement complet est hors de portée.</p>
+      </article>
+      <article>
+        <h3>Un IDE dans le document</h3>
+        <p>Le widget est un écran coupé en deux : l'éditeur à gauche, l'aperçu à droite. L'écriture est incrémentale — on lit le code, on remplace un fragment, on regarde. Les erreurs de rendu remontent avec leur numéro de ligne au lieu d'un échec muet.</p>
+        <p class="pour-qui">Pour corriger une interface sans jamais quitter Grist.</p>
+      </article>
+      <article>
+        <h3>Publication autonome</h3>
+        <p>La publication fige l'artefact dans une section du document et compile ses imports npm. Le résultat est un widget ordinaire : il ne connaît plus le serveur, et continue de fonctionner si celui-ci disparaît.</p>
+        <p class="pour-qui">Pour livrer quelque chose qui ne dépend plus de toi.</p>
+      </article>
+      <article>
+        <h3>Un agent embarqué dans le widget</h3>
+        <p>Près de 2 800 lignes de JavaScript font tourner une boucle d'agent à l'intérieur même du widget : le document peut se construire sans client MCP externe. La configuration du modèle est servie par le serveur, et la clé ne quitte jamais celui-ci.</p>
+        <p class="pour-qui">Quand il n'y a pas de client MCP en face, juste un navigateur.</p>
+      </article>
+      <article>
+        <h3>Dialogue guidé</h3>
+        <p>Plutôt que deviner, l'assistant pose la question dans le widget : choix, formulaire, confirmation, import de données externes. La réponse revient dans la conversation et la construction reprend où elle en était.</p>
+        <p class="pour-qui">Pour les décisions qu'un modèle n'a pas à prendre seul. En bêta.</p>
+      </article>
+      <article>
+        <h3>Mise en ligne par utilisateur</h3>
+        <p>Le chart Helm installe un serveur personnel, protégé par jeton et verrouillé sur son propriétaire au premier contact. Un connecteur OAuth 2.1 embarqué fait du serveur son propre fournisseur d'identité, ce qui évite de coller une clé d'API dans un client.</p>
+        <p class="pour-qui">Pour mettre en ligne sans passer par un service multi-locataires.</p>
+      </article>
+    </div>
+  </div>
+</section>
+    <section class="bande alt" id="parcours">
+  <div class="wrap">
+    <p class="surtitre rouge">Prise en main</p>
+    <h2>Le parcours</h2>
+    <ol class="sequence">
+      <li><span class="n">1</span><div><b>Tu ajoutes le widget</b><p>Coder s'installe comme widget personnalisé sur une page du document. Il s'enregistre auprès du serveur et ouvre une session.</p></div></li>
+      <li><span class="n">2</span><div><b>Tu décris ce que tu veux</b><p>L'assistant qualifie le besoin avant de toucher à quoi que ce soit. À ce stade, il n'a même pas accès aux outils d'écriture.</p></div></li>
+      <li><span class="n">3</span><div><b>Le schéma d'abord</b><p>Tables, colonnes, relations. Les outils d'interface n'apparaissent qu'une fois les données posées.</p></div></li>
+      <li><span class="n">4</span><div><b>L'interface se construit sous tes yeux</b><p>Le code s'écrit dans l'éditeur et l'aperçu se rafraîchit. Ce qui ne va pas se corrige par retouches, pas par réécriture.</p></div></li>
+      <li><span class="n">5</span><div><b>Tu publies</b><p>L'artefact est figé dans le document. Il n'a plus besoin du serveur, et l'utilisateur final ne voit qu'une application.</p></div></li>
+    </ol>
+  </div>
+</section>
+    <section class="bande" id="usages">
+  <div class="wrap">
+    <p class="surtitre">Cas d'usage</p>
+    <h2>Quand ça compte</h2>
+    <div class="ctx-grid">
+      <article>
+        <h3>Un tableur qui a dépassé sa condition</h3>
+        <p>Le fichier fait vivre un processus réel, mais chaque nouvelle demande se traduit par une colonne de plus et un onglet de plus.</p>
+        <p class="pourquoi">Sans interface propre, on empile jusqu'à ce que plus personne n'ose y toucher.</p>
+      </article>
+      <article>
+        <h3>Une équipe sans développeur disponible</h3>
+        <p>Le besoin est clair et la file d'attente est longue. Ici, la personne qui connaît le métier construit et corrige elle-même.</p>
+        <p class="pourquoi">Un outil livré six mois trop tard décrit un métier qui a changé entre-temps.</p>
+      </article>
+      <article>
+        <h3>Des données qui ne doivent pas sortir</h3>
+        <p>Serveur auto-hébergé, un déploiement par utilisateur, clés gardées côté serveur. Le document ne part pas chez un tiers pour être outillé.</p>
+        <p class="pourquoi">Un service mutualisé demanderait de confier le document à quelqu'un d'autre.</p>
+      </article>
+    </div>
+  </div>
+</section>
+    <section class="bande">
+  <div class="wrap">
+    <aside class="encart">
+      <h2>Expérimental, et publié quand même</h2>
+      <p>Développé au Cerema Méditerranée. Fiable pour un utilisateur sur sa machine ; le dialogue guidé, les sous-agents et le chat sont en bêta. Nous le publions pour partager l'approche, récolter les retours de la communauté Grist et inviter les contributions.</p>
+      <p class="cta-line"><a class="btn ghost" href="https://github.com/nic01asFr/GristCoder#readme">Lire le README</a></p>
+    </aside>
+  </div>
+</section>
+    <section class="bande alt" id="journal">
+  <div class="wrap">
+    <h2>Journal</h2>
+    <div class="journal">
+      <div><b>5.14</b><p>Corpus de savoir-faire interrogeable par l'assistant, sans exiger de session ouverte.</p></div>
+      <div><b>5.13</b><p>Connecteur OAuth 2.1 embarqué : le serveur devient son propre fournisseur d'identité, et le jeton émis est révocable.</p></div>
+      <div><b>5.12</b><p>Audit de sécurité : jetons masqués dans les erreurs, proxy sortant restreint à une liste d'hôtes, fuites mémoire fermées.</p></div>
+      <div><b>5.9</b><p>Publication autonome des artefacts, et aller-retour par le navigateur pour passer le pare-feu applicatif.</p></div>
+    </div>
+  </div>
+</section>
+  </main>
+  <footer>
+    <div class="wrap">
+      <p>Grist Coder — MIT · <a href="https://github.com/nic01asFr/GristCoder">github.com/nic01asFr/GristCoder</a> · Dernière mise à jour 2026-09-02</p>
+      <p>Serveur MCP auto-hébergé pour Grist. Cette page présente le produit ; la documentation technique vit dans le dépôt.</p>
+    </div>
+  </footer>
+</body>
+</html>

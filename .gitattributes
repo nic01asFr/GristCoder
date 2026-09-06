@@ -4,3 +4,8 @@
 *.yaml text eol=lf
 *.yml text eol=lf
 *.tpl text eol=lf
+# Vitrine : la CI regenere site/dist et le compare a ce qui est versionne. Sans
+# LF force, un poste Windows (core.autocrlf=true) reintroduirait des CRLF et la
+# comparaison echouerait sans qu'aucun contenu ait change.
+site/** text eol=lf
+server.json text eol=lf
