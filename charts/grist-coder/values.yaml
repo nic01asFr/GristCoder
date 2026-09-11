@@ -1,12 +1,17 @@
 # Valeurs par defaut du chart grist-coder (Onyxia SSPCloud, self-hosted par-user).
 # Le serveur MCP est stateless (sessions in-memory, re-register auto) : pas de PVC.
 # Aucun secret n'est commite ici ; les secrets naissent dans le namespace du user.
+#
+# Les blocs ingress, route, security.allowlist, security.networkPolicy, networking
+# et global suivent les conventions du library-chart InseeFrLab : ce sont eux que
+# lisent ses templates, et ce qui fait que le service se comporte comme les autres
+# services du catalogue (hote tire du contexte Onyxia, protection IP, pause).
 
 # --- Image ---------------------------------------------------------------------
 # Le GitLab CEREMA n'a pas de registre conteneur -> l'image est hebergee sur un
 # registre externe public (ghcr.io par defaut). repository est REECRIT au packaging
-# par la CI avec la variable $IMAGE_REPO. La valeur ci-dessous n'est qu'un defaut
-# lisible ; ne pas s'y fier hors CI.
+# par la CI avec la variable $IMAGE_REPO — la CI remplace toute ligne
+# « repository: » de ce fichier : ne pas en ajouter d'autre.
 image:
   repository: ghcr.io/nic01asfr/grist-coder
   tag: "latest"
@@ -20,78 +25,112 @@ onyxia:
 # ONYXIA_USER est renseigne automatiquement par Onyxia (values.schema.json).
 onyxia_user: ""
 
-# --- Serveur MCP ---------------------------------------------------------------
-app:
-  # Hostname public (surcharge par Onyxia, cf. values.schema.json).
-  host: ""
-  port: 8742
-  logLevel: info
-  # Nombre de hops proxy (ingress onyxia = 1).
-  trustProxy: 1
-  # Verrou proprietaire : seul le proprietaire du pod peut l'utiliser. Mettre "off"
-  # seulement pour un pod volontairement partage.
-  ownerLock: "on"
-  # Identifiant numerique Grist du proprietaire (Grist -> Parametres du profil, ou
-  # GET /api/profile/user). RECOMMANDE : sans lui, le proprietaire est le premier
-  # compte verifie qui s'enregistre apres chaque demarrage (TOFU) — un collaborateur
-  # qui ouvre le widget le premier apres un redemarrage prendrait le pod. Si
-  # grist.apiKey est renseignee, son compte fait foi a defaut de cette valeur.
-  ownerUid: ""
-
-# --- Garde Bearer du pod (auto-generee) ----------------------------------------
-# Le chart cree son propre Secret avec un APP_AUTH_TOKEN aleatoire stable
-# (helper lookup -> conserve entre upgrades, jamais connu de l'auteur du chart).
-# Exige sur /mcp, /register, SSE, /llm-proxy. Le widget le porte via les options
-# de section ; les clients MCP via l'en-tete Authorization / X-App-Token.
-appAuth:
-  token: ""  # vide = genere aleatoirement (48 char), stable au prochain upgrade
-
 # --- Instance Grist ------------------------------------------------------------
 grist:
-  # Instance Grist cible (resolution profil / repli WAF).
+  # Instance Grist cible. Sert aussi de liste blanche : le pod ne verifie une
+  # identite qu'aupres de ce site (voir GRIST_SITE_URL cote serveur).
   siteUrl: "https://grist.numerique.gouv.fr"
-  # Cle API Grist (optionnelle) : le widget utilise getAccessToken
-  # cote navigateur ; une cle server-side sert aux clients MCP (Claude Desktop/Code)
-  # et aux operations owner (webhooks). Reste dans TON Secret, sur TON pod.
-  #
+  # Cle API Grist (optionnelle) : le widget utilise getAccessToken cote navigateur ;
+  # une cle server-side sert aux clients MCP en Bearer statique et aux operations
+  # owner (webhooks). Si elle est renseignee et que security.ownerUid est vide,
+  # son compte devient le proprietaire du pod. Reste dans TON Secret, sur TON pod.
   # Le connecteur OAuth n'en a PAS besoin : la cle recueillie au consentement
-  # voyage scellee (chiffree) dans le token et survit aux redemarrages du pod.
-  # Cette valeur ne sert qu'aux usages sans consentement — client MCP en Bearer
-  # statique, ou operations owner declenchees sans utilisateur connecte.
-  #   Grist -> Profile Settings -> API -> Create key
+  # voyage scellee dans le token.
+  #   Grist -> Parametres du profil -> API -> Creer une cle
   apiKey: ""
+
+# --- Securite ------------------------------------------------------------------
+security:
+  # Identifiant numerique Grist du proprietaire (Grist -> Parametres du profil).
+  # RECOMMANDE : sans lui (ni grist.apiKey), le proprietaire est le premier compte
+  # VERIFIE qui s'enregistre apres chaque demarrage — un collaborateur qui ouvrirait
+  # le widget le premier apres un redemarrage prendrait le pod.
+  ownerUid: ""
+  # Verrou proprietaire : seul le proprietaire peut utiliser le pod. "off"
+  # uniquement pour un pod volontairement partage.
+  ownerLock: "on"
+  # Protection par liste d'IP (library-chart : annotation whitelist-source-range).
+  allowlist:
+    enabled: false
+    ip: "0.0.0.0/0"
+  # NetworkPolicy (library-chart) : seuls le namespace et l'ingress atteignent le pod.
+  networkPolicy:
+    enabled: false
+    from: []
+
+# --- Garde du pod (auto-generee) -----------------------------------------------
+# Un FILTRE, pas un secret : elle voyage dans l'URL du widget, stockee dans les
+# options de section de chaque document qui l'integre. Lancee depuis Onyxia, elle
+# vient de {{service.oneTimePassword}} : la meme valeur alimente le Secret et les
+# notes, qui affichent donc l'URL complete du widget. Hors Onyxia, vide -> tiree au
+# sort et conservee entre upgrades (lookup du Secret existant).
+appAuth:
+  token: ""
 
 # --- Configuration LLM ---------------------------------------------------------
-# Recuperee PAR DEFAUT depuis la config "AI Assistant" du datalab SSPCloud
-# (Secret *-secretassistant), quand le service est lance avec kubernetes.role: edit
-# (defaut du catalogue). Sinon, renseigner la cle ci-dessous.
+# Lancee depuis Onyxia, la configuration est reprise du profil « Assistant IA » de
+# l'utilisateur, sous ses deux formats : historique (user.profile.aiAssistant.*,
+# dans apiKey/baseUrl/model) et recent ({{ai.activeProvider.*}}, dans provider.*).
+# Le template prend la premiere valeur non vide ; a defaut, les valeurs ci-dessous.
 llm:
-  # Auto-lecture de la cle depuis le Secret datalab au boot (necessite role: edit).
-  autoFromDatalab: true
-  # Endpoint LLM SSPCloud (OpenAI-compatible).
-  baseUrl: "https://llm.lab.sspcloud.fr/api"
-  # Le catalogue SSPCloud change : gemma3-27b-it a disparu et le service repondait
-  # "Model not found" sans autre indice. Verifier avec GET {baseUrl}/v1/models.
-  # Teste bon pour le tool-calling (appel emis ET resultat exploite) :
-  # qwen3-6-35b-moe, qwen3-cursor, gemma4-26b-moe. qwen3-vl n a pas le tool choice
-  # automatique active cote serveur.
-  model: "qwen3-6-35b-moe"
-  # Cle explicite (repli si autoFromDatalab echoue ou hors SSPCloud). Dans TON Secret.
   apiKey: ""
+  baseUrl: "https://llm.lab.sspcloud.fr/api"
+  # Teste bon pour le tool-calling (appel emis ET resultat exploite) :
+  # qwen3-6-35b-moe, qwen3-cursor, gemma4-26b-moe. Verifier avec GET {baseUrl}/v1/models.
+  model: "qwen3-6-35b-moe"
+  provider:
+    apiKey: ""
+    apiBase: ""
+    selectedModel: ""
+  # Dernier repli : lecture du Secret *-secretassistant du datalab au demarrage
+  # (necessite rbac.create et un Secret present dans le namespace).
+  autoFromDatalab: true
 
-# --- Anti-SSRF /llm-proxy ------------------------------------------------------
 # Liste blanche d'hotes autorises par le proxy LLM (CSV). Doit contenir l'hote LLM.
 llmProxyAllowedHosts: "llm.lab.sspcloud.fr,albert.api.etalab.gouv.fr"
 
+# --- Serveur -------------------------------------------------------------------
+app:
+  port: 8742
+  logLevel: info
+  # Nombre de sauts de proxy de confiance (ingress onyxia = 1).
+  trustProxy: 1
+
+# --- Reseau (library-chart) ----------------------------------------------------
+networking:
+  type: ClusterIP
+  service:
+    port: 8742
+
+# --- Ingress (library-chart) ---------------------------------------------------
+# hostname, ingressClassName et cert-manager sont remplis par Onyxia depuis le
+# contexte de la region. Hors Onyxia, renseigner au moins ingress.hostname.
+ingress:
+  enabled: true
+  tls: true
+  ingressClassName: ""
+  hostname: ""
+  useCertManager: false
+  certManagerClusterIssuer: ""
+  annotations:
+    # SSE : pas de mise en tampon nginx sur le flux d'evenements.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+
+# --- Route OpenShift (library-chart) -------------------------------------------
+route:
+  enabled: false
+  hostname: ""
+  annotations: {}
+  tls:
+    termination: edge
+  wildcardPolicy: None
+
 # --- RBAC (lecture du Secret AI Assistant du datalab) --------------------------
-# Le pod tourne par defaut avec le ServiceAccount 'default' du namespace, qui ne
-# peut PAS lire les Secrets (403) -> la recuperation auto de la cle LLM echoue.
-# On cree un ServiceAccount dedie + un RoleBinding vers la ClusterRole 'edit'
-# (qui inclut la lecture des Secrets). RoleBinding vers une ClusterRole EXISTANTE
-# est autorise en namespace utilisateur SSPCloud (contrairement a creer une Role).
-# Utile uniquement avec llm.autoFromDatalab ET un Secret *-secretassistant present
-# (injecte par Onyxia quand le service est lance depuis le catalogue avec l'option
-# AI Assistant). Sur un simple 'helm install', preferer llm.apiKey (deterministe).
+# ServiceAccount dedie + RoleBinding vers la ClusterRole 'edit' (lecture des
+# Secrets), pour le repli llm.autoFromDatalab. RoleBinding vers une ClusterRole
+# EXISTANTE : autorise en namespace utilisateur SSPCloud.
 rbac:
   create: true
   clusterRole: edit
@@ -112,32 +151,16 @@ resources:
     cpu: 1000m
     memory: 1Gi
 
-# --- Repliques (stateless mais sessions in-memory : garder 1 sauf sticky) ------
-replicaCount: 1
+# --- Pause Onyxia (library-chart) ----------------------------------------------
+# suspend = 0 replique et plus d'ingress : le bouton « Suspendre » d'Onyxia.
+global:
+  suspend: false
 
-# --- Service -------------------------------------------------------------------
-service:
-  type: ClusterIP
-  port: 8742
-
-# --- Ingress -------------------------------------------------------------------
-ingress:
-  enabled: true
-  className: nginx
-  tls: true
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt
-    # SSE : desactiver le buffering nginx pour le flux d'evenements.
-    nginx.ingress.kubernetes.io/proxy-buffering: "off"
-    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
-
-# --- Probes --------------------------------------------------------------------
-# /health est public (pas de Bearer) -> httpGet possible.
+# --- Sondes --------------------------------------------------------------------
+# /health est public (sans garde) -> httpGet possible.
 probes:
   liveness:
     enabled: true
-    type: httpGet
     path: /health
     initialDelaySeconds: 20
     periodSeconds: 30
@@ -145,7 +168,6 @@ probes:
     failureThreshold: 3
   readiness:
     enabled: true
-    type: httpGet
     path: /health
     initialDelaySeconds: 10
     periodSeconds: 10

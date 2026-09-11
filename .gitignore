@@ -29,3 +29,6 @@ tmp_*.html
 .wikichat/
 
 .mcp.json.bak
+
+# Dependances de chart telechargees (helm dependency update) : Chart.lock suffit.
+charts/grist-coder/charts/

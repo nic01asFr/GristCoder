@@ -2,118 +2,367 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "properties": {
-    "app": {
-      "type": "object",
-      "title": "Serveur GristCoder",
-      "description": "Parametres du serveur MCP.",
-      "properties": {
-        "host": {
-          "type": "string",
-          "title": "Domaine public",
-          "description": "Hostname public du serveur (TLS auto). Renseigne par Onyxia.",
-          "default": "",
-          "x-onyxia": {
-            "overwriteDefaultWith": "user-{{user.idep}}-grist-coder.user.lab.sspcloud.fr"
-          }
-        },
-        "ownerLock": {
-          "type": "string",
-          "title": "Verrou proprietaire",
-          "description": "on = seul le 1er compte Grist enregistre peut utiliser ce pod (recommande). off = pod partage.",
-          "default": "on",
-          "enum": ["on", "off"]
-        },
-        "ownerUid": {
-          "type": "string",
-          "title": "Identifiant Grist du proprietaire",
-          "description": "Recommande. Identifiant numerique de ton compte Grist (Parametres du profil). Sans lui, le premier compte verifie apres chaque demarrage devient proprietaire.",
-          "default": "",
-          "pattern": "^[0-9]*$"
-        },
-        "logLevel": {
-          "type": "string",
-          "title": "Niveau de log",
-          "default": "info",
-          "enum": ["error", "warn", "info", "debug"]
-        }
-      }
-    },
-    "onyxia_user": {
-      "type": "string",
-      "title": "Identifiant Onyxia",
-      "description": "Renseigne automatiquement.",
-      "default": "",
-      "x-onyxia": {
-        "overwriteDefaultWith": "{{user.idep}}"
-      }
-    },
     "grist": {
       "type": "object",
-      "title": "Instance Grist",
+      "title": "Grist",
+      "description": "L'instance Grist à laquelle le pod se fie pour vérifier les identités.",
       "properties": {
         "siteUrl": {
           "type": "string",
           "title": "URL de l'instance Grist",
+          "description": "Sert aussi de liste blanche : une identité n'est vérifiée qu'auprès de ce site.",
           "default": "https://grist.numerique.gouv.fr"
         },
         "apiKey": {
           "type": "string",
-          "title": "Cle API Grist (optionnelle)",
-          "description": "Utile pour les clients MCP (Claude Desktop/Code) et les webhooks. Le widget n'en a pas besoin. Reste sur ton pod.",
+          "title": "Clé API Grist (facultative)",
+          "description": "Utile aux clients MCP en Bearer statique et aux webhooks ; le widget n'en a pas besoin. Si l'identifiant du propriétaire est vide, le compte de cette clé devient propriétaire du pod. Reste sur ton pod.",
           "default": "",
           "render": "password"
         }
       }
     },
+    "security": {
+      "type": "object",
+      "title": "Sécurité",
+      "description": "Qui peut utiliser le pod, et d'où.",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "title": "Identifiant Grist du propriétaire",
+          "description": "Recommandé. Identifiant numérique de ton compte Grist (Grist > Paramètres du profil). Sans lui, le premier compte vérifié qui ouvre le widget après chaque démarrage devient propriétaire.",
+          "default": "",
+          "pattern": "^[0-9]*$"
+        },
+        "ownerLock": {
+          "type": "string",
+          "title": "Verrou propriétaire",
+          "description": "on = seul le propriétaire utilise le pod (recommandé). off = pod partagé.",
+          "default": "on",
+          "enum": [
+            "on",
+            "off"
+          ]
+        },
+        "allowlist": {
+          "type": "object",
+          "title": "Protection par IP",
+          "description": "N'accepter que les requêtes venant des plages listées.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "title": "Activer la protection par IP",
+              "description": "Attention : le widget est appelé par le navigateur de chaque utilisateur de Grist, depuis son propre réseau.",
+              "default": false,
+              "x-onyxia": {
+                "overwriteDefaultWith": "region.defaultIpProtection"
+              }
+            },
+            "ip": {
+              "type": "string",
+              "title": "Plages autorisées",
+              "description": "Liste CIDR séparée par des virgules.",
+              "default": "0.0.0.0/0",
+              "x-onyxia": {
+                "overwriteDefaultWith": "{{user.ip}}"
+              },
+              "hidden": {
+                "value": false,
+                "path": "enabled",
+                "isPathRelative": true
+              }
+            }
+          }
+        },
+        "networkPolicy": {
+          "type": "object",
+          "title": "Politique réseau",
+          "description": "Restreindre l'accès au service.",
+          "x-onyxia": {
+            "overwriteSchemaWith": "network-policy.json"
+          },
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "title": "Activer la politique réseau",
+              "description": "Seuls les pods du namespace et le contrôleur d'ingress atteignent le service.",
+              "default": false,
+              "x-onyxia": {
+                "overwriteDefaultWith": "region.defaultNetworkPolicy"
+              }
+            },
+            "from": {
+              "type": "array",
+              "default": [],
+              "items": {
+                "type": "object",
+                "additionalProperties": true
+              },
+              "x-onyxia": {
+                "hidden": true,
+                "overwriteDefaultWith": "region.from"
+              }
+            }
+          }
+        }
+      }
+    },
     "llm": {
       "type": "object",
-      "title": "Modele de langage (LLM)",
+      "title": "Assistant IA",
+      "description": "Modèle de langage de l'agent intégré au widget. Prérempli depuis ton profil (Mon compte > Assistant IA) quand le service est lancé depuis le catalogue.",
       "properties": {
-        "autoFromDatalab": {
-          "type": "boolean",
-          "title": "Reprendre la cle du profil Onyxia",
-          "description": "Si la cle n'est pas fournie ci-dessous, le pod la cherche dans les services deja lances depuis l'interface Onyxia, qui portent la cle du profil AI Assistant (necessite le role Kubernetes 'edit'). Utile pour une installation en ligne de commande, ou le placeholder Onyxia n'est pas resolu.",
-          "default": true
-        },
-        "baseUrl": {
-          "type": "string",
-          "title": "Endpoint LLM",
-          "default": "https://llm.lab.sspcloud.fr/api"
-        },
-        "model": {
-          "type": "string",
-          "title": "Modele",
-          "description": "Le catalogue SSPCloud change. Verifier avec GET {baseUrl}/v1/models : un modele disparu ne produit qu'un 'Model not found' qui ne le designe pas. Testes bons pour le tool-calling : qwen3-6-35b-moe, qwen3-cursor, gemma4-26b-moe.",
-          "default": "qwen3-6-35b-moe"
-        },
         "apiKey": {
           "type": "string",
-          "title": "Cle API LLM",
-          "description": "Prerempli avec la cle du profil Onyxia (onglet AI Assistant) quand le service est lance depuis l'interface. Laisser vide pour la reprise automatique.",
+          "title": "Clé API",
+          "description": "Reprise de ton profil. Sinon, une clé compatible OpenAI (llm.lab.sspcloud.fr, onglet API keys). Vide : le pod la cherchera dans le datalab.",
           "default": "",
           "render": "password",
           "x-onyxia": {
-            "overwriteDefaultWith": "{{userProfileValues.aiAssistant.apiKey}}"
+            "overwriteDefaultWith": "user.profile.aiAssistant.apiKey"
           }
+        },
+        "baseUrl": {
+          "type": "string",
+          "title": "URL de l'API",
+          "default": "https://llm.lab.sspcloud.fr/api",
+          "x-onyxia": {
+            "overwriteDefaultWith": "user.profile.aiAssistant.apiBase"
+          }
+        },
+        "model": {
+          "type": "string",
+          "title": "Modèle",
+          "description": "Doit savoir appeler des outils. Testés bons : qwen3-6-35b-moe, qwen3-cursor, gemma4-26b-moe. Un modèle disparu ne produit qu'un « Model not found ».",
+          "default": "qwen3-6-35b-moe",
+          "x-onyxia": {
+            "overwriteDefaultWith": "user.profile.aiAssistant.model"
+          }
+        },
+        "provider": {
+          "type": "object",
+          "title": "Fournisseur IA (format récent d'Onyxia)",
+          "description": "Repli si le profil historique est vide. Rempli par Onyxia, ne pas saisir.",
+          "x-onyxia": {
+            "hidden": true
+          },
+          "properties": {
+            "apiKey": {
+              "type": "string",
+              "default": "",
+              "x-onyxia": {
+                "hidden": true,
+                "overwriteDefaultWith": "{{ai.activeProvider.apiKey}}"
+              }
+            },
+            "apiBase": {
+              "type": "string",
+              "default": "",
+              "x-onyxia": {
+                "hidden": true,
+                "overwriteDefaultWith": "{{ai.activeProvider.apiBase}}"
+              }
+            },
+            "selectedModel": {
+              "type": "string",
+              "default": "",
+              "x-onyxia": {
+                "hidden": true,
+                "overwriteDefaultWith": "{{ai.activeProvider.selectedModel}}"
+              }
+            }
+          }
+        },
+        "autoFromDatalab": {
+          "type": "boolean",
+          "title": "Chercher la clé dans le datalab en dernier recours",
+          "description": "Lecture du Secret de l'Assistant IA du namespace au démarrage, si aucune clé n'est fournie.",
+          "default": true
         }
       }
     },
     "resources": {
       "type": "object",
       "title": "Ressources",
+      "x-onyxia": {
+        "overwriteSchemaWith": "ide/resources.json"
+      },
       "properties": {
         "requests": {
           "type": "object",
+          "title": "Ressources garanties",
           "properties": {
-            "cpu": { "type": "string", "title": "CPU", "default": "100m" },
-            "memory": { "type": "string", "title": "RAM", "default": "256Mi" }
+            "cpu": {
+              "type": "string",
+              "title": "CPU",
+              "default": "100m",
+              "render": "slider",
+              "sliderMin": 50,
+              "sliderMax": 4000,
+              "sliderStep": 50,
+              "sliderUnit": "m",
+              "sliderExtremity": "down",
+              "sliderExtremitySemantic": "guaranteed",
+              "sliderRangeId": "cpu"
+            },
+            "memory": {
+              "type": "string",
+              "title": "Mémoire",
+              "default": "256Mi",
+              "render": "slider",
+              "sliderMin": 128,
+              "sliderMax": 4096,
+              "sliderStep": 128,
+              "sliderUnit": "Mi",
+              "sliderExtremity": "down",
+              "sliderExtremitySemantic": "guaranteed",
+              "sliderRangeId": "memory"
+            }
           }
         },
         "limits": {
           "type": "object",
+          "title": "Ressources maximales",
           "properties": {
-            "cpu": { "type": "string", "title": "CPU max", "default": "1000m" },
-            "memory": { "type": "string", "title": "RAM max", "default": "1Gi" }
+            "cpu": {
+              "type": "string",
+              "title": "CPU",
+              "default": "1000m",
+              "render": "slider",
+              "sliderMin": 50,
+              "sliderMax": 4000,
+              "sliderStep": 50,
+              "sliderUnit": "m",
+              "sliderExtremity": "up",
+              "sliderExtremitySemantic": "Maximum",
+              "sliderRangeId": "cpu"
+            },
+            "memory": {
+              "type": "string",
+              "title": "Mémoire",
+              "default": "1Gi",
+              "render": "slider",
+              "sliderMin": 128,
+              "sliderMax": 4096,
+              "sliderStep": 128,
+              "sliderUnit": "Mi",
+              "sliderExtremity": "up",
+              "sliderExtremitySemantic": "Maximum",
+              "sliderRangeId": "memory"
+            }
+          }
+        }
+      }
+    },
+    "appAuth": {
+      "type": "object",
+      "x-onyxia": {
+        "hidden": true
+      },
+      "properties": {
+        "token": {
+          "type": "string",
+          "default": "",
+          "x-onyxia": {
+            "hidden": true,
+            "overwriteDefaultWith": "{{service.oneTimePassword}}"
+          }
+        }
+      }
+    },
+    "onyxia_user": {
+      "type": "string",
+      "default": "",
+      "x-onyxia": {
+        "hidden": true,
+        "overwriteDefaultWith": "{{user.idep}}"
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "title": "Ingress",
+      "x-onyxia": {
+        "hidden": true
+      },
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "x-onyxia": {
+            "hidden": true,
+            "overwriteDefaultWith": "k8s.ingress"
+          }
+        },
+        "hostname": {
+          "type": "string",
+          "default": "",
+          "x-onyxia": {
+            "hidden": true,
+            "overwriteDefaultWith": "{{project.id}}-grist-coder-{{k8s.randomSubdomain}}.{{k8s.domain}}"
+          }
+        },
+        "ingressClassName": {
+          "type": "string",
+          "default": "",
+          "x-onyxia": {
+            "hidden": true,
+            "overwriteDefaultWith": "{{k8s.ingressClassName}}"
+          }
+        },
+        "useCertManager": {
+          "type": "boolean",
+          "default": false,
+          "x-onyxia": {
+            "hidden": true,
+            "overwriteDefaultWith": "k8s.useCertManager"
+          }
+        },
+        "certManagerClusterIssuer": {
+          "type": "string",
+          "default": "",
+          "x-onyxia": {
+            "hidden": true,
+            "overwriteDefaultWith": "k8s.certManagerClusterIssuer"
+          }
+        }
+      }
+    },
+    "route": {
+      "type": "object",
+      "title": "Route",
+      "x-onyxia": {
+        "hidden": true
+      },
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false,
+          "x-onyxia": {
+            "hidden": true,
+            "overwriteDefaultWith": "k8s.route"
+          }
+        },
+        "hostname": {
+          "type": "string",
+          "default": "",
+          "x-onyxia": {
+            "hidden": true,
+            "overwriteDefaultWith": "{{project.id}}-grist-coder-{{k8s.randomSubdomain}}.{{k8s.domain}}"
+          }
+        }
+      }
+    },
+    "global": {
+      "type": "object",
+      "x-onyxia": {
+        "hidden": true
+      },
+      "properties": {
+        "suspend": {
+          "type": "boolean",
+          "default": false,
+          "x-onyxia": {
+            "hidden": true
           }
         }
       }

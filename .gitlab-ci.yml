@@ -40,8 +40,10 @@ lint-chart:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_COMMIT_TAG =~ /^v/
   script:
-    - helm lint charts/grist-coder
-    - helm template t charts/grist-coder --set app.host=ci.example.fr > /dev/null
+    # Le chart depend du library-chart InseeFrLab : le recuperer avant tout rendu.
+    - helm dependency update charts/grist-coder
+    - helm lint charts/grist-coder --set ingress.hostname=ci.example.fr
+    - helm template t charts/grist-coder --set ingress.hostname=ci.example.fr > /dev/null
     - echo "chart OK"
 
 # ── 0bis. Validation serveur (compilation Python) ──────────────────────────────
@@ -126,6 +128,7 @@ publish-chart:
   script:
     # image.repository <- registre externe reellement pousse en etape 1 (IMAGE_REPO).
     - sed -i "s#^\(\s*repository:\).*#\1 ${IMAGE_REPO}#" charts/grist-coder/values.yaml
+    - helm dependency update charts/grist-coder
     - helm package charts/grist-coder --destination .
     - CHART_TGZ=$(ls grist-coder-*.tgz | head -1)
     - echo "Publication ${CHART_TGZ} -> registre Helm GitLab (canal stable)"

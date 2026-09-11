@@ -9,7 +9,7 @@ description: |
   chaque utilisateur deploie son pod, garde ses propres secrets, l'auteur
   du chart n'est depositaire d'aucun secret.
 type: application
-version: 0.4.1
+version: 0.5.0
 appVersion: "5.14"
 icon: https://grist.numerique.gouv.fr/favicon.ico
 keywords:
@@ -19,9 +19,17 @@ keywords:
   - low-code
   - sspcloud
   - onyxia
-home: https://github.com/nicolaslaval/artefactory-mcp
+home: https://nic01asfr.github.io/GristCoder/
 sources:
-  - https://github.com/nicolaslaval/artefactory-mcp
+  - https://gitlab.cerema.fr/mcp/gristcoder_mcp
+  - https://github.com/nic01asFr/GristCoder
 maintainers:
   - name: Nicolas LAVAL
     email: laval.nicolas13@gmail.com
+# Meme bibliotheque et meme version que les autres services du catalogue (n8n-onyxia) :
+# c'est elle qui produit l'ingress, la route et les politiques reseau a partir des
+# valeurs standard, et qui les suspend quand Onyxia met le service en pause.
+dependencies:
+  - name: library-chart
+    version: 2.1.7
+    repository: https://inseefrlab.github.io/helm-charts-interactive-services

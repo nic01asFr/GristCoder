@@ -12,7 +12,7 @@ chart n'est dépositaire d'aucun secret**. C'est le pendant du modèle
 | Déploiement | catalogue Onyxia (`values.schema.json`) **ou** `install.sh` one-liner |
 | URL par-user | `user-<idep>-grist-coder.user.lab.sspcloud.fr` (ingress TLS auto) |
 | Secrets | naissent dans le namespace du user (`Secret` `helm.sh/resource-policy: keep`) ; jamais commités |
-| Garde d'accès | identité vérifiée auprès de Grist **+** propriétaire désigné (`app.ownerUid`) **+** filtre `APP_AUTH_TOKEN` |
+| Garde d'accès | identité vérifiée auprès de Grist **+** propriétaire désigné (`security.ownerUid`) **+** filtre `APP_AUTH_TOKEN` |
 | Clé LLM | **catalogue Onyxia** → auto depuis l'AI Assistant du datalab (RBAC + Secret injecté) ; **`helm install`** → renseigner `llm.apiKey` (déterministe) |
 
 ## Clé LLM — deux chemins
@@ -35,8 +35,9 @@ L'URL n'est pas un secret (ingress public). La protection est double :
 - **L'identité vient de Grist, jamais du client.** Un widget s'enregistre avec son
   jeton d'accès ; le pod le présente à Grist, sur un site en liste blanche
   (`grist.siteUrl`), et n'en lit l'identifiant qu'après une réponse 200.
-- **Propriétaire désigné** : renseigne `app.ownerUid` avec l'identifiant numérique de
-  ton compte Grist (en ligne de commande : `--set-string app.ownerUid=<id>`). À
+- **Propriétaire désigné** : renseigne `security.ownerUid` (onglet **Sécurité** du
+  formulaire) avec l'identifiant numérique de ton compte Grist (en ligne de commande :
+  `--set-string security.ownerUid=<id>`, ou `OWNER_UID=<id>` pour `install.sh`). À
   défaut, le premier compte *vérifié* après chaque démarrage devient propriétaire —
   un collaborateur qui ouvrirait le widget le premier après un redémarrage
   prendrait le pod.

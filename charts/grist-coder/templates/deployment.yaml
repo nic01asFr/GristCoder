@@ -5,7 +5,8 @@ metadata:
   labels:
     {{- include "grist-coder.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.replicaCount }}
+  # Pause Onyxia : global.suspend -> 0 replique (le library-chart retire aussi l'ingress).
+  replicas: {{ ternary 0 1 .Values.global.suspend }}
   selector:
     matchLabels:
       {{- include "grist-coder.selectorLabels" . | nindent 6 }}
@@ -39,7 +40,7 @@ spec:
             - name: LOG_LEVEL
               value: {{ .Values.app.logLevel | quote }}
             - name: PUBLIC_URL
-              value: "https://{{ .Values.app.host }}"
+              value: "https://{{ include "grist-coder.hostname" . }}"
             - name: TRUST_PROXY
               value: {{ .Values.app.trustProxy | quote }}
             # --- Garde d'acces --------------------------------------------
@@ -49,9 +50,9 @@ spec:
                   name: {{ include "grist-coder.fullname" . }}
                   key: APP_AUTH_TOKEN
             - name: OWNER_LOCK
-              value: {{ .Values.app.ownerLock | quote }}
+              value: {{ .Values.security.ownerLock | quote }}
             - name: OWNER_UID
-              value: {{ .Values.app.ownerUid | default "" | quote }}
+              value: {{ .Values.security.ownerUid | default "" | quote }}
             # --- Grist -----------------------------------------------------
             - name: GRIST_SITE_URL
               value: {{ .Values.grist.siteUrl | quote }}
@@ -62,9 +63,9 @@ spec:
                   key: GRIST_API_KEY
             # --- LLM -------------------------------------------------------
             - name: LLM_BASE_URL
-              value: {{ .Values.llm.baseUrl | quote }}
+              value: {{ include "grist-coder.llmBase" . | quote }}
             - name: LLM_MODEL
-              value: {{ .Values.llm.model | quote }}
+              value: {{ include "grist-coder.llmModel" . | quote }}
             - name: LLM_API_KEY
               valueFrom:
                 secretKeyRef:

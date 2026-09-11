@@ -12,6 +12,9 @@
 #   LLM_API_KEY      : cle LLM explicite (sinon recuperee du datalab si role edit).
 #   GRIST_API_KEY    : cle API Grist (optionnelle, pour clients MCP / webhooks).
 #   GRIST_SITE_URL   : instance Grist (defaut https://grist.numerique.gouv.fr).
+#   OWNER_UID        : identifiant numerique de ton compte Grist (recommande : sans
+#                      lui, le premier compte verifie apres chaque demarrage devient
+#                      proprietaire du pod).
 #
 set -euo pipefail
 
@@ -67,12 +70,19 @@ RELEASE="grist-coder"
 log "Deploiement de GristCoder sur https://$HOST ..."
 ARGS=(
   --namespace "$NS"
-  --set "app.host=$HOST"
+  # Hors catalogue, le contexte Onyxia ne remplit rien : l'hote, la classe
+  # d'ingress et l'emetteur de certificats sont donc fixes ici, a l'identique de
+  # ce que le chart codait en dur avant d'adopter le library-chart.
+  --set "ingress.hostname=$HOST"
+  --set "ingress.ingressClassName=nginx"
+  --set "ingress.useCertManager=true"
+  --set "ingress.certManagerClusterIssuer=letsencrypt"
   --set "onyxia_user=$IDEP"
   --set "grist.siteUrl=${GRIST_SITE_URL:-https://grist.numerique.gouv.fr}"
 )
 [[ -n "${LLM_API_KEY:-}"   ]] && ARGS+=(--set-string "llm.apiKey=$LLM_API_KEY" --set "llm.autoFromDatalab=false")
 [[ -n "${GRIST_API_KEY:-}" ]] && ARGS+=(--set-string "grist.apiKey=$GRIST_API_KEY")
+[[ -n "${OWNER_UID:-}"     ]] && ARGS+=(--set-string "security.ownerUid=$OWNER_UID")
 [[ -n "${VERSION:-}"       ]] && ARGS+=(--version "$VERSION")
 
 helm upgrade --install "$RELEASE" gristcoder/grist-coder "${ARGS[@]}" --wait --timeout 5m

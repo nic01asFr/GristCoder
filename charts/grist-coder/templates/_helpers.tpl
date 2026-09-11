@@ -1,38 +1,60 @@
-{{/* Helpers du chart grist-coder-onyxia */}}
+{{/* Helpers du chart grist-coder */}}
 
+{{/*
+  Noms et libelles : ceux du library-chart, pour que l'ingress, la route et les
+  politiques reseau qu'il genere designent bien nos objets. Sa logique de nommage
+  est identique a l'ancienne : Service, Deployment et Secret gardent leurs noms.
+*/}}
 {{- define "grist-coder.fullname" -}}
-{{- $name := default .Chart.Name .Values.nameOverride -}}
-{{- if contains $name .Release.Name -}}
-{{- .Release.Name | trunc 63 | trimSuffix "-" -}}
-{{- else -}}
-{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "grist-coder.chart" -}}
-{{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" -}}
+{{- include "library-chart.fullname" . -}}
 {{- end -}}
 
 {{- define "grist-coder.labels" -}}
-helm.sh/chart: {{ include "grist-coder.chart" . }}
-{{ include "grist-coder.selectorLabels" . }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
-app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{ include "library-chart.labels" . }}
 app.kubernetes.io/part-of: onyxia
 {{- end -}}
 
 {{- define "grist-coder.selectorLabels" -}}
-app.kubernetes.io/name: {{ .Chart.Name }}
-app.kubernetes.io/instance: {{ .Release.Name }}
+{{- include "library-chart.selectorLabels" . -}}
 {{- end -}}
 
 {{/*
-  APP_AUTH_TOKEN — garde Bearer du pod, stable entre upgrades :
-    1. Si valeur explicite fournie -> on l'utilise.
-    2. Sinon, si Secret existe deja -> on reutilise (jamais regenere).
-    3. Sinon -> on genere aleatoire 48 char.
-  L'auteur du chart n'a jamais connaissance de ce token : il nait dans le
-  namespace du user et n'en sort pas.
+  Hote public : la route quand elle est active (OpenShift), l'ingress sinon.
+  C'est lui que le serveur annonce comme PUBLIC_URL (metadonnees OAuth, URL du
+  widget) : il doit etre celui par lequel on l'atteint vraiment.
+*/}}
+{{- define "grist-coder.hostname" -}}
+{{- if .Values.route.enabled -}}
+{{- include "library-chart.route.hostname" . -}}
+{{- else -}}
+{{- include "library-chart.ingress.hostname" . -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+  Configuration LLM : premiere valeur non vide entre le profil historique
+  (llm.apiKey / baseUrl / model, rempli depuis user.profile.aiAssistant.*), le
+  format recent (llm.provider.*, rempli depuis ai.activeProvider.*) et le defaut.
+*/}}
+{{- define "grist-coder.llmKey" -}}
+{{- .Values.llm.apiKey | default .Values.llm.provider.apiKey | default "" -}}
+{{- end -}}
+{{- define "grist-coder.llmBase" -}}
+{{- .Values.llm.baseUrl | default .Values.llm.provider.apiBase | default "https://llm.lab.sspcloud.fr/api" -}}
+{{- end -}}
+{{- define "grist-coder.llmModel" -}}
+{{- .Values.llm.model | default .Values.llm.provider.selectedModel | default "qwen3-6-35b-moe" -}}
+{{- end -}}
+
+{{/*
+  APP_AUTH_TOKEN — garde du pod, un FILTRE et non un secret (elle voyage dans l'URL
+  du widget), stable entre upgrades :
+    1. valeur fournie (Onyxia : {{service.oneTimePassword}}) -> utilisee telle quelle ;
+    2. sinon, Secret existant -> reutilise, jamais regenere ;
+    3. sinon -> tiree au sort (48 caracteres).
+  Seul le cas 1 permet aux notes d'afficher l'URL complete du widget : dans les cas
+  2 et 3, les notes et le Secret seraient rendus separement, et un tirage au sort
+  donnerait deux valeurs differentes.
 */}}
 {{- define "grist-coder.appAuthToken" -}}
 {{- if .Values.appAuth.token -}}

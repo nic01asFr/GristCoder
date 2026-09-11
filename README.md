@@ -267,7 +267,7 @@ depend on the client behaving:
 | Guard | Env | What it does |
 |-------|-----|--------------|
 | Identity from Grist | `GRIST_SITE_URL`, `ALLOWED_GRIST_SITES` | A widget's identity is taken **only** from an access token that Grist has just accepted, on an allowlisted site. `/register` presents the token to Grist (`?auth=`), and reads `userId` from its payload only after a 200. The `userId` sent by the client is ignored, and so is any Grist site outside the allowlist |
-| Owner | `OWNER_UID`, `OWNER_LOCK` | Only the owner may use the pod. Set `OWNER_UID` (chart: `app.ownerUid`); failing that, the account of the pod's `GRIST_API_KEY`; failing that, the first *verified* account after each start (TOFU). "Invalid token" and "wrong account" get the same answer, so owners cannot be enumerated |
+| Owner | `OWNER_UID`, `OWNER_LOCK` | Only the owner may use the pod. Set `OWNER_UID` (chart: `security.ownerUid`); failing that, the account of the pod's `GRIST_API_KEY`; failing that, the first *verified* account after each start (TOFU). "Invalid token" and "wrong account" get the same answer, so owners cannot be enumerated |
 | Widget session scope | — | A `gc-` session token is 128 bits and acts on **its own document only**: `sessions_list` shows it alone, and it cannot route a tool to another session |
 | Pod gate | `APP_AUTH_TOKEN` | Required on `/mcp`, `/register` and `/llm-proxy`. **A filter, not a secret**: it travels in the widget URL stored in every document that embeds the widget, so any collaborator can read it. Nothing may rely on it alone — the pod's LLM key, for instance, is only lent to a verified widget session |
 | Failure throttling | — | Authentication *failures* are counted per client; past 20 in 5 minutes the client gets 429. Legitimate traffic is not counted |
@@ -610,9 +610,12 @@ LLM_API_KEY=...                 # or LLM_AUTO_FROM_DATALAB=true on SSPCloud
 ### Reusing the Onyxia profile key
 
 Onyxia asks for the LLM key once, in the user profile (*AI Assistant* tab), and resolves
-`{{userProfileValues.aiAssistant.apiKey}}` **at launch time, from its own UI**. The chart
-declares that placeholder, so launching this service from the Onyxia catalogue fills the
-key field by itself.
+it **at launch time, from its own UI**. It exposes it in two formats depending on its
+version — `user.profile.aiAssistant.*` (historical) and `{{ai.activeProvider.*}}` (recent).
+The chart declares both, and its template takes the first non-empty value, so launching
+this service from the Onyxia catalogue fills key, base and model by itself. An earlier
+version of the chart read `userProfileValues.aiAssistant.apiKey`, which Onyxia does not
+resolve: the field stayed empty, silently.
 
 Installing with `helm install` gets none of that — nobody resolved the placeholder. This
 is worth stating because the failure is silent: the pod simply has no key. The chart alone

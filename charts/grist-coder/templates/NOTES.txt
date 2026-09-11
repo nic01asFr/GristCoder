@@ -1,56 +1,86 @@
-GristCoder MCP est deploye.
+{{/*
+Onyxia affiche ce fichier en markdown dans la fenetre du service. Regles verifiees
+dans l'interface par le chart n8n-onyxia, le 11/09/2026 :
+  - le bouton « Ouvrir » suit la premiere URL d'Ingress citee ici. Onyxia prend
+    l'URL suivie de tout ce qui n'est ni espace ni « ) » : le texte d'un lien ne
+    doit donc pas etre l'URL elle-meme ;
+  - le bouton « Copier le mot de passe » cherche « password: <valeur> » : cette
+    ligne reste sans mise en forme ;
+  - la fenetre est etroite : une URL longue va dans un bloc de code, qui defile.
+Ces notes sont conservees par Helm dans le Secret de la release. Elles affichent
+la garde du pod : c'est un filtre, pas un secret — elle finit de toute facon dans
+l'URL du widget, lisible par les collaborateurs du document.
+*/}}
+{{- $base := printf "https://%s" (include "grist-coder.hostname" .) -}}
+{{- $garde := .Values.appAuth.token -}}
+### Grist Coder est lancé
 
-1. URL de ton serveur (privee, protegee par owner-lock + Bearer) :
+- Serveur : [ouvrir la page d'accueil]({{ $base }}/)
 
-     https://{{ .Values.app.host }}
+### Brancher le widget dans un document Grist
 
-2. Recuperer la garde Bearer de TON pod (jamais connue de l'auteur du chart) :
+Dans le document : **Ajouter** > **Ajouter une page** > **Personnalisé**, puis
+**URL personnalisée**. Collez cette adresse, garde comprise :
+{{- if $garde }}
 
-     kubectl get secret {{ include "grist-coder.fullname" . }} \
-       -o jsonpath='{.data.APP_AUTH_TOKEN}' | base64 -d ; echo
+```
+{{ $base }}/?app_token={{ $garde }}
+```
 
-3. Cote widget Grist : ajoute un widget personnalise pointant sur
+Choisissez le niveau d'accès **Accès complet au document**. Sans la partie
+`?app_token=`, le point du widget reste rouge : il ne se connecte pas.
 
-     https://{{ .Values.app.host }}/
-
-   et renseigne le token ci-dessus dans les options de section (champ appToken).
-
-4. Connexion client MCP — deux chemins au choix :
-
-   (a) CONNECTEUR OAuth (recommande en ligne, Claude Desktop / claude.ai) :
-       Ajoute un connecteur personnalise et colle simplement l'URL du serveur :
-
-         https://{{ .Values.app.host }}/mcp
-
-       Le navigateur s'ouvre sur la page de consentement de TON pod : colle ta
-       cle API Grist (Grist > Profile settings > API key). Le connecteur ne recoit
-       qu'un jeton revocable ; ni la cle Grist ni l'APP_AUTH_TOKEN n'y transitent.
-       (Owner-lock applique : seul le compte proprietaire du pod est accepte.)
-
-   (b) HEADERS statiques (Claude Code / .mcp.json) :
-
-         {
-           "mcpServers": {
-             "grist-coder": {
-               "type": "http",
-               "url": "https://{{ .Values.app.host }}/mcp",
-               "headers": {
-                 "Authorization": "Bearer <ta_cle_api_grist>",
-                 "X-App-Token": "<APP_AUTH_TOKEN etape 2>"
-               }
-             }
-           }
-         }
-
-{{- if .Values.llm.autoFromDatalab }}
-
-5. LLM : recuperation auto depuis ta config AI Assistant du datalab SSPCloud.
-   Si le service n'a pas ete lance avec le role Kubernetes 'edit', renseigne
-   une cle LLM dans les valeurs (llm.apiKey) et redeploie.
+Garde seule, pour un client MCP (en-tête X-App-Token) / password: {{ $garde }}
 {{- else }}
 
-5. LLM : cle explicite fournie (llm.apiKey). Base : {{ .Values.llm.baseUrl }}.
+```
+{{ $base }}/?app_token=<garde du pod>
+```
+
+La garde a été tirée au sort au déploiement. Pour la lire :
+
+```
+kubectl get secret {{ include "grist-coder.fullname" . }} -n {{ .Release.Namespace }} -o jsonpath='{.data.APP_AUTH_TOKEN}' | base64 -d
+```
 {{- end }}
 
-Owner-lock : {{ .Values.app.ownerLock }}. En 'on', seul le 1er compte Grist
-qui s'enregistre peut utiliser ce pod ; tout autre compte est rejete (403).
+### Propriétaire du pod
+{{- if .Values.security.ownerUid }}
+
+Seul le compte Grist n° {{ .Values.security.ownerUid }} peut utiliser ce pod.
+{{- else if .Values.grist.apiKey }}
+
+Le propriétaire est le compte de la clé API Grist fournie.
+{{- else if eq .Values.security.ownerLock "on" }}
+
+**Attention** : aucun propriétaire n'est désigné. Le premier compte Grist
+vérifié qui ouvrira le widget deviendra propriétaire, et à nouveau après
+chaque redémarrage. Ouvrez-le vous-même en premier, ou renseignez
+l'identifiant de votre compte dans l'onglet **Sécurité**.
+{{- else }}
+
+Verrou propriétaire désactivé : tout compte Grist vérifié peut utiliser ce pod.
+{{- end }}
+
+### Connecter un assistant (MCP)
+
+Claude.ai ou Claude Desktop : ajoutez un connecteur personnalisé avec cette
+adresse. La page de consentement de votre pod demandera votre clé API Grist ;
+le connecteur ne reçoit qu'un jeton révocable.
+
+```
+{{ $base }}/mcp
+```
+
+### Assistant IA
+{{- if include "grist-coder.llmKey" . }}
+
+Clé reprise de votre profil, modèle `{{ include "grist-coder.llmModel" . }}`.
+{{- else if .Values.llm.autoFromDatalab }}
+
+Aucune clé dans votre profil : le pod la cherchera dans le datalab au
+démarrage. S'il n'en trouve pas, le panneau de l'agent la demandera.
+{{- else }}
+
+Aucune clé fournie : le panneau de l'agent la demandera.
+{{- end }}
