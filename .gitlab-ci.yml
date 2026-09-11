@@ -73,7 +73,7 @@ check-vitrine:
   script:
     - node --test site/generate.test.mjs
     - node site/generate.mjs
-    - git diff --exit-code -- docs || (echo "docs/ n'est pas a jour : lancer 'node site/generate.mjs' et commiter" && exit 1)
+    - 'git diff --exit-code -- docs || (echo "docs/ n''est pas a jour : lancer ''node site/generate.mjs'' et commiter" && exit 1)'
     - echo "vitrine OK"
 
 # ── 1. Build + push de l'image (kaniko : pas de privileged requis) ─────────────
