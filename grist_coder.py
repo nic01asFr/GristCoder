@@ -15,7 +15,7 @@ MCP   : sampling/createMessage (client capability) -> subagent_call + chat auto-
 """
 
 import unicodedata
-import asyncio, base64, difflib, hashlib, hmac, io, json, os, re, secrets, shutil, subprocess, sys, tarfile, tempfile, time, uuid, urllib.parse, urllib.request, urllib.error
+import asyncio, base64, contextvars, difflib, hashlib, hmac, io, json, os, re, secrets, shutil, subprocess, sys, tarfile, tempfile, time, uuid, urllib.parse, urllib.request, urllib.error
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -79,12 +79,188 @@ def _owner_gate(uid_key) -> bool:
     """Owner-lock TOFU : epingle le 1er uid:{id} reel, rejette tout autre. True = autorise.
     Les uid de repli key:{sha1} (profil non resolu, compte vide) ne sont jamais epingles."""
     global _owner_uid
-    if not OWNER_LOCK or not uid_key or not uid_key.startswith("uid:"):
+    if not OWNER_LOCK and not OWNER_UID:
         return True
+    # Un uid de repli key:{sha1} n'est l'identite de personne : c'est une cle que
+    # Grist n'a pas reconnue. Le laisser passer ouvrait _provision_key, qui retombe
+    # sur la cle du pod — un Bearer bidon suffisait alors a agir en proprietaire.
+    if not uid_key or not uid_key.startswith("uid:"):
+        return False
     if _owner_uid is None:
         _owner_uid = uid_key
         return True
     return uid_key == _owner_uid
+
+
+# ── Identite : ce qu'on croit, et sur la foi de qui ──────────────────────────────
+# Signalement du 11 septembre 2026 (portail n8n-onyxia), verifie ligne a ligne :
+# /register prenait l'uid dans body.userId et ne validait JAMAIS le jeton aupres de
+# Grist — n'importe quelle chaine non vide passait. Avec l'app_token, lisible dans
+# l'URL de section de tout document qui integre le widget, un collaborateur ouvrait
+# une session sous l'uid du proprietaire, recuperait ses autres jetons par
+# sessions_list, et agissait avec sa cle API.
+# Regle desormais : une identite ne vient que d'un jeton que GRIST a accepte, sur un
+# site en liste blanche. Jamais du corps de la requete ; jamais d'un site fourni par
+# le client, qu'un serveur hostile ferait repondre « je suis l'uid du proprietaire ».
+
+OWNER_UID = os.getenv("OWNER_UID", "").strip()
+
+# Portee d'un jeton de session gc-. Posee par /mcp pour la duree d'une requete :
+# un widget n'agit que sur SON document, ne voit pas les autres jetons du compte,
+# et n'herite pas de la cle API recopiee d'une autre session.
+_portee_session: contextvars.ContextVar = contextvars.ContextVar("portee_session", default=None)
+
+_REFUS_IDENTITE = "Identite Grist non verifiee, ou compte non autorise sur ce pod."
+
+
+def _origine(url: str) -> str:
+    """scheme://hote[:port] en minuscules ; vide si l'URL n'est pas exploitable.
+    HTTP en clair n'est admis que pour le developpement local."""
+    try:
+        p = urllib.parse.urlsplit((url or "").strip())
+        port = p.port
+    except Exception:
+        return ""
+    hote = (p.hostname or "").lower()
+    if not hote or p.scheme not in ("http", "https"):
+        return ""
+    if p.scheme == "http" and hote not in ("localhost", "127.0.0.1"):
+        return ""
+    return f"{p.scheme}://{hote}" + (f":{port}" if port else "")
+
+
+def _sites_grist_autorises() -> set:
+    """Origines Grist dignes de confiance : ALLOWED_GRIST_SITES (liste), sinon
+    GRIST_SITE_URL — que le chart injecte toujours —, sinon l'instance de reference."""
+    brut = os.getenv("ALLOWED_GRIST_SITES", "") or os.getenv("GRIST_SITE_URL", "")
+    sites = {o for o in (_origine(s) for s in re.split(r"[,\s]+", brut)) if o}
+    return sites or {"https://grist.numerique.gouv.fr"}
+
+
+def _site_verifie(site_url: str) -> str:
+    """Le site tel que fourni s'il est en liste blanche, sinon chaine vide. Le chemin
+    d'organisation (/o/<org>) est conserve : c'est lui qui route l'API."""
+    s = (site_url or "").strip().rstrip("/")
+    return s if s and _origine(s) in _sites_grist_autorises() else ""
+
+
+def _charge_jwt(jeton: str) -> dict:
+    """Charge utile d'un JWT, SANS verification de signature. A n'appeler que sur un
+    jeton que Grist vient d'accepter : c'est Grist qui a verifie la signature."""
+    try:
+        seg = jeton.split(".")[1]
+        seg += "=" * (-len(seg) % 4)
+        charge = json.loads(base64.urlsafe_b64decode(seg.encode()))
+        return charge if isinstance(charge, dict) else {}
+    except Exception:
+        return {}
+
+
+async def _identite_widget(site_url: str, doc_id: str, jeton: str):
+    """uid Grist du porteur d'un jeton de widget, ou None.
+
+    Un jeton d'acces Grist porte {userId, docId}, signe par Grist et valable 15
+    minutes (grist-core, AccessTokens.ts). On le presente a Grist sur une route
+    documentaire, en ?auth= comme le fait tout le serveur. Une reponse 200 avec un
+    corps attendu prouve que la signature est valide, donc que la charge est
+    authentique ; ce n'est qu'APRES qu'on la lit.
+    Grist ne lie pas le jeton au document demande : il en tire l'utilisateur, puis
+    controle ses droits. Le 200 etablit donc l'identite, et que cet utilisateur a
+    acces a ce document — c'est exactement ce qu'il faut ici.
+    Le corps est controle, pas seulement le statut : le WAF de l'instance renvoie
+    parfois une page de challenge en 200, qui ne doit rien prouver.
+    """
+    if not (site_url and doc_id and jeton):
+        return None
+    try:
+        async with _grist_client() as c:
+            r = await c.get(f"{site_url}/api/docs/{urllib.parse.quote(str(doc_id), safe='')}/tables",
+                            params={"auth": jeton})
+            if r.status_code != 200 or not isinstance((r.json() or {}).get("tables"), list):
+                return None
+    except Exception:
+        return None
+    uid = _charge_jwt(jeton).get("userId")
+    if isinstance(uid, bool) or not isinstance(uid, int) or uid <= 0:
+        return None
+    return uid
+
+
+async def _proprietaire_designe():
+    """Fixe le proprietaire sans croire personne, quand c'est possible : OWNER_UID
+    explicite, sinon le compte de la GRIST_API_KEY du pod. A defaut, le premier
+    enregistrement VERIFIE l'epingle (TOFU) — ce qui laisse a un collaborateur la
+    possibilite de prendre un pod fraichement redemarre : d'ou OWNER_UID."""
+    global _owner_uid
+    if OWNER_UID:
+        _owner_uid = OWNER_UID if OWNER_UID.startswith("uid:") else f"uid:{OWNER_UID}"
+        return _owner_uid
+    if _owner_uid:
+        return _owner_uid
+    cle = os.getenv("GRIST_API_KEY", "").strip()
+    if cle:
+        base = os.getenv("GRIST_SITE_URL", "").strip().rstrip("/") or sorted(_sites_grist_autorises())[0]
+        prof = await fetch_grist_user_profile(base, cle)
+        if prof and isinstance(prof.get("id"), int):
+            _owner_uid = f"uid:{prof['id']}"
+    return _owner_uid
+
+
+async def _proprietaire_ok(uid_key) -> bool:
+    await _proprietaire_designe()
+    return _owner_gate(uid_key)
+
+
+# Limitation sur les ECHECS d'authentification, pas sur le trafic : un widget
+# legitime appelle /mcp des dizaines de fois par minute, un sondage d'identites
+# echoue en rafale. On compte les refus par client ; au-dela, 429.
+_ECHECS_FENETRE = 300
+_ECHECS_MAX = 20
+_echecs: dict = {}
+
+
+def _ip_client(request) -> str:
+    """IP du client. Derriere l'ingress, TRUST_PROXY sauts de confiance : l'adresse
+    reelle est la derniere ajoutee par le premier proxy de confiance."""
+    try:
+        sauts = int(os.getenv("TRUST_PROXY", "0") or 0)
+    except ValueError:
+        sauts = 0
+    if sauts > 0:
+        chaine = [x.strip() for x in (request.headers.get("x-forwarded-for") or "").split(",") if x.strip()]
+        if len(chaine) >= sauts:
+            return chaine[-sauts]
+    return request.client.host if request.client else "?"
+
+
+def _trop_d_echecs(request) -> bool:
+    q = _echecs.get(_ip_client(request))
+    if not q:
+        return False
+    limite = time.time() - _ECHECS_FENETRE
+    while q and q[0] < limite:
+        q.popleft()
+    return len(q) >= _ECHECS_MAX
+
+
+def _noter_echec(request):
+    _echecs.setdefault(_ip_client(request), deque(maxlen=_ECHECS_MAX * 2)).append(time.time())
+    if len(_echecs) > 5000:            # borne memoire : on oublie les plus anciens clients
+        for k in list(_echecs)[:1000]:
+            _echecs.pop(k, None)
+
+
+def _refus_identite(request=None, status_code=401):
+    """Meme reponse pour « jeton invalide » et « mauvais compte » : distinguer les
+    deux permettait d'enumerer les uid jusqu'a trouver celui du proprietaire."""
+    if request is not None:
+        _noter_echec(request)
+    return JSONResponse({"error": _REFUS_IDENTITE}, status_code=status_code)
+
+
+def _refus_debit():
+    return JSONResponse({"error": "Trop de tentatives refusees. Reessayer dans quelques minutes."},
+                        status_code=429)
 
 
 # Cle LLM resolue une fois (env explicite, sinon lecture datalab). Cache best-effort.
@@ -679,7 +855,7 @@ class SessionCtx:
         self.history         = deque(maxlen=50)
         self.created_at      = time.time()
         self.last_seen       = time.time()
-        self.token           = "gc-" + uuid.uuid4().hex[:6]
+        self.token           = "gc-" + secrets.token_hex(16)  # 128 bits : 24 se devinaient
         self.subscribers: set[str] = set()
         self.current_art_id  = None   # id Grist de l'artefact courant
         self.current_art_nom = None
@@ -760,7 +936,7 @@ class UserRegistry:
             ctx = next(iter(sessions.values())); ctx.touch()
         else:
             ctx = max(sessions.values(), key=lambda s: s.last_seen)
-        if ctx and not ctx.grist_key and user.get("grist_key"):
+        if ctx and not ctx.grist_key and user.get("grist_key") and not _portee_session.get():
             ctx.grist_key = user["grist_key"]
         return ctx
 
@@ -1633,8 +1809,10 @@ def _provision_key(uid_key):
         k = (getattr(s, "grist_key", "") or "").strip()
         if k:
             return k, "cle Grist de la session widget"
+    # La cle du pod est celle du proprietaire : la preter a un uid quelconque revenait
+    # a la preter a quiconque parvenait a en fabriquer un.
     k = os.getenv("GRIST_API_KEY", "").strip()
-    if k:
+    if k and _owner_uid and uid_key == _owner_uid:
         return k, "GRIST_API_KEY (cle du pod)"
     return "", ""
 
@@ -1962,6 +2140,11 @@ async def fetch_grist_user_profile(site_url, bearer_token):
     partages). Un client nu echoue par intermittence sur le challenge 302 du WAF
     -> profil None -> le client MCP retombe sur un uid key:{sha1} SANS sessions
     (compte parallele vide) alors que les sessions widget vivent sous uid:{id}."""
+    # Sur un site fourni par le client, un serveur hostile repondrait l'uid de son
+    # choix. Seuls les sites Grist de confiance sont interroges.
+    site_url = _site_verifie(site_url)
+    if not site_url:
+        return None
     try:
         async with _grist_client() as c:
             r = await c.get(f"{site_url}/api/profile/user",
@@ -6390,6 +6573,23 @@ async def call_tool(uid_key, mcp_sid, name, args):
         return savoir_faire(args.get("besoin", ""), args.get("code", ""),
                             int(args.get("limite", 2) or 2))
 
+    # Jeton de widget (gc-) : il n'agit que sur SON document. Il voyait auparavant
+    # toutes les sessions du compte par sessions_list, donc leurs jetons, et pouvait
+    # router n'importe quel outil vers l'une d'elles.
+    portee = _portee_session.get()
+    if portee:
+        if name == "sessions_list":
+            ctx_p = registry.resolve(uid_key, portee)
+            return {"sessions": [ctx_p.meta()] if ctx_p else [],
+                    "_hint": "Jeton de widget : seule sa propre session est visible."}
+        if name in ("session_open", "session_select") and str(args.get("token") or "") != portee:
+            return {"error": "Ce jeton de widget est limite a son propre document."}
+        if name not in _NO_SESSION_TOOLS:
+            explicite = str(args.get("token") or "").strip()
+            if explicite and explicite != portee:
+                return {"error": "Ce jeton de widget est limite a son propre document."}
+            args["token"] = portee
+
     if name == "sessions_list":
         s = registry.list_sessions(uid_key)
         if s:
@@ -8113,6 +8313,7 @@ def _auth(auth):
 
 async def _resolve_uid_key(raw_bearer, x_grist_site):
     if not raw_bearer: return None
+    x_grist_site = _site_verifie(x_grist_site or "")
     if raw_bearer.startswith("gco-"):          # access token OAuth -> uid mappe
         return _oauth_uid_from_token(raw_bearer)
     if raw_bearer.startswith("gc-"):
@@ -8463,9 +8664,9 @@ async def oauth_authorize_post(request: Request):
     if not uid_key or not uid_key.startswith("uid:"):
         return _oauth_page(_oauth_consent_form(data, "Cle Grist invalide ou compte introuvable."),
                            status=401)
-    if not _owner_gate(uid_key):
-        return _oauth_page("<h1>Acces refuse</h1><div class=err>Ce pod appartient a un autre "
-                           "compte Grist (owner-lock).</div>", status=403)
+    if not await _proprietaire_ok(uid_key):
+        return _oauth_page("<h1>Acces refuse</h1><div class=err>" + _REFUS_IDENTITE + "</div>",
+                           status=403)
     code = "gca-" + secrets.token_urlsafe(24)
     _oauth_codes[code] = {
         "uid_key": uid_key, "redirect_uri": redirect_uri, "grist_key": grist_key,
@@ -8518,6 +8719,8 @@ async def mcp_post(request: Request,
                    authorization: str | None = Header(default=None),
                    mcp_session_id: str | None = Header(default=None, alias="Mcp-Session-Id"),
                    x_grist_site: str | None = Header(default=None, alias="X-Grist-Site")):
+    if _trop_d_echecs(request):
+        return _refus_debit()
     raw_bearer = _auth(authorization)
     if not raw_bearer:
         hdrs = ({"WWW-Authenticate": f'Bearer resource_metadata="{PUBLIC_URL}'
@@ -8525,14 +8728,21 @@ async def mcp_post(request: Request,
         return JSONResponse({"error": "Authorization: Bearer requis"}, status_code=401, headers=hdrs)
     # Token OAuth (gco-) : la garde du pod est portee par le token lui-meme -> pas de X-App-Token.
     if not raw_bearer.startswith("gco-") and not _check_app_token(request):
+        _noter_echec(request)
         return JSONResponse({"error": "Garde du pod : en-tete X-App-Token manquant ou invalide."},
                             status_code=401)
     uid_key = await _resolve_uid_key(raw_bearer, x_grist_site)
     if not uid_key:
+        # Un jeton gc- inconnu est le cas banal d'un widget apres redemarrage du pod :
+        # 128 bits ne se devinent pas, on ne le compte pas comme une tentative.
+        if not raw_bearer.startswith("gc-"):
+            _noter_echec(request)
         return JSONResponse({"error": "Token inconnu ou expire. Rechargez le widget."}, status_code=401)
-    if not _owner_gate(uid_key):
-        return JSONResponse({"error": "Pod verrouille sur un autre compte (owner-lock). "
-                             "Ce pod appartient a son proprietaire."}, status_code=403)
+    if not await _proprietaire_ok(uid_key):
+        return _refus_identite(request)
+    # Un jeton de widget n'agit que sur son document : la portee vaut pour toute
+    # cette requete, jusque dans call_tool et registry.resolve.
+    _portee_session.set(raw_bearer if raw_bearer.startswith("gc-") else None)
     # Identite de connexion. Un uuid tire a chaque requete quand le client n'echo pas
     # Mcp-Session-Id (cas des passerelles : connecteur claude.ai) rendait _active_tokens
     # inutilisable — session_select ecrivait sous un sid jamais revu, donc la selection
@@ -8595,8 +8805,8 @@ async def mcp_sse(request: Request,
         hdrs = ({"WWW-Authenticate": f'Bearer resource_metadata="{PUBLIC_URL}'
                  '/.well-known/oauth-protected-resource"'} if _oauth_enabled() else {})
         return Response("Authorization requis", status_code=401, headers=hdrs)
-    if not _owner_gate(uid_key):
-        return Response("Pod verrouille sur un autre compte (owner-lock).", status_code=403)
+    if not await _proprietaire_ok(uid_key):
+        return Response(_REFUS_IDENTITE, status_code=401)
     sid = mcp_session_id or str(uuid.uuid4())
     is_display = request.query_params.get("display") == "1"
     _queues[sid] = asyncio.Queue(maxsize=64)
@@ -8685,6 +8895,8 @@ async def mcp_delete(mcp_session_id: str | None = Header(default=None, alias="Mc
 
 @app.post("/register")
 async def register(request: Request):
+    if _trop_d_echecs(request):
+        return _refus_debit()
     data, err = await _read_json(request)
     if err: return err
     # Garde du pod : le widget presente APP_AUTH_TOKEN (header X-App-Token, query
@@ -8693,49 +8905,55 @@ async def register(request: Request):
         tok = (request.headers.get("X-App-Token") or request.query_params.get("app_token")
                or (data.get("appToken") or "").strip())
         if not (tok and hmac.compare_digest(tok, APP_AUTH_TOKEN)):
+            _noter_echec(request)
             return JSONResponse({"error": "Garde du pod : appToken manquant ou invalide."},
                                 status_code=401)
     access_token = data.get("accessToken", "").strip()
     grist_key    = data.get("gristKey", "").strip()
-    site_url     = data.get("siteUrl", "").rstrip("/")
     doc_id       = data.get("docId", "")
     doc_title    = data.get("docTitle", "").strip()
+    # Le site vient du client, mais n'est retenu que s'il est en liste blanche : c'est
+    # la qu'on va verifier le jeton, et un site hostile validerait n'importe quoi.
+    site_url     = _site_verifie(data.get("siteUrl", ""))
+    if not site_url or not (access_token or grist_key):
+        return _refus_identite(request)
+    # L'uid ne vient JAMAIS de body.userId, que le widget envoie encore et qu'on ignore
+    # desormais : il n'est tire que d'un jeton que Grist vient d'accepter.
+    grist_user_id = None
+    if access_token:
+        grist_user_id = await _identite_widget(site_url, doc_id, access_token)
+        grist_key = ""   # une cle non verifiee ne s'installe pas par ce chemin
+    else:
+        profile = await fetch_grist_user_profile(site_url, grist_key)
+        if profile and isinstance(profile.get("id"), int) and not isinstance(profile.get("id"), bool):
+            grist_user_id = profile["id"]
+    if not grist_user_id:
+        return _refus_identite(request)
+    uid_key = f"uid:{grist_user_id}"
+    if not await _proprietaire_ok(uid_key):
+        return _refus_identite(request)
     # Garde-fou serveur. Les widgets deja deployes envoient « Grist Coder » —
     # le titre de leur propre iframe — et toutes les sessions d'un compte
     # portaient alors le meme nom, ce qui rend sessions_list inutilisable des
     # que deux documents sont ouverts. On resout ici, sans attendre qu'un
-    # widget soit recharge.
-    if not doc_title or doc_title.lower() in ("grist coder", "coder"):
+    # widget soit recharge. Le titre egal a l'identifiant compte comme absent :
+    # getDocName() rend l'identifiant d'un document cree par l'API.
+    if (not doc_title or doc_title.lower() in ("grist coder", "coder")
+            or (doc_id and doc_title.startswith(str(doc_id)))):
         doc_title = ""
-    if not doc_title and site_url and doc_id and (access_token or grist_key):
+    if not doc_title and doc_id:
         try:
             async with _grist_client() as c:
-                rr = await c.get(f"{site_url}/api/docs/{doc_id}",
-                                 headers={"Authorization": f"Bearer {access_token or grist_key}"})
+                if access_token:
+                    rr = await c.get(f"{site_url}/api/docs/{doc_id}", params={"auth": access_token})
+                else:
+                    rr = await c.get(f"{site_url}/api/docs/{doc_id}",
+                                     headers={"Authorization": f"Bearer {grist_key}"})
                 if rr.status_code == 200:
                     doc_title = ((rr.json() or {}).get("name") or "").strip()
         except Exception:
             pass
     doc_title = doc_title or doc_id
-    bearer = access_token or grist_key
-    if not bearer:
-        return JSONResponse({"error": "accessToken manquant"}, status_code=400)
-    grist_user_id = None
-    if not grist_user_id:
-        raw2 = data.get("userId")
-        if raw2 is not None:
-            try: grist_user_id = int(raw2)
-            except (ValueError, TypeError): pass
-    if not grist_user_id and grist_key and site_url:
-        profile = await fetch_grist_user_profile(site_url, grist_key)
-        if profile: grist_user_id = profile.get("id")
-    if not grist_user_id:
-        return JSONResponse({"error": "Impossible de verifier l identite Grist."}, status_code=401)
-    uid_key = f"uid:{grist_user_id}"
-    if not _owner_gate(uid_key):
-        return JSONResponse({"error": "Pod verrouille sur un autre compte (owner-lock). "
-                             "Ce pod appartient a son proprietaire ; connecte-toi avec ce compte."},
-                            status_code=403)
     registry.provision(uid_key, grist_key=grist_key, access_token=access_token, site=site_url)
     ctx = registry.register_session(uid_key, doc_id, doc_title, site_url,
                                     grist_key=grist_key, access_token=access_token)
@@ -9045,9 +9263,12 @@ async def llm_proxy(path: str, request: Request):
         return Response(status_code=204, headers={
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-LLM-Base",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, X-LLM-Base, X-App-Token, X-Session-Token",
         })
+    if _trop_d_echecs(request):
+        return _refus_debit()
     if not _check_app_token(request):
+        _noter_echec(request)
         return JSONResponse({"error": "Garde du pod : X-App-Token manquant ou invalide."},
                             status_code=401)
     if not LLM_PROXY_ALLOWED_HOSTS:
@@ -9078,6 +9299,15 @@ async def llm_proxy(path: str, request: Request):
         # injecter la cle du pod (env explicite ou config datalab SSPCloud).
         srv_key = await _resolve_llm_key()
         if srv_key:
+            # La cle LLM du pod n'est pretee qu'a une session de widget VERIFIEE du
+            # proprietaire. Sous la seule garde du pod — lisible dans l'URL de section
+            # de tout document partage — n'importe qui consommait le quota LLM.
+            jeton = (request.headers.get("X-Session-Token") or "").strip()
+            uid_s = _token_to_uid.get(jeton) if jeton.startswith("gc-") else None
+            if not (uid_s and await _proprietaire_ok(uid_s)):
+                _noter_echec(request)
+                return JSONResponse({"error": "La cle LLM du pod n'est pretee qu'a une session "
+                                     "de widget verifiee. Recharger le widget."}, status_code=401)
             headers["Authorization"] = f"Bearer {srv_key}"
             cle_du_pod = True
     for h in ("anthropic-version", "anthropic-beta", "openai-organization", "x-api-key"):

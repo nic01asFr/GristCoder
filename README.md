@@ -266,8 +266,11 @@ depend on the client behaving:
 
 | Guard | Env | What it does |
 |-------|-----|--------------|
-| Pod gate | `APP_AUTH_TOKEN` | Bearer token required on `/mcp`, `/register` and `/llm-proxy`, compared with `hmac.compare_digest`. Empty (local default) = no gate |
-| Owner lock (TOFU) | `OWNER_LOCK` | The first real Grist account to register pins the pod; any other `uid` gets a 403. Unresolved fallback identities are never pinned — they would lock the pod to nobody |
+| Identity from Grist | `GRIST_SITE_URL`, `ALLOWED_GRIST_SITES` | A widget's identity is taken **only** from an access token that Grist has just accepted, on an allowlisted site. `/register` presents the token to Grist (`?auth=`), and reads `userId` from its payload only after a 200. The `userId` sent by the client is ignored, and so is any Grist site outside the allowlist |
+| Owner | `OWNER_UID`, `OWNER_LOCK` | Only the owner may use the pod. Set `OWNER_UID` (chart: `app.ownerUid`); failing that, the account of the pod's `GRIST_API_KEY`; failing that, the first *verified* account after each start (TOFU). "Invalid token" and "wrong account" get the same answer, so owners cannot be enumerated |
+| Widget session scope | — | A `gc-` session token is 128 bits and acts on **its own document only**: `sessions_list` shows it alone, and it cannot route a tool to another session |
+| Pod gate | `APP_AUTH_TOKEN` | Required on `/mcp`, `/register` and `/llm-proxy`. **A filter, not a secret**: it travels in the widget URL stored in every document that embeds the widget, so any collaborator can read it. Nothing may rely on it alone — the pod's LLM key, for instance, is only lent to a verified widget session |
+| Failure throttling | — | Authentication *failures* are counted per client; past 20 in 5 minutes the client gets 429. Legitimate traffic is not counted |
 | OAuth 2.1 connector | `PUBLIC_URL` | The pod becomes its own authorization server. The Grist key is given once at consent and stays server-side; the client only ever holds an opaque `gco-` token that expires and can be revoked |
 | Error scrubbing | — | `_scrub_secrets()` masks `auth=` and `Bearer` in every message returned to a client. The key used to leak through the httpx request URL |
 | SSRF closed by default | `LLM_PROXY_ALLOWED_HOSTS` | `/llm-proxy` only reaches allowlisted hosts. Empty list disables the endpoint entirely |

@@ -138,6 +138,13 @@
     if (typeof window !== "undefined" && window.__APP_TOKEN__) {
       headers["X-App-Token"] = window.__APP_TOKEN__;
     }
+    // Jeton de la session verifiee : le pod ne prete sa propre cle LLM qu'a une
+    // session de widget dont Grist a authentifie le proprietaire.
+    var jetonSession = (typeof window !== "undefined") &&
+      ((window.HarnessBoot && window.HarnessBoot.token) || window._token);
+    if (jetonSession) {
+      headers["X-Session-Token"] = String(jetonSession);
+    }
     // Anthropic exige anthropic-version ; le proxy le relaie (liste blanche).
     if (opts.provider === "anthropic") {
       headers["anthropic-version"] = "2023-06-01";

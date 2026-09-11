@@ -28,10 +28,15 @@ app:
   logLevel: info
   # Nombre de hops proxy (ingress onyxia = 1).
   trustProxy: 1
-  # Verrou proprietaire : le 1er uid Grist qui s'enregistre devient owner (TOFU),
-  # tout autre uid est rejete (403). Empeche un tiers d'utiliser ton pod avec
-  # sa propre cle Grist. Mettre "off" seulement pour un pod volontairement partage.
+  # Verrou proprietaire : seul le proprietaire du pod peut l'utiliser. Mettre "off"
+  # seulement pour un pod volontairement partage.
   ownerLock: "on"
+  # Identifiant numerique Grist du proprietaire (Grist -> Parametres du profil, ou
+  # GET /api/profile/user). RECOMMANDE : sans lui, le proprietaire est le premier
+  # compte verifie qui s'enregistre apres chaque demarrage (TOFU) — un collaborateur
+  # qui ouvre le widget le premier apres un redemarrage prendrait le pod. Si
+  # grist.apiKey est renseignee, son compte fait foi a defaut de cette valeur.
+  ownerUid: ""
 
 # --- Garde Bearer du pod (auto-generee) ----------------------------------------
 # Le chart cree son propre Secret avec un APP_AUTH_TOKEN aleatoire stable

@@ -12,7 +12,7 @@ chart n'est dépositaire d'aucun secret**. C'est le pendant du modèle
 | Déploiement | catalogue Onyxia (`values.schema.json`) **ou** `install.sh` one-liner |
 | URL par-user | `user-<idep>-grist-coder.user.lab.sspcloud.fr` (ingress TLS auto) |
 | Secrets | naissent dans le namespace du user (`Secret` `helm.sh/resource-policy: keep`) ; jamais commités |
-| Garde d'accès | `APP_AUTH_TOKEN` Bearer auto-généré **+** owner-lock (1er `uid` Grist = propriétaire) |
+| Garde d'accès | identité vérifiée auprès de Grist **+** propriétaire désigné (`app.ownerUid`) **+** filtre `APP_AUTH_TOKEN` |
 | Clé LLM | **catalogue Onyxia** → auto depuis l'AI Assistant du datalab (RBAC + Secret injecté) ; **`helm install`** → renseigner `llm.apiKey` (déterministe) |
 
 ## Clé LLM — deux chemins
@@ -32,12 +32,20 @@ bandeau non bloquant si aucune clé n'est disponible.
 
 L'URL n'est pas un secret (ingress public). La protection est double :
 
-- **`/mcp`, `/register`, SSE, `/llm-proxy`** exigent soit le Bearer `APP_AUTH_TOKEN`
-  (dans ton `Secret`, que toi seul lis), soit un **access token OAuth** émis par le
-  pod (voir ci-dessous).
-- **Owner-lock** (`app.ownerLock: on`) : le premier compte Grist qui s'enregistre
-  devient propriétaire ; tout autre `uid` est rejeté (403), même avec une clé
-  Grist valide. Empêche un tiers d'utiliser ton pod (ta clé LLM, ton compute).
+- **L'identité vient de Grist, jamais du client.** Un widget s'enregistre avec son
+  jeton d'accès ; le pod le présente à Grist, sur un site en liste blanche
+  (`grist.siteUrl`), et n'en lit l'identifiant qu'après une réponse 200.
+- **Propriétaire désigné** : renseigne `app.ownerUid` avec l'identifiant numérique de
+  ton compte Grist (en ligne de commande : `--set-string app.ownerUid=<id>`). À
+  défaut, le premier compte *vérifié* après chaque démarrage devient propriétaire —
+  un collaborateur qui ouvrirait le widget le premier après un redémarrage
+  prendrait le pod.
+- **`APP_AUTH_TOKEN` est un filtre, pas un secret.** Il voyage dans l'URL du widget,
+  stockée dans les options de section de chaque document qui l'intègre : tout
+  collaborateur peut le lire. Rien ne repose sur lui seul — la clé LLM du pod n'est
+  prêtée qu'à une session de widget vérifiée.
+- Un client MCP présente soit une clé API Grist, soit un **access token OAuth** émis
+  par le pod (voir ci-dessous).
 
 **Connecteur OAuth 2.1 embarqué** (actif en ligne, dès que `PUBLIC_URL` est injecté) :
 le pod est son propre Authorization Server. Le « login » du consentement valide

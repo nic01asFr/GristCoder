@@ -50,6 +50,8 @@ spec:
                   key: APP_AUTH_TOKEN
             - name: OWNER_LOCK
               value: {{ .Values.app.ownerLock | quote }}
+            - name: OWNER_UID
+              value: {{ .Values.app.ownerUid | default "" | quote }}
             # --- Grist -----------------------------------------------------
             - name: GRIST_SITE_URL
               value: {{ .Values.grist.siteUrl | quote }}

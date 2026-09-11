@@ -102,6 +102,19 @@ Identity is based on `uid:{grist_user_id}` — stable numeric ID shared between 
 - **Surface the Grist error body.** `raise_for_status()` throws away the explanation;
   use `_leve_si_erreur(r)`. Without it every failure looks the same and an agent told
   "500 is transient, retry" will retry a permanent error until its budget is gone.
+- **Identity comes from Grist, never from the request.** `/register` once took the
+  uid from `body.userId` and never checked the token with Grist: any non-empty string
+  passed, and a collaborator could impersonate the pod owner. The uid is now read
+  from an access token *only after* Grist accepted it (`_identite_widget`), on an
+  allowlisted site (`_site_verifie`) — a site supplied by the client would answer
+  whatever uid it likes. A Grist access token is presented as `?auth=`, not as a
+  Bearer; its payload is `{userId, docId}`, valid 15 minutes. Grist does not bind it
+  to the requested document: a 200 proves the identity, not the document.
+- **`APP_AUTH_TOKEN` is a filter, not a secret.** It sits in the widget URL of every
+  document that embeds the widget. Never let anything rely on it alone.
+- **A `gc-` token acts on its own document only** (`_portee_session`). Anything that
+  widens its reach — listing the account's sessions, lending the pod's keys — must
+  check the scope first.
 - **`RemoveTable` cascades to views.** Deleting the tables of an app also removes their
   raw views *and* the pages holding sections on them — convenient for cleanup, surprising
   if unexpected.

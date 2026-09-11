@@ -23,6 +23,13 @@
           "default": "on",
           "enum": ["on", "off"]
         },
+        "ownerUid": {
+          "type": "string",
+          "title": "Identifiant Grist du proprietaire",
+          "description": "Recommande. Identifiant numerique de ton compte Grist (Parametres du profil). Sans lui, le premier compte verifie apres chaque demarrage devient proprietaire.",
+          "default": "",
+          "pattern": "^[0-9]*$"
+        },
         "logLevel": {
           "type": "string",
           "title": "Niveau de log",
