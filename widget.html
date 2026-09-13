@@ -1329,6 +1329,7 @@ function renderArtSelect() {
   var sel = document.getElementById('artSelect');
   var cur = sel.value;
   sel.innerHTML = '<option value="">— aucun —</option>' +
+    '<option value="__new__">➕ Nouvel artefact…</option>' +
     _artefacts.map(function(a) {
       return '<option value="'+a.Nom+'">'+typeIcon(a.Type)+' '+a.Nom+'</option>';
     }).join('');
@@ -1344,6 +1345,21 @@ async function onArtSelect(initOnly) {
     setEditorHeader(null);
     if (_editor) { _lastServerCanvas = ''; _editor.setValue('', -1); }
     renderEmpty();
+    return;
+  }
+  if (nom === '__new__') {
+    var draftNom = prompt('Nom du nouvel artefact (unique) :');
+    if (!draftNom || _artefactsMap[draftNom]) {
+      if (draftNom) showToast('Un artefact "'+draftNom+'" existe déjà', 'error');
+      document.getElementById('artSelect').value = _currentArt ? _currentArt.Nom : '';
+      return;
+    }
+    cancelAutoSave();
+    var draft = {id: null, Nom: draftNom, Type: '', Code: '', Description: ''};
+    _currentArt = draft;
+    _canvasTargetArt = null;
+    if (_editor) { _lastServerCanvas = '\u0000draft'; _editor.setValue('', -1); setEditorMode('html'); }
+    renderArt(draft);
     return;
   }
   var art = _artefactsMap[nom];
@@ -1610,30 +1626,41 @@ function autoPreview() { renderCurrent(); }
 // ── SAVE ─────────────────────────────────────────────────────────────────────
 async function saveArt() {
   if (!_currentArt) return;
-  // Block writes during server-driven updates: editor and _currentArt may be
-  // momentarily out of sync (e.g. canvas_patched switched _currentArt but
-  // loadCanvasIntoEditor hasn't completed yet).
   if (_serverUpdating) {
     console.warn('saveArt: blocked — server update in progress');
     return;
   }
-  // Capture the artefact reference BEFORE awaiting anything: _currentArt may
-  // be reassigned while applyUserActions is in flight, which would otherwise
-  // cause us to write the saved code to the wrong artefact in _artefactsMap.
   var art = _currentArt;
   var code = _editor ? _editor.getValue() : '';
-  if (code === art.Code) return;
-  // Safety: never overwrite a non-empty artefact with an empty editor.
-  if (!code && art.Code) {
-    console.warn('saveArt: refusing to overwrite non-empty artefact with empty editor');
+  if (art.id) {
+    if (code === art.Code) return;
+    if (!code && art.Code) {
+      console.warn('saveArt: refusing to overwrite non-empty artefact with empty editor');
+      return;
+    }
+  } else if (!code) {
     return;
   }
   _setSyncStatus('saving');
   try {
-    // Sauvegarde directe browser→Grist via applyUserActions (contourne WAF serveur)
-    await grist.docApi.applyUserActions([
-      ['UpdateRecord', 'Artefacts', art.id, {Code: code, UpdatedAt: Math.floor(Date.now()/1000)}]
-    ]);
+    if (!art.id) {
+      var type = detectType(code) || 'html';
+      var res = await grist.docApi.applyUserActions([
+        ['AddRecord', 'Artefacts', null, {Nom: art.Nom, Type: type, Code: code, Description: '', UpdatedAt: Math.floor(Date.now()/1000)}]
+      ]);
+      art.id = res.retValues[0];
+      art.Type = type;
+      _artefacts.push(art);
+      _artefactsMap[art.Nom] = art;
+      renderArtSelect();
+      document.getElementById('artSelect').value = art.Nom;
+      document.getElementById('sbArts').textContent = _artefacts.length + ' artefacts';
+      setEditorMode(type);
+    } else {
+      await grist.docApi.applyUserActions([
+        ['UpdateRecord', 'Artefacts', art.id, {Code: code, UpdatedAt: Math.floor(Date.now()/1000)}]
+      ]);
+    }
     art.Code = code;
     if (_artefactsMap[art.Nom]) _artefactsMap[art.Nom].Code = code;
     _setSyncStatus('saved');
@@ -1654,6 +1681,15 @@ function autoSave() {
   // Skip if content was just set from server (not a user edit)
   var cur = _editor ? _editor.getValue() : '';
   if (_lastServerCanvas !== null && cur === _lastServerCanvas) return;
+  // Canevas vide sans artefact selectionne : la frappe cree un brouillon a la volee
+  // (nom auto-genere) plutot que de silencieusement ne rien faire.
+  if (!_currentArt && cur.trim()) {
+    var autoNom = 'artefact-' + Date.now().toString(36);
+    _currentArt = {id: null, Nom: autoNom, Type: detectType(cur) || 'html', Code: '', Description: ''};
+    _canvasTargetArt = null;
+    showToast('Nouvel artefact créé : ' + autoNom, 'info');
+    renderCurrent(); // le timer d'aperçu (1.8s) est passé avant la creation du brouillon (3s) : redeclencher ici
+  }
   saveArt();
 }
 

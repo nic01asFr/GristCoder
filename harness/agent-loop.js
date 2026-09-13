@@ -94,6 +94,15 @@
     "- FORMATE LES VALEURS. Grist stocke les dates en SECONDES : affichees telles quelles elles donnent 1704067200 au lieu d'une date. Utilise grist.util.toDate(ts) pour lire et grist.util.fromDate(d) pour ecrire, systematiquement. Meme exigence pour les references (afficher le libelle, jamais l'identifiant). POUR LES NOMBRES, formater ne suffit pas : une valeur lue d'une colonne Text est une CHAINE, et 0 + \"5000\" donne \"05000\" — une somme se met a concatener. Pire, .toLocaleString() appele sur une chaine la renvoie inchangee, SANS erreur : tu crois avoir formate. Donc coerce AVANT tout calcul — Number(v) || 0 — et type les colonnes numeriques en Numeric ou Int des leur creation, ce qui supprime le probleme a la racine.",
     "- Ne demande a l'humain que ce qui est reellement necessaire (besoin, choix structurants). Sinon, avance.",
     "- ERREUR sur un outil Grist : LIS LE MESSAGE avant de reagir. Le serveur remonte desormais l explication de Grist (table inexistante, colonne invalide, erreur de sandbox...). Si le message NOMME une cause precise, l erreur est DETERMINISTE : rejouer la meme action redonnera la meme erreur. CORRIGE l action (ordre des tables, nom/casse exacte des colonnes, references) au lieu de reessayer. Un 500 SANS detail, lui, est le plus souvent un alea transitoire de l instance (WAF) : le serveur a deja reessaye tout seul, tu peux retenter une ou deux fois. Ne conclus JAMAIS que le document est casse, ne demande JAMAIS a l utilisateur de creer un nouveau document. Si un lot echoue, cree les tables une par une.",
+    "- REPRISE D'ARTEFACT EXISTANT (cas : un artefact colle contient deja du code/donnees, ex. mockees). NE FAIS PAS l'elicitation habituelle — le besoin est deja dans le code. Plutot :",
+    "    1. canvas_read sur l'artefact selectionne pour voir son contenu actuel EN ENTIER avant d'agir.",
+    "    2. ANALYSE EN DEUX TEMPS, pas juste la forme des donnees :",
+    "       a. DONNEES — les structures codees en dur (tableaux/objets mock) : quels champs, quels types, quelles relations entre elles (une liste de commandes qui reference un client = deux tables + une Ref, pas une seule table a plat).",
+    "       b. COMPORTEMENTS — chaque bouton, formulaire, onClick, onSubmit qui manipule ces donnees EN MEMOIRE (push dans un tableau, splice, setState local) est un signal qu'une operation Grist doit s'y substituer : un ajout devient addRow, une modification updateRow, une suppression deleteRow. Si l'artefact ne fait qu'afficher (aucune interaction en ecriture), le schema n'a besoin que de colonnes lisibles — ne cree pas de mecanisme d'ecriture qui ne correspond a rien dans l'artefact.",
+    "    3. Montre le schema INFERE (tables + colonnes + operations identifiees) via canvas_wizard(type='confirm', source='schema', ...) AVANT de creer quoi que ce soit — laisse l'utilisateur valider ou ajuster. NE SAUTE JAMAIS CETTE ETAPE, meme si la demande semble deja valider le principe (ex: 'branche-le sur Grist') : une consigne generale n'est pas une validation du schema precis que TU as inferee.",
+    "    4. Une fois valide : cree les tables (grist_apply AddTable), PUIS reecris l'artefact (canvas_patch de preference a canvas_write si les changements sont localises) : remplace CHAQUE donnee en dur par grist.docApi.loadTable(...), et CHAQUE operation identifiee en 2b par le helper addRow/updateRow/deleteRow correspondant (regles CRUD FOOLPROOF ci-dessus) — pas seulement la lecture : un artefact repris qui n'ecrit plus rien dans Grist a rate l'objectif. SI tu migres des lignes d'exemple depuis les donnees mockees vers la table (grist_apply AddRecord) et qu'un champ est une date : une colonne Date Grist stocke des JOURS depuis epoch (1970-01-01 = 0), PAS des secondes — calcule Math.floor(Date.parse('AAAA-MM-JJ')/86400000), jamais /1000. Les secondes-depuis-epoch (util.toDate/fromDate) ne s'appliquent qu'aux colonnes DateTime, pas Date. Une date mockee mal convertie affichera 1970 au lieu de la bonne annee — verifie-le a l'ecran (etape 5) avant de conclure.",
+    "    5. Verifie (screenshot + interaction reelle si possible) que l'affichage vient de la table Grist et que les actions d'ecriture persistent bien — pas d'anciennes valeurs mockees qui trainent encore en dur quelque part dans le code.",
+    "- HONNETETE DE LA PROGRESSION ET DU RESUME (canvas_wizard type='progress', plan_update, ET le say final). N'affiche/n'ecris JAMAIS qu'une etape est faite (status='done', item coche, ou phrase au passe dans le resume comme 'ajout -> addRow()') avant que l'outil qui l'accomplit reellement (canvas_write/canvas_patch pour reecrire l'artefact, grist_apply pour les tables) ait ete appele ET ait reussi DANS CETTE MEME session de tours. Une intention n'est pas une execution. Avant d'ecrire le resume final : si tu affirmes que l'artefact 'lit/ecrit maintenant via Grist', tu DOIS avoir appele canvas_write ou canvas_patch sur cet artefact plus tot dans ce tour — sinon relis canvas_read pour verifier, et si le code mocke est toujours la, dis-le et corrige au lieu de resumer un succes qui n'a pas eu lieu. Une checklist ou un resume entierement positifs alors que canvas_read montrerait encore l'ancien code sont pires qu'une etape sautee : ils rassurent a tort.",
     "- Sois concis et factuel. Reponds en francais.",
     "- LIS CE QUE LE SERVEUR TE RENVOIE. grist_apply repond avec _avertissements quand le pre-vol a repere quelque chose : une colonne Ref sans visibleCol, une colonne dont le NOM dement le TYPE (un montant en Text, une date en Text, un statut en Text au lieu de Choice). Ce ne sont pas des remarques de style : une colonne mal typee casse plus tard, ailleurs, et en silence. Corrige immediatement par ModifyColumn, avant d'ecrire le moindre artefact qui lira ces donnees.",
     "- REGARDE AVANT DE CONCLURE. Ne declare jamais une app terminee sans avoir vu ce qu'elle affiche. Avant ton resume final : canvas_screenshot sur l'ecran principal, relis les diagnostics que canvas_write t'a renvoyes, et relis _quality dans context/{token} — les anomalies de schema y sont nommees colonne par colonne. Cherche ce qui trahit un ecran mort ou bacle : compteurs a zero alors que les tables ont des lignes, liste vide, nombre a dix chiffres la ou une date est attendue, TOTAL anormalement long ou commencant par un zero (c'est une concatenation, pas une somme), [object Object], NaN, undefined, page sans aucun style. Si tu vois l'un d'eux, CORRIGE puis re-verifie. Une seule passe de verification suffit — ne boucle pas.",
@@ -395,6 +404,52 @@
     });
   }
 
+  // ── Seed des ressources MCP invisibles a ce harness (docs/*) ────────────────
+  // Ce harness ne parle que tools/list + tools/call : les 11 ressources
+  // statiques (docs/schema, docs/artefacts, docs/playbook...) ne lui parviennent
+  // JAMAIS, contrairement a Claude Desktop/Code. Mesure sans elles : reinvention
+  // de toDate, aucun style applique, identifiant utilisateur code en dur — le
+  // modele avait le system prompt et le schema, rien de plus. On seed ici les
+  // deux ressources les plus determinantes pour REPRENDRE un artefact colle et
+  // le brancher sur Grist (contrat du bridge + conventions de types/colonnes) ;
+  // playbook/app-patterns (creation de pages, multi-widgets) sont hors-sujet
+  // pour cette tache et volontairement omises pour ne pas diluer un modele deja
+  // plus contraint que celui qui a ecrit ce prompt. Bornees en taille : un
+  // rappel cible, pas un chapitre entier a digerer avant le premier outil.
+  function _readMcpResource(uri) {
+    var token = window._token;
+    var base = window.BASE || (window.location && window.location.origin) || '';
+    if (!token) return Promise.resolve(null);
+    var h = { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token };
+    if (window.__APP_TOKEN__) h['X-App-Token'] = window.__APP_TOKEN__;
+    return fetch(base + '/mcp', {
+      method: 'POST', headers: h,
+      body: JSON.stringify({ jsonrpc: '2.0', id: 'harness-doc', method: 'resources/read', params: { uri: uri } })
+    }).then(function (r) { return r.json(); }).then(function (data) {
+      var c = data && data.result && data.result.contents && data.result.contents[0];
+      return (c && c.text) || null;
+    }).catch(function () { return null; });
+  }
+
+  function _seedDocsResources() {
+    var DOCS = ['grist-coder://docs/artefacts', 'grist-coder://docs/schema'];
+    var MAX_PER_DOC = 16000; // caracteres par doc — large marge sur leur taille actuelle
+    return Promise.all(DOCS.map(_readMcpResource)).then(function (texts) {
+      var parts = [];
+      for (var i = 0; i < DOCS.length; i++) {
+        var t = texts[i];
+        if (!t) continue;
+        if (t.length > MAX_PER_DOC) t = t.slice(0, MAX_PER_DOC) + '\n…(tronque)';
+        parts.push('### ' + DOCS[i].replace('grist-coder://', '') + '\n' + t);
+      }
+      if (parts.length) {
+        _memAdd({ role: 'system', content:
+          'RESSOURCES MCP (docs/artefacts, docs/schema — normalement invisibles a ce harness, injectees ici car necessaires) :\n\n' +
+          parts.join('\n\n---\n\n') });
+      }
+    }).catch(function () {});
+  }
+
   // ── Plan pilote par le CONTEXTE SERVEUR (context/{token} -> _inferred_plan) ─
   // Le core calcule deja, a partir de l'etat REEL du doc, le status + la
   // completude + les anomalies. On lit ce snapshot et on le projette sur le
@@ -489,8 +544,9 @@
       }
       _memSetSystem(SYSTEM_PROMPT);
 
-      // 4. Seed du contexte Grist (schema).
-      return _seedContext();
+      // 4. Seed du contexte Grist (schema) + des ressources MCP essentielles
+      //    (invisibles a ce harness sinon — voir _seedDocsResources ci-dessus).
+      return Promise.all([_seedContext(), _seedDocsResources()]);
     }).then(function () {
       _started = true;
       return true;
