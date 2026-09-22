@@ -9,7 +9,7 @@ description: |
   chaque utilisateur deploie son pod, garde ses propres secrets, l'auteur
   du chart n'est depositaire d'aucun secret.
 type: application
-version: 0.5.0
+version: 0.5.1
 appVersion: "5.14"
 icon: https://grist.numerique.gouv.fr/favicon.ico
 keywords:
@@ -21,7 +21,6 @@ keywords:
   - onyxia
 home: https://nic01asfr.github.io/GristCoder/
 sources:
-  - https://gitlab.cerema.fr/mcp/gristcoder_mcp
   - https://github.com/nic01asFr/GristCoder
 maintainers:
   - name: Nicolas LAVAL

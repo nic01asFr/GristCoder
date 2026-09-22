@@ -8,8 +8,8 @@
 # services du catalogue (hote tire du contexte Onyxia, protection IP, pause).
 
 # --- Image ---------------------------------------------------------------------
-# Le GitLab CEREMA n'a pas de registre conteneur -> l'image est hebergee sur un
-# registre externe public (ghcr.io par defaut). repository est REECRIT au packaging
+# Pas de registre conteneur sur l'instance CI -> image hebergee sur un registre
+# externe public (ghcr.io par defaut). repository est REECRIT au packaging
 # par la CI avec la variable $IMAGE_REPO — la CI remplace toute ligne
 # « repository: » de ce fichier : ne pas en ajouter d'autre.
 image:

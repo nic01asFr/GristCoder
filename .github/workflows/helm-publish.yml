@@ -1,0 +1,53 @@
+# Publie le chart grist-coder sur GitHub Pages (docs/helm/) pour le catalogue
+# Onyxia / « Mes services », sur le même modèle que n8n-onyxia.
+name: Publish Helm chart
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "charts/grist-coder/**"
+      - "charts/grist-coder/scripts/install.sh"
+      - "install.sh"
+      - ".github/workflows/helm-publish.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.15.4
+
+      - name: Package chart
+        run: |
+          set -euo pipefail
+          helm dependency update charts/grist-coder
+          helm lint charts/grist-coder --set ingress.hostname=ci.example.fr
+          mkdir -p docs/helm
+          helm package charts/grist-coder -d docs/helm
+          if [ -f docs/helm/index.yaml ]; then
+            helm repo index docs/helm --url https://nic01asfr.github.io/GristCoder/helm --merge docs/helm/index.yaml
+          else
+            helm repo index docs/helm --url https://nic01asfr.github.io/GristCoder/helm
+          fi
+
+      - name: Install scripts (Pages + racine, modele QGIS)
+        run: |
+          install -m 0755 charts/grist-coder/scripts/install.sh docs/install-grist-coder.sh
+          install -m 0755 charts/grist-coder/scripts/install.sh install.sh
+
+      - name: Commit chart artefacts
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/helm docs/install-grist-coder.sh install.sh
+          git diff --staged --quiet && echo "Rien a publier" && exit 0
+          git commit -m "chore(helm): publish grist-coder chart for Onyxia Pages"
+          git push

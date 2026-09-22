@@ -53,8 +53,16 @@ const CHAMPS_THEME = ["primaire", "secondaire", "surface", "fond", "encre", "att
 
 export function chargerVitrine(fichier = VITRINE) {
   const v = JSON.parse(fs.readFileSync(fichier, "utf8"));
-  for (const k of ["theme", "base", "depot", "langues", "mcp"]) {
+  for (const k of ["theme", "base", "depot", "langues", "mcp", "distribution"]) {
     if (v[k] == null) throw new Error(`vitrine.json : champ requis manquant : ${k}`);
+  }
+  for (const k of ["installScript", "image", "helmRepo"]) {
+    if (!v.distribution[k]) throw new Error(`vitrine.json : distribution.${k} requis`);
+  }
+  for (const [code, l] of Object.entries(v.langues)) {
+    if (!l.sspcloud?.etapes?.length) {
+      throw new Error(`vitrine.json : langues.${code}.sspcloud.etapes requis`);
+    }
   }
   for (const k of CHAMPS_THEME) {
     if (!v.theme[k]) throw new Error(`vitrine.json : champ requis manquant : theme.${k}`);
@@ -157,7 +165,7 @@ function blocTete(v, code, l, inv) {
     url,
     codeRepository: v.depot,
     license: "https://opensource.org/licenses/MIT",
-    author: { "@type": "Organization", name: v.auteur },
+    author: { "@type": "Person", name: v.auteur },
     offers: { "@type": "Offer", price: "0", priceCurrency: "EUR" },
   };
   // Le littéral fermant de script est coupé : ce fichier n'est pas du HTML, mais
@@ -303,6 +311,34 @@ ${f
   )
   .join("\n")}
     </div>
+  </div>
+</section>`;
+}
+
+function blocSspcloud(v, l) {
+  const s = l.sspcloud;
+  const d = v.distribution;
+  const cmd = `curl -sL ${d.installScript} | bash`;
+  const opt = `# optionnel : OWNER_UID=<id Grist> LLM_API_KEY=... ${cmd}`;
+  return `<section class="bande" id="sspcloud">
+  <div class="wrap">
+    ${surtitre(l.libelles.surtitreSspcloud)}
+    <h2>${echapper(s.titre)}</h2>
+    <p class="accroche">${echapper(s.chapo)}</p>
+    <ol class="sequence">
+${s.etapes
+  .map(
+    (x, i) =>
+      `      <li><span class="n">${i + 1}</span><div><b>${echapper(x.titre)}</b><p>${echapper(x.texte)}</p></div></li>`
+  )
+  .join("\n")}
+    </ol>
+    <h3>${echapper(s.commandeTitre)}</h3>
+    <pre><code>${echapper(cmd)}</code></pre>
+    <p class="note">${echapper(opt)}</p>
+    <p class="note">${echapper(s.noteImage)} <code>${echapper(d.image)}:&lt;version&gt;</code> (voir <a href="${echapper(v.depot)}">GitHub Packages</a>).</p>
+    <p class="note">${echapper(s.noteHelm)} <code>${echapper(d.helmRepo)}</code></p>
+    <p class="note"><a href="${echapper(d.chartDoc || v.depot)}">${echapper(l.libelles.lienSspcloud)} — chart Helm</a></p>
   </div>
 </section>`;
 }
@@ -630,6 +666,7 @@ ${policeMarianne(t)}
       <div class="tags">${tags}</div>
       <div class="cta">
         <a class="btn primary" href="${echapper(v.depot)}">${echapper(l.libelles.codeSource)}</a>
+        <a class="btn ghost" href="#sspcloud">${echapper(l.libelles.lienSspcloud)}</a>
         <a class="btn ghost" href="#mcp">${echapper(l.libelles.demarrer)}</a>
       </div>
     </div>
@@ -646,6 +683,7 @@ ${policeMarianne(t)}
     </section>
     ${blocCaptures(v, code, l)}
     ${blocFonctionnalites(l)}
+    ${blocSspcloud(v, l)}
     ${blocSequence(l)}
     ${blocContextes(l)}
     ${blocSecurite(l)}

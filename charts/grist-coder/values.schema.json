@@ -2,6 +2,38 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "properties": {
+    "image": {
+      "type": "object",
+      "title": "Image",
+      "description": "Conteneur publié sur GitHub Container Registry (ghcr.io).",
+      "properties": {
+        "repository": {
+          "type": "string",
+          "title": "Registre",
+          "default": "ghcr.io/nic01asfr/grist-coder",
+          "x-onyxia": {
+            "hidden": true
+          }
+        },
+        "tag": {
+          "type": "string",
+          "title": "Version de l'image",
+          "description": "Laisser vide pour utiliser la version du chart (recommandé, aligné server.json).",
+          "default": ""
+        },
+        "pullPolicy": {
+          "type": "string",
+          "default": "Always",
+          "enum": [
+            "Always",
+            "IfNotPresent"
+          ],
+          "x-onyxia": {
+            "hidden": true
+          }
+        }
+      }
+    },
     "grist": {
       "type": "object",
       "title": "Grist",

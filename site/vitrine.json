@@ -18,9 +18,15 @@
     }
   },
   "depot": "https://github.com/nic01asFr/GristCoder",
-  "source": "https://gitlab.cerema.fr/mcp/gristcoder_mcp",
+  "distribution": {
+    "installScript": "https://nic01asfr.github.io/GristCoder/install-grist-coder.sh",
+    "installScriptAlt": "https://raw.githubusercontent.com/nic01asFr/GristCoder/master/install.sh",
+    "image": "ghcr.io/nic01asfr/grist-coder",
+    "helmRepo": "https://nic01asfr.github.io/GristCoder/helm",
+    "chartDoc": "https://github.com/nic01asFr/GristCoder/blob/master/charts/grist-coder/README.md"
+  },
   "licence": "MIT",
-  "auteur": "Cerema Méditerranée",
+  "auteur": "Nicolas LAVAL",
   "captures": [
     {
       "fichier": "screenshot-widget-home.png",
@@ -87,7 +93,34 @@
         "surtitreCaptures": "En images",
         "surtitreFonctionnalites": "Fonctionnalités",
         "surtitreParcours": "Prise en main",
-        "surtitreUsages": "Cas d'usage"
+        "surtitreUsages": "Cas d'usage",
+        "surtitreSspcloud": "SSPCloud Onyxia",
+        "lienSspcloud": "Mettre en ligne"
+      },
+      "sspcloud": {
+        "titre": "Installer ton serveur sur SSPCloud",
+        "chapo": "Un pod Grist Coder par utilisateur, dans ton namespace. Comme n8n-onyxia : pod Jupyter ou VS Code en rôle Kubernetes Edit, une commande curl, puis le service apparaît dans « Mes services ». Image sur ghcr.io ; chart Helm sur GitHub Pages.",
+        "commandeTitre": "Commande (terminal du pod)",
+        "noteHelm": "Registre Helm (GitHub Pages) : ajouté automatiquement par install.sh.",
+        "noteImage": "Image tirée à l'exécution :",
+        "etapes": [
+          {
+            "titre": "Préparer le profil IA",
+            "texte": "Sur datalab : Mon compte → Assistant IA — clé compatible OpenAI (llm.lab.sspcloud.fr), URL de base et modèle outillé (ex. qwen3-6-35b-moe)."
+          },
+          {
+            "titre": "Ouvrir un pod avec accès Kubernetes",
+            "texte": "Lance un service Onyxia qui expose un terminal (VS Code, Jupyter, etc.) avec accès Kubernetes au namespace : rôle admin (comme pour QGIS-sspcloud). Sans ce rôle, l'install Helm peut échouer ; fournis LLM_API_KEY à la main si besoin."
+          },
+          {
+            "titre": "Déployer en une commande",
+            "texte": "Dans le terminal du pod, exécute la commande ci-dessous. Recommandé : OWNER_UID = identifiant numérique Grist (Paramètres du profil)."
+          },
+          {
+            "titre": "Brancher Grist",
+            "texte": "Ouvre l'URL du service (notes Onyxia) : widget avec ?app_token=…, MCP sur /mcp (OAuth ou en-têtes). Catalogue régional : les admins peuvent ajouter le dépôt Helm GitHub Pages ; sinon « Mes services » suffit après install.sh."
+          }
+        ]
       },
       "points": [
         {
@@ -146,7 +179,7 @@
       ],
       "encart": {
         "titre": "Expérimental, et publié quand même",
-        "texte": "Développé au Cerema Méditerranée. Fiable pour un utilisateur sur sa machine ; le dialogue guidé, les sous-agents et le chat sont en bêta. Nous le publions pour partager l'approche, récolter les retours de la communauté Grist et inviter les contributions.",
+        "texte": "Projet expérimental en cours de maturation. Fiable pour un utilisateur sur sa machine ; le dialogue guidé, les sous-agents et le chat sont en bêta. Nous le publions pour partager l'approche, récolter les retours de la communauté Grist et inviter les contributions.",
         "lien": {
           "libelle": "Lire le README",
           "url": "https://github.com/nic01asFr/GristCoder#readme"
@@ -280,7 +313,34 @@
         "surtitreCaptures": "In pictures",
         "surtitreFonctionnalites": "Features",
         "surtitreParcours": "Getting started",
-        "surtitreUsages": "Use cases"
+        "surtitreUsages": "Use cases",
+        "surtitreSspcloud": "SSPCloud Onyxia",
+        "lienSspcloud": "Deploy online"
+      },
+      "sspcloud": {
+        "titre": "Install your server on SSPCloud",
+        "chapo": "One Grist Coder pod per user, in your namespace. The container image lives on GitHub Container Registry; the install script is served from GitHub. The Helm chart is published by CI (GitLab registry, anonymous pull — install.sh handles it).",
+        "commandeTitre": "Command (pod terminal)",
+        "noteHelm": "Helm repo (GitHub Pages): added automatically by install.sh.",
+        "noteImage": "Runtime image:",
+        "etapes": [
+          {
+            "titre": "Set up the AI profile",
+            "texte": "On datalab: My account → AI Assistant — OpenAI-compatible key (llm.lab.sspcloud.fr), base URL and a tool-capable model (e.g. qwen3-6-35b-moe)."
+          },
+          {
+            "titre": "Open a pod with Kubernetes access",
+            "texte": "Start an Onyxia service with a terminal (VS Code, Jupyter, etc.) and Kubernetes access to your namespace: admin role (same as QGIS-sspcloud). Without it, Helm install may fail; pass LLM_API_KEY manually if needed."
+          },
+          {
+            "titre": "Deploy in one command",
+            "texte": "In the pod terminal, run the command below. Recommended: OWNER_UID = numeric Grist user id (Profile settings)."
+          },
+          {
+            "titre": "Wire Grist",
+            "texte": "Open the service URL (Onyxia notes): widget with ?app_token=…, MCP at /mcp (OAuth or headers). Onyxia catalogue: alternative if Grist Coder is already in your regional catalogue."
+          }
+        ]
       },
       "points": [
         {
@@ -339,7 +399,7 @@
       ],
       "encart": {
         "titre": "Experimental, and published anyway",
-        "texte": "Developed at Cerema Méditerranée. Reliable for a single user on their own machine; guided dialogue, sub-agents and chat are in beta. We publish it to share the approach, gather feedback from the Grist community and invite contributions.",
+        "texte": "An experimental work-in-progress. Reliable for a single user on their own machine; guided dialogue, sub-agents and chat are in beta. We publish it to share the approach, gather feedback from the Grist community and invite contributions.",
         "lien": {
           "libelle": "Read the README",
           "url": "https://github.com/nic01asFr/GristCoder#readme"

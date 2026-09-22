@@ -84,7 +84,14 @@ test("chargerVitrine exige le français, page par défaut", () => {
   const f = path.join(tmp("gc-vit-"), "sansfr.json");
   fs.writeFileSync(
     f,
-    JSON.stringify({ theme: THEME_MINIMAL, base: "/x/", depot: "u", mcp: {}, langues: { en: {} } })
+    JSON.stringify({
+      theme: THEME_MINIMAL,
+      base: "/x/",
+      depot: "u",
+      mcp: {},
+      distribution: { installScript: "u", image: "i", helmRepo: "h" },
+      langues: { en: { sspcloud: { etapes: [{ titre: "a", texte: "b" }] } } },
+    })
   );
   assert.throws(() => chargerVitrine(f), /langue fr/);
 });
@@ -94,7 +101,14 @@ test("chargerVitrine refuse une charte incomplète", () => {
   const { police, ...ampute } = THEME_MINIMAL;
   fs.writeFileSync(
     f,
-    JSON.stringify({ theme: ampute, base: "/x/", depot: "u", mcp: {}, langues: { fr: {} } })
+    JSON.stringify({
+      theme: ampute,
+      base: "/x/",
+      depot: "u",
+      mcp: {},
+      distribution: { installScript: "u", image: "i", helmRepo: "h" },
+      langues: { fr: { sspcloud: { etapes: [{ titre: "a", texte: "b" }] } } },
+    })
   );
   assert.throws(() => chargerVitrine(f), /theme\.police/);
 });
@@ -215,8 +229,9 @@ test("la page ne dépend d'aucun hôte externe pour ses images", () => {
   const dist = tmp("gc-dist-");
   generate({ vitrinePath: VITRINE, distDir: dist, racine: RACINE });
   const html = fs.readFileSync(path.join(dist, "index.html"), "utf8");
-  assert.doesNotMatch(html, /raw\.githubusercontent\.com/);
+  assert.doesNotMatch(html, /<img[^>]+src="https?:\/\//);
   assert.match(html, /<img src="screenshot-widget-home\.png"/);
+  assert.match(html, /id="sspcloud"/);
   const en = fs.readFileSync(path.join(dist, "en", "index.html"), "utf8");
   assert.match(en, /<img src="\.\.\/screenshot-widget-home\.png"/);
 });

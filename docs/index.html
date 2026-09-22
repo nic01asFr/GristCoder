@@ -20,7 +20,7 @@
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Grist Coder — un document Grist devient une application métier">
   <meta name="twitter:description" content="Un document Grist devient une application métier complète — tables, interfaces, logique, intégrations — construite par l'IA, et qui continue de tourner quand le serveur s'arrête.">
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Grist Coder","description":"Un document Grist devient une application métier complète — tables, interfaces, logique, intégrations — construite par l'IA, et qui continue de tourner quand le serveur s'arrête.","applicationCategory":"DeveloperApplication","operatingSystem":"Linux, macOS, Windows","softwareVersion":"5.14","url":"https://nic01asfr.github.io/GristCoder/","codeRepository":"https://github.com/nic01asFr/GristCoder","license":"https://opensource.org/licenses/MIT","author":{"@type":"Organization","name":"Cerema Méditerranée"},"offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Grist Coder","description":"Un document Grist devient une application métier complète — tables, interfaces, logique, intégrations — construite par l'IA, et qui continue de tourner quand le serveur s'arrête.","applicationCategory":"DeveloperApplication","operatingSystem":"Linux, macOS, Windows","softwareVersion":"5.14","url":"https://nic01asfr.github.io/GristCoder/","codeRepository":"https://github.com/nic01asFr/GristCoder","license":"https://opensource.org/licenses/MIT","author":{"@type":"Person","name":"Nicolas LAVAL"},"offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"}}</script>
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
   <style>
     @font-face {
@@ -259,6 +259,7 @@
       <div class="tags"><span class="tag">Serveur MCP</span><span class="tag">Grist</span><span class="tag">Claude</span><span class="tag">Auto-hébergé</span><span class="tag">Python</span><span class="tag">MIT</span></div>
       <div class="cta">
         <a class="btn primary" href="https://github.com/nic01asFr/GristCoder">Code source</a>
+        <a class="btn ghost" href="#sspcloud">Mettre en ligne</a>
         <a class="btn ghost" href="#mcp">Démarrer</a>
       </div>
     </div>
@@ -373,6 +374,25 @@
     </div>
   </div>
 </section>
+    <section class="bande" id="sspcloud">
+  <div class="wrap">
+    <p class="surtitre">SSPCloud Onyxia</p>
+    <h2>Installer ton serveur sur SSPCloud</h2>
+    <p class="accroche">Un pod Grist Coder par utilisateur, dans ton namespace. Comme n8n-onyxia : pod Jupyter ou VS Code en rôle Kubernetes Edit, une commande curl, puis le service apparaît dans « Mes services ». Image sur ghcr.io ; chart Helm sur GitHub Pages.</p>
+    <ol class="sequence">
+      <li><span class="n">1</span><div><b>Préparer le profil IA</b><p>Sur datalab : Mon compte → Assistant IA — clé compatible OpenAI (llm.lab.sspcloud.fr), URL de base et modèle outillé (ex. qwen3-6-35b-moe).</p></div></li>
+      <li><span class="n">2</span><div><b>Ouvrir un pod avec accès Kubernetes</b><p>Lance un service Onyxia qui expose un terminal (VS Code, Jupyter, etc.) avec accès Kubernetes au namespace : rôle admin (comme pour QGIS-sspcloud). Sans ce rôle, l'install Helm peut échouer ; fournis LLM_API_KEY à la main si besoin.</p></div></li>
+      <li><span class="n">3</span><div><b>Déployer en une commande</b><p>Dans le terminal du pod, exécute la commande ci-dessous. Recommandé : OWNER_UID = identifiant numérique Grist (Paramètres du profil).</p></div></li>
+      <li><span class="n">4</span><div><b>Brancher Grist</b><p>Ouvre l'URL du service (notes Onyxia) : widget avec ?app_token=…, MCP sur /mcp (OAuth ou en-têtes). Catalogue régional : les admins peuvent ajouter le dépôt Helm GitHub Pages ; sinon « Mes services » suffit après install.sh.</p></div></li>
+    </ol>
+    <h3>Commande (terminal du pod)</h3>
+    <pre><code>curl -sL https://nic01asfr.github.io/GristCoder/install-grist-coder.sh | bash</code></pre>
+    <p class="note"># optionnel : OWNER_UID=&lt;id Grist&gt; LLM_API_KEY=... curl -sL https://nic01asfr.github.io/GristCoder/install-grist-coder.sh | bash</p>
+    <p class="note">Image tirée à l'exécution : <code>ghcr.io/nic01asfr/grist-coder:&lt;version&gt;</code> (voir <a href="https://github.com/nic01asFr/GristCoder">GitHub Packages</a>).</p>
+    <p class="note">Registre Helm (GitHub Pages) : ajouté automatiquement par install.sh. <code>https://nic01asfr.github.io/GristCoder/helm</code></p>
+    <p class="note"><a href="https://github.com/nic01asFr/GristCoder/blob/master/charts/grist-coder/README.md">Mettre en ligne — chart Helm</a></p>
+  </div>
+</section>
     <section class="bande alt" id="parcours">
   <div class="wrap">
     <p class="surtitre">Prise en main</p>
@@ -446,7 +466,7 @@
   <div class="wrap">
     <aside class="encart">
       <h2>Expérimental, et publié quand même</h2>
-      <p>Développé au Cerema Méditerranée. Fiable pour un utilisateur sur sa machine ; le dialogue guidé, les sous-agents et le chat sont en bêta. Nous le publions pour partager l'approche, récolter les retours de la communauté Grist et inviter les contributions.</p>
+      <p>Projet expérimental en cours de maturation. Fiable pour un utilisateur sur sa machine ; le dialogue guidé, les sous-agents et le chat sont en bêta. Nous le publions pour partager l'approche, récolter les retours de la communauté Grist et inviter les contributions.</p>
       <p class="cta-line"><a class="btn ghost" href="https://github.com/nic01asFr/GristCoder#readme">Lire le README</a></p>
     </aside>
   </div>

@@ -62,61 +62,70 @@ autonome et adossé à la clé Grist, pas au SSO SSPCloud.
 
 ## Déploiement
 
-### Option A — one-liner (service SSPCloud lancé avec `kubernetes.role: edit`)
+### Où sont quoi (organisation du projet)
+
+| Ressource | Emplacement | Rôle |
+|-----------|-------------|------|
+| **Code & doc publique** | [GitHub — GristCoder](https://github.com/nic01asFr/GristCoder) | Miroir lisible, Pages, script `install.sh` |
+| **Image conteneur** | `ghcr.io/nic01asfr/grist-coder` | Ce que Kubernetes exécute (tags `latest` + version app, ex. `5.14`) |
+| **Chart Helm** | [GitHub Pages — helm/](https://nic01asfr.github.io/GristCoder/helm) | Ajouté par `install.sh` (repli interne si indisponible) |
+| **CI** | Pipeline privée (miroir → GitHub) | Build image → ghcr.io, package chart |
+
+### Option A — terminal Onyxia (recommandé grand public)
+
+1. **Profil IA** — datalab : *Mon compte → Assistant IA* (clé, base `https://llm.lab.sspcloud.fr/api`, modèle outillé).
+2. **Pod avec Kubernetes** — lance VS Code, Jupyter ou équivalent avec **`kubernetes.role: edit`** (accès admin au namespace ; sans ça : `LLM_API_KEY=…`).
+3. **Terminal du pod** :
 
 ```bash
-curl -sL https://gitlab.cerema.fr/mcp/gristcoder_mcp/-/raw/master/charts/grist-coder/scripts/install.sh | bash
+curl -sL https://raw.githubusercontent.com/nic01asFr/GristCoder/master/charts/grist-coder/scripts/install.sh | bash
 ```
 
-Variables optionnelles : `LLM_API_KEY`, `GRIST_API_KEY`, `GRIST_SITE_URL`.
+Optionnel : `OWNER_UID=<id Grist>` · `GRIST_API_KEY=…` · `GRIST_SITE_URL=…`
 
-Le chart est tiré du **registre Helm GitLab CEREMA** (pull anonyme, projet public) :
-`https://gitlab.cerema.fr/api/v4/projects/3099/packages/helm/stable`.
+Le script ajoute le registre Helm GitHub Pages et déploie l'image **ghcr.io** (tag = `Chart.AppVersion`).
+
+**Mettre à jour** après une nouvelle image :
+
+```bash
+curl -sL https://raw.githubusercontent.com/nic01asFr/GristCoder/master/charts/grist-coder/scripts/install.sh | bash
+# ou
+kubectl rollout restart deployment/grist-coder -n "$KUBERNETES_NAMESPACE"
+```
 
 ### Option B — catalogue Onyxia
 
-Ajouter la source de service pointant sur le registre Helm ci-dessus, puis lancer
-le service depuis le catalogue. Le formulaire (généré depuis `values.schema.json`)
-pré-remplit l'hôte et l'idep. **Lancer avec le rôle `edit`** pour la récupération
-auto de la clé LLM.
+Si *GristCoder MCP* est déjà dans ton catalogue : lance-le avec le rôle **`edit`**
+et renseigne *Identifiant Grist du propriétaire* (onglet Sécurité). Sinon, ajoute
+une source de service Helm pointant sur le dépôt GitHub Pages ci-dessus (usage avancé).
 
 ## Après déploiement
 
-1. Récupérer le token du pod :
-   ```bash
-   kubectl get secret grist-coder -o jsonpath='{.data.APP_AUTH_TOKEN}' | base64 -d ; echo
-   ```
-2. **Widget Grist** : ajouter un widget personnalisé pointant sur `https://<host>/`,
-   renseigner le token dans les options de section (`appToken`).
-3. **Connecteur OAuth** (recommandé, Claude Desktop / claude.ai) : ajouter un
-   connecteur personnalisé avec l'URL `https://<host>/mcp`, puis coller sa clé API
-   Grist sur la page de consentement du pod. Aucun header à configurer.
-4. **Client MCP par headers** (`.mcp.json` / Claude Code) :
-   ```json
-   {
-     "mcpServers": {
-       "grist-coder": {
-         "type": "http",
-         "url": "https://<host>/mcp",
-         "headers": {
-           "Authorization": "Bearer <clé_api_grist>",
-           "X-App-Token": "<APP_AUTH_TOKEN>"
-         }
-       }
-     }
-   }
-   ```
+Dans **Mes services** → **Ouvrir** (ou `helm get notes grist-coder -n <ns>`), les
+notes Helm affichent deux blocs **prêts à copier** :
 
-## Distribution (CI GitLab CEREMA)
+1. **URL widget Grist** (`?app_token=…`) — page personnalisée, accès complet au document.
+2. **Fragment `.mcp.json`** — URL `/mcp`, `X-Grist-Site`, `X-App-Token` et placeholder
+   `VOTRE_CLE_API_GRIST` (à remplacer une seule fois).
+
+**Claude Desktop / claude.ai** : connecteur personnalisé sur `https://<host>/mcp` +
+consentement OAuth (clé Grist une fois, sans `.mcp.json`).
+
+Repli CLI si les notes ne s'affichent pas :
+
+```bash
+kubectl get secret grist-coder -o jsonpath='{.data.APP_AUTH_TOKEN}' | base64 -d ; echo
+```
+
+## Distribution (CI)
 
 La CI (`.gitlab-ci.yml`) publie à chaque push sur `master` les tags **`latest`**
 et **`<appVersion>`** (version de la docstring `grist_coder.py`, identique à
 `server.json` et au tag OCI attendu par Antigravity / le registre MCP). Un tag
 Git `v*` ajoute aussi ce numéro s'il diffère de l'appVersion :
 
-1. **Image** → registre externe public (le GitLab CEREMA n'a pas de registre
-   conteneur), via kaniko. Registre configuré par variables CI/CD.
-2. **Chart** → registre Helm GitLab (canal `stable`), après réécriture de
+1. **Image** → registre public (ghcr.io), via kaniko. Registre configuré par variables CI/CD.
+2. **Chart** → registre Helm (canal `stable`) et miroir GitHub Pages, après réécriture de
    `image.repository` avec `$IMAGE_REPO` (le chart pointe toujours sur l'image
    réellement poussée).
 
