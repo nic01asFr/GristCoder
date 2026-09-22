@@ -21,7 +21,7 @@
 | Image | `ghcr.io/nic01asfr/grist-coder` |
 | Exposes | 35 tools · 8 prompts · 18 resources |
 
-> **Project status**: This is an experimental, work-in-progress project developed at [Cerema Méditerranée](https://www.cerema.fr/). It works reliably for a single user on localhost, but several features (wizard, sub-agents, chat) are in beta. We publish it to share the approach, gather feedback from the Grist community, and invite contributions toward a complete Grist Coder.
+> **Project status**: This is an experimental, work-in-progress project. It works reliably for a single user on localhost, but several features (wizard, sub-agents, chat) are in beta. We publish it to share the approach, gather feedback from the Grist community, and invite contributions toward a complete Grist Coder.
 
 | Widget home — artefact selector | Map artefact + code editor |
 |:---:|:---:|
@@ -183,8 +183,8 @@ Multiple cards coexist in the overlay — a non-blocking progress card can stay 
 ### Option A — Python (development)
 
 ```bash
-git clone https://gitlab.cerema.fr/mcp/gristcoder_mcp.git
-cd grist-coder-mcp
+git clone https://github.com/nic01asFr/GristCoder.git
+cd GristCoder
 
 python -m venv .venv
 # Windows
@@ -200,8 +200,8 @@ uvicorn grist_coder:app --port 8742 --reload
 ### Option B — Docker
 
 ```bash
-git clone https://gitlab.cerema.fr/mcp/gristcoder_mcp.git
-cd grist-coder-mcp
+git clone https://github.com/nic01asFr/GristCoder.git
+cd GristCoder
 
 cp .env.example .env
 docker compose up -d
@@ -251,18 +251,35 @@ Restart Claude Desktop after editing.
 
 ### 3. Connect Claude Code (CLI)
 
-Copy `.mcp.json.example` to `.mcp.json` and fill in your Grist API key:
+Copy `.mcp.json.example` to `.mcp.json` and fill in your Grist API key (localhost
+uses the `grist-coder-local` block only).
 
 ```bash
 cp .mcp.json.example .mcp.json
 # edit .mcp.json with your key
 ```
 
-### 4. Run it hosted (and what guards it)
+On a **hosted pod**, open **My services → Open** in Onyxia (or `helm get notes`):
+the release notes include a ready-to-paste `.mcp.json` fragment and the full widget
+URL — replace `VOTRE_CLE_API_GRIST` with your key once.
 
-The server is not localhost-only. `charts/grist-coder/` deploys **one pod per user**
-on SSPCloud Onyxia. Online, it exposes the same MCP surface, with guards that do not
-depend on the client behaving:
+### 4. Run it hosted (SSPCloud Onyxia)
+
+The server is not localhost-only. **One pod per user** on [SSPCloud](https://datalab.sspcloud.fr/) Onyxia.
+
+**Public entrypoint (GitHub + ghcr.io):**
+
+1. Set up your datalab **AI Assistant** profile (LLM key, base URL, model).
+2. Start an Onyxia service with a **terminal** and Kubernetes access to your namespace — `kubernetes.role: edit` (often labelled namespace admin in the form).
+3. In the pod terminal:
+
+```bash
+curl -sL https://raw.githubusercontent.com/nic01asFr/GristCoder/master/charts/grist-coder/scripts/install.sh | bash
+```
+
+The install script is served from **GitHub**; the container image is **`ghcr.io/nic01asfr/grist-coder`**; the Helm chart is pulled from the **CI registry** (anonymous, handled by the script). Full French walkthrough: [product page — SSPCloud section](https://nic01asfr.github.io/GristCoder/#sspcloud) · [charts/grist-coder/README.md](charts/grist-coder/README.md).
+
+Online, the pod exposes the same MCP surface, with guards that do not depend on the client behaving:
 
 | Guard | Env | What it does |
 |-------|-----|--------------|
@@ -834,14 +851,10 @@ Any Grist instance exposing the standard REST API should work.
 
 ### Where this project lives
 
-Development happens on **[GitLab CEREMA](https://gitlab.cerema.fr/mcp/gristcoder_mcp)** — that is
-where branches, merge requests and CI run. The
-**[GitHub repository](https://github.com/nic01asfr)** is a **mirror**, kept for visibility and for
-anyone outside the CEREMA network. It is not the working copy: an issue or pull request opened
-there may go unnoticed, and a commit pushed there would be overwritten by the next mirror sync.
-
-If you cannot reach GitLab CEREMA, open the discussion on the GitHub mirror anyway and say so —
-we will carry it across.
+The **[GitHub repository](https://github.com/nic01asFr/GristCoder)** is the public home for issues,
+documentation and the GitHub Pages install path. Day-to-day development may happen on a private
+GitLab instance with CI; that copy is mirrored to GitHub. Prefer opening issues and pull requests
+on GitHub unless a maintainer points you elsewhere.
 
 This project is exploratory and we welcome contributions — whether it's bug reports, feature ideas, or pull requests. We're particularly interested in:
 
@@ -853,7 +866,7 @@ This project is exploratory and we welcome contributions — whether it's bug re
 
 ### How to contribute
 
-1. Fork the repo on [GitLab CEREMA](https://gitlab.cerema.fr/mcp/gristcoder_mcp)
+1. Fork the repo on [GitHub](https://github.com/nic01asFr/GristCoder)
 2. Create a feature branch (`git checkout -b feat/my-feature`)
 3. Make your changes in `grist_coder.py` and/or `widget.html`
 4. Test with a real Grist document
@@ -870,4 +883,4 @@ This project is exploratory and we welcome contributions — whether it's bug re
 
 ## License
 
-[MIT](LICENSE) — Nicolas LAVAL, Cerema Méditerranée
+[MIT](LICENSE) — Nicolas LAVAL

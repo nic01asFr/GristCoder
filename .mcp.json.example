@@ -1,11 +1,20 @@
 {
   "mcpServers": {
-    "grist-coder": {
+    "grist-coder-local": {
       "type": "http",
       "url": "http://localhost:8742/mcp",
       "headers": {
         "Authorization": "Bearer YOUR_GRIST_API_KEY",
         "X-Grist-Site": "https://your-grist-instance.example.com"
+      }
+    },
+    "grist-coder-pod": {
+      "type": "http",
+      "url": "https://user-YOU-grist-coder.user.lab.sspcloud.fr/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_GRIST_API_KEY",
+        "X-Grist-Site": "https://grist.numerique.gouv.fr",
+        "X-App-Token": "FROM_ONYXIA_NOTES_OR_HELM_NOTES"
       }
     }
   }

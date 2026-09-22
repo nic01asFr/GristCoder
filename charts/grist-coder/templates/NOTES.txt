@@ -13,24 +13,25 @@ l'URL du widget, lisible par les collaborateurs du document.
 */}}
 {{- $base := printf "https://%s" (include "grist-coder.hostname" .) -}}
 {{- $garde := .Values.appAuth.token -}}
+{{- $site := .Values.grist.siteUrl | default "https://grist.numerique.gouv.fr" -}}
 ### Grist Coder est lancé
 
 - Serveur : [ouvrir la page d'accueil]({{ $base }}/)
 
-### Brancher le widget dans un document Grist
+### URL widget Grist (copier-coller)
 
-Dans le document : **Ajouter** > **Ajouter une page** > **Personnalisé**, puis
-**URL personnalisée**. Collez cette adresse, garde comprise :
+Dans le document : **Ajouter** > **Ajouter une page** > **Personnalisé** >
+**URL personnalisée**. Collez l'adresse ci-dessous telle quelle, puis choisissez
+**Accès complet au document**.
 {{- if $garde }}
 
 ```
 {{ $base }}/?app_token={{ $garde }}
 ```
 
-Choisissez le niveau d'accès **Accès complet au document**. Sans la partie
-`?app_token=`, le point du widget reste rouge : il ne se connecte pas.
+Sans `?app_token=`, le point du widget reste rouge.
 
-Garde seule, pour un client MCP (en-tête X-App-Token) / password: {{ $garde }}
+Garde seule (en-tête MCP `X-App-Token`) / password: {{ $garde }}
 {{- else }}
 
 ```
@@ -43,6 +44,53 @@ La garde a été tirée au sort au déploiement. Pour la lire :
 kubectl get secret {{ include "grist-coder.fullname" . }} -n {{ .Release.Namespace }} -o jsonpath='{.data.APP_AUTH_TOKEN}' | base64 -d
 ```
 {{- end }}
+
+### Config MCP Claude Code / Cursor (copier-coller)
+
+Remplacez `VOTRE_CLE_API_GRIST` par votre clé (Grist → Paramètres du profil → API).
+{{- if $garde }}
+Même contenu en JSON : `curl -sH "X-App-Token: {{ $garde }}" {{ $base }}/setup.json`
+{{- end }}
+
+{{- if $garde }}
+
+```json
+{
+  "mcpServers": {
+    "grist-coder": {
+      "type": "http",
+      "url": "{{ $base }}/mcp",
+      "headers": {
+        "Authorization": "Bearer VOTRE_CLE_API_GRIST",
+        "X-Grist-Site": "{{ $site }}",
+        "X-App-Token": "{{ $garde }}"
+      }
+    }
+  }
+}
+```
+{{- else }}
+
+```json
+{
+  "mcpServers": {
+    "grist-coder": {
+      "type": "http",
+      "url": "{{ $base }}/mcp",
+      "headers": {
+        "Authorization": "Bearer VOTRE_CLE_API_GRIST",
+        "X-Grist-Site": "{{ $site }}"
+      }
+    }
+  }
+}
+```
+
+Si la garde du pod est active, ajoutez `"X-App-Token": "<garde>"` (commande kubectl ci-dessus).
+{{- end }}
+
+**Alternative** — Claude Desktop / claude.ai : connecteur personnalisé, URL
+`{{ $base }}/mcp`, clé Grist une fois au consentement OAuth (sans `.mcp.json`).
 
 ### Propriétaire du pod
 {{- if .Values.security.ownerUid }}
@@ -61,16 +109,6 @@ l'identifiant de votre compte dans l'onglet **Sécurité**.
 
 Verrou propriétaire désactivé : tout compte Grist vérifié peut utiliser ce pod.
 {{- end }}
-
-### Connecter un assistant (MCP)
-
-Claude.ai ou Claude Desktop : ajoutez un connecteur personnalisé avec cette
-adresse. La page de consentement de votre pod demandera votre clé API Grist ;
-le connecteur ne reçoit qu'un jeton révocable.
-
-```
-{{ $base }}/mcp
-```
 
 ### Assistant IA
 {{- if include "grist-coder.llmKey" . }}

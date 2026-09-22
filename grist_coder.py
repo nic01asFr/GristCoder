@@ -9343,6 +9343,40 @@ async def llm_proxy(path: str, request: Request):
         return JSONResponse({"error": _scrub_secrets(str(e))}, status_code=502)
 
 
+@app.get("/setup.json")
+async def setup_json(request: Request):
+    """Configuration copier-coller (widget + .mcp.json), sur le modele QGIS /auth/apikey.
+
+    Protege par la garde du pod quand APP_AUTH_TOKEN est actif : en-tete X-App-Token
+    ou query app_token. Ne contient jamais la cle API Grist de l'utilisateur."""
+    if APP_AUTH_TOKEN and not _check_app_token(request):
+        return JSONResponse(
+            {"error": "Garde du pod : X-App-Token ou ?app_token= requis."},
+            status_code=401,
+        )
+    base = PUBLIC_URL or HOST_URL
+    site = (os.getenv("GRIST_SITE_URL", "").strip().rstrip("/")
+            or "https://grist.numerique.gouv.fr")
+    widget = _coder_widget_url(avec_token=True)
+    mcp_url = f"{base.rstrip('/')}/mcp"
+    hdrs = {
+        "Authorization": "Bearer VOTRE_CLE_API_GRIST",
+        "X-Grist-Site": site,
+    }
+    if APP_AUTH_TOKEN:
+        hdrs["X-App-Token"] = APP_AUTH_TOKEN
+    return {
+        "hub_url": base.rstrip("/"),
+        "widget_url": widget,
+        "mcp_url": mcp_url,
+        "grist_site": site,
+        "mcpServers": {
+            "grist-coder": {"type": "http", "url": mcp_url, "headers": hdrs},
+        },
+        "hint": "Remplacez VOTRE_CLE_API_GRIST par votre cle (Grist > Parametres du profil > API).",
+    }
+
+
 @app.get("/llm-config")
 async def llm_config(request: Request):
     """Ce que le pod sait deja du LLM, pour que le widget n ait pas a le redemander.
