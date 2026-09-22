@@ -9,7 +9,8 @@
 #
 # Pipelines :
 #   - validate   : sur les MR (verdict avant merge), sur master et sur tags v*.
-#   - build/publish : UNIQUEMENT sur master (latest) et tags v* (version figee).
+#   - build/publish : sur master et tags v* — image :latest + :<appVersion> (docstring
+#     grist_coder.py, doit correspondre a server.json et Chart appVersion).
 
 # workflow:rules -> evite les pipelines en double (une MR ne cree pas AUSSI un
 # pipeline de branche). Pipeline seulement pour : tag, evenement MR, push master.
@@ -56,6 +57,24 @@ check-server:
     - if: $CI_COMMIT_TAG =~ /^v/
   script:
     - python -m py_compile grist_coder.py
+    - |
+      python <<'PY'
+      import json, re, sys
+      from pathlib import Path
+      src = Path("grist_coder.py").read_text(encoding="utf-8")
+      m = re.search(r"MCP Server v([\d.]+)", src)
+      if not m:
+          sys.exit("grist_coder.py : version introuvable dans la docstring")
+      app = m.group(1)
+      chart = Path("charts/grist-coder/Chart.yaml").read_text(encoding="utf-8")
+      cm = re.search(r'^appVersion:\s*["\']?([\d.]+)', chart, re.M)
+      if not cm or cm.group(1) != app:
+          sys.exit(f"Chart appVersion != serveur ({app})")
+      pkg = json.loads(Path("server.json").read_text(encoding="utf-8"))["packages"][0]["version"]
+      if pkg != app:
+          sys.exit(f"server.json OCI {pkg} != serveur {app}")
+      print(f"versions alignees : {app}")
+      PY
     - echo "grist_coder.py OK"
 
 # -- 0ter. Validation vitrine ---------------------------------------------------
@@ -102,9 +121,18 @@ build-image:
         exit 1
       fi
     - |
-      DESTS="--destination ${IMAGE_REPO}:latest"
+      APP_VERSION=$(grep -m1 -oE 'MCP Server v[0-9]+(\.[0-9]+)*' grist_coder.py | sed 's/MCP Server v//')
+      if [ -z "$APP_VERSION" ]; then
+        echo "ERREUR : version applicative introuvable dans grist_coder.py"
+        exit 1
+      fi
+      echo "Version applicative (tag OCI / server.json) : ${APP_VERSION}"
+      DESTS="--destination ${IMAGE_REPO}:latest --destination ${IMAGE_REPO}:${APP_VERSION}"
       if [ -n "$CI_COMMIT_TAG" ]; then
-        DESTS="$DESTS --destination ${IMAGE_REPO}:${CI_COMMIT_TAG#v}"
+        TAG_VER="${CI_COMMIT_TAG#v}"
+        if [ "$TAG_VER" != "$APP_VERSION" ]; then
+          DESTS="$DESTS --destination ${IMAGE_REPO}:${TAG_VER}"
+        fi
       fi
     - mkdir -p /kaniko/.docker
     - |

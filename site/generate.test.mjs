@@ -238,6 +238,9 @@ test("server.json ne dérive pas du serveur qu'il décrit", () => {
   const inv = inventaire(path.join(RACINE, "grist_coder.py"));
   assert.equal(m.version, inv.version, "version du manifeste");
   assert.equal(m.packages[0].version, inv.version, "version du paquet OCI");
+  const chart = fs.readFileSync(path.join(RACINE, "charts/grist-coder/Chart.yaml"), "utf8");
+  const appVer = chart.match(/^appVersion:\s*["']?([\d.]+)/m)?.[1];
+  assert.equal(appVer, inv.version, "Chart appVersion (tag d'image par defaut)");
   // Contraintes du registre officiel, vérifiées sans dépendance.
   assert.match(m.name, /^[a-zA-Z0-9.-]+\/[a-zA-Z0-9._-]+$/);
   for (const k of ["$schema", "name", "description", "version"]) {
