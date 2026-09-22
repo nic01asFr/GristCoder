@@ -109,7 +109,10 @@ auto de la clé LLM.
 
 ## Distribution (CI GitLab CEREMA)
 
-La CI (`.gitlab-ci.yml`) publie à chaque push sur `master` (latest) et tag `v*` :
+La CI (`.gitlab-ci.yml`) publie à chaque push sur `master` les tags **`latest`**
+et **`<appVersion>`** (version de la docstring `grist_coder.py`, identique à
+`server.json` et au tag OCI attendu par Antigravity / le registre MCP). Un tag
+Git `v*` ajoute aussi ce numéro s'il diffère de l'appVersion :
 
 1. **Image** → registre externe public (le GitLab CEREMA n'a pas de registre
    conteneur), via kaniko. Registre configuré par variables CI/CD.

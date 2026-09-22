@@ -14,7 +14,8 @@
 # « repository: » de ce fichier : ne pas en ajouter d'autre.
 image:
   repository: ghcr.io/nic01asfr/grist-coder
-  tag: "latest"
+  # Vide = Chart.AppVersion (aligne server.json / ghcr). "latest" reste possible en override.
+  tag: ""
   pullPolicy: Always
 
 # --- Identite Onyxia -----------------------------------------------------------
